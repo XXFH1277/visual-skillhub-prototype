@@ -3,7 +3,7 @@ import path from "node:path";
 import sharp from "sharp";
 import { createHash, randomUUID } from "node:crypto";
 import { AppError } from "./store.js";
-import { overlayTexts, detailCaption } from "./render.js";
+import { overlayTexts } from "./render.js";
 import { canvasSize } from "../shared/scenes.js";
 
 const OPTIONS = { limitInputPixels: 40_000_000, failOn: "warning" };
@@ -67,8 +67,6 @@ async function readJson(file) {
   }
 }
 
-const captionTexts = (frame) =>
-  frame.textMode === "ai" ? frame.texts.filter((t) => t.role !== "headline") : frame.texts;
 
 export async function deliver(job, dir) {
   // Immutable export revisions: a failed re-layout cannot corrupt the last delivery.
@@ -105,15 +103,13 @@ export async function deliver(job, dir) {
     const frame = p.frames?.[i] || { textMode: "none", texts: [], layout: "none" };
     const name = `image-${i + 1}.png`;
     if (p.skillId === "detail") {
-      const square = await sharp(source, OPTIONS).rotate().resize(750, 750, { fit: "cover" }).png().toBuffer();
-      await fs.writeFile(path.join(out, name), square);
-      const caption = detailCaption(captionTexts(frame), accent);
-      const height = 750 + (caption?.height || 0);
+      const width = 750;
+      const height = Math.round((meta.height / meta.width) * width);
+      const base = await sharp(source, OPTIONS).rotate().resize(width, height, { fit: "cover" }).png().toBuffer();
       const moduleName = `module-${i + 1}.png`;
-      await sharp({ create: { width: 750, height, channels: 3, background: "#ffffff" } })
-        .composite([{ input: square, top: 0, left: 0 }, ...(caption ? [{ input: caption.svg, top: 750, left: 0 }] : [])])
-        .png()
-        .toFile(path.join(out, moduleName));
+      if (frame.textMode === "overlay" && frame.texts.length)
+        await overlayTexts(base, { layout: frame.layout, texts: frame.texts, accent }, path.join(out, moduleName));
+      else await fs.writeFile(path.join(out, moduleName), base);
       await add(moduleName, "module", i);
       modules.push({ name: moduleName, height });
       continue;

@@ -130,7 +130,7 @@ export function createImageRunner(config, fetchImpl = fetch) {
         }
         // No automatic retries: a timeout does not prove the upstream did not bill.
         const textOnly = files.length === 0;
-        if (textOnly && p.skillId !== "poster")
+        if (textOnly && p.skillId !== "poster" && p.operation !== "cover")
           throw new Error("生图任务缺少参考素材");
         const requestBody = textOnly
           ? JSON.stringify({

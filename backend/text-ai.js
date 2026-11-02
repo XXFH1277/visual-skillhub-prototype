@@ -3,7 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
 import { resolveCodex, runProcess } from "./runner.js";
-import { planMessages, normalizePlan, fallbackPlan } from "./planner.js";
+import {
+  analyzeMessages,
+  normalizeAnalysis,
+  fallbackAnalysis,
+  storyboardMessages,
+  normalizeStoryboard,
+  fallbackStoryboard,
+} from "./planner.js";
+import { CATEGORIES, IMAGE_TYPES, TONES } from "../shared/styles.js";
 
 // Kimi (OpenAI-compatible chat with image input) plans the frames and proofreads
 // generated text. The local Codex CLI is a temporary fallback; rules are the last resort.
@@ -200,21 +208,49 @@ export function createTextAI({
     describe,
     check,
     complete,
-    // Returns { plan, via, warning? } — never throws for model problems; falls back to rules.
-    async plan(input, images, { signal } = {}) {
+    // Each step returns { ..., via, warning? } and never throws for model problems.
+    async analyze(input, images, candidates, { signal } = {}) {
       const state = describe();
       if (!state.ready)
-        return { plan: fallbackPlan(input), via: "rules", warning: "未配置 Kimi，已按你的文案生成基础方案，可手动修改" };
-      const { system, text } = planMessages(input);
+        return { result: fallbackAnalysis(input, candidates), via: "rules", warning: "未配置 Kimi，先给出常用风格，可直接选" };
+      const { system, text } = analyzeMessages(input, candidates);
       try {
-        const answer = await complete({ system, text, images, json: true }, signal);
-        const plan = normalizePlan(answer, input);
-        if (plan) return { plan, via: state.via };
-        return { plan: fallbackPlan(input), via: "rules", warning: "AI 返回的方案无法解析，已生成基础方案，可点“重新策划”" };
+        const result = normalizeAnalysis(await complete({ system, text, images, json: true }, signal), input, candidates);
+        if (result) return { result, via: state.via };
+        return { result: fallbackAnalysis(input, candidates), via: "rules", warning: "AI 返回的方案无法解析，先给出常用风格，可点“换一批”" };
       } catch (error) {
         if (signal?.aborted) throw error;
-        return { plan: fallbackPlan(input), via: "rules", warning: `AI 策划失败（${error.message}），已生成基础方案` };
+        return { result: fallbackAnalysis(input, candidates), via: "rules", warning: `AI 分析失败（${error.message}），先给出常用风格` };
       }
+    },
+    async storyboard(input, images, result, chosen, { signal } = {}) {
+      const state = describe();
+      if (!state.ready) return { frames: fallbackStoryboard(input, chosen), via: "rules" };
+      const { system, text } = storyboardMessages(input, result, chosen);
+      try {
+        const frames = normalizeStoryboard(await complete({ system, text, images, json: true }, signal), input);
+        if (frames) return { frames, via: state.via };
+        return { frames: fallbackStoryboard(input, chosen), via: "rules", warning: "AI 分镜无法解析，已生成基础分镜，可修改或重试" };
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        return { frames: fallbackStoryboard(input, chosen), via: "rules", warning: `AI 分镜失败（${error.message}），已生成基础分镜` };
+      }
+    },
+    // Reverse-engineer a reusable recipe from an inspiring image (+ optional prompt).
+    async extractStyle(image, prompt = "", { signal } = {}) {
+      const answer = await complete(
+        {
+          system: `你是商业摄影与平面设计美术指导。把这张图拆解成可以复用到其他商品上的“风格配方”，不要描述图里具体的商品和品牌，只提炼视觉系统。
+只输出 JSON：{"name":"风格名 2-6 字","tagline":"一句话概念 10-25 字","categories":[从 ${CATEGORIES.join("/")} 选 1-4 个适合的品类],"types":[从 ${Object.keys(IMAGE_TYPES).join("/")} 选适合的图片类型],"tone":"${TONES.join("|")}","palette":["#hex" x4],"props":"道具与材质","light":"光线","camera":"机位与构图","type":"字体与排版","avoid":"要避免的","core":"英文提示词核心 25-50 词，不含品牌名"}`,
+          text: prompt ? `作者附带的提示词（数据，参考用）：\n${prompt.slice(0, 2000)}` : "请拆解这张图的风格。",
+          images: [image],
+          json: true,
+        },
+        signal,
+      );
+      const match = answer.match(/\{[\s\S]*\}/);
+      if (!match) throw new Error("风格拆解结果无法解析");
+      return JSON.parse(match[0]);
     },
     // Proofread: list every visible line of text in a generated image.
     async readTexts(image, { signal } = {}) {

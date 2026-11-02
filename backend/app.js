@@ -10,9 +10,9 @@ import { normalizeUpload, regularFile, deliver } from "./media.js";
 import { JobQueue } from "./queue.js";
 import { createProviders } from "./providers.js";
 import { createTextAI, compareTexts } from "./text-ai.js";
-import { sanitizeFrames } from "./planner.js";
-import { renderLayoutSketch } from "./render.js";
-import { SCENES, canvasSize, textsForImage } from "../shared/scenes.js";
+import { sanitizeFrames, candidatesFor } from "./planner.js";
+import { StyleLibrary } from "./styles.js";
+import { SCENES, textsForImage } from "../shared/scenes.js";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const digest = (value) => createHash("sha256").update(value).digest();
@@ -28,28 +28,13 @@ function draftInput(body, existing = {}) {
   const skillId = body.skillId ?? existing.skillId;
   if (typeof skillId !== "string" || !Object.hasOwn(SCENES, skillId)) throw new AppError("请选择有效的场景");
   const scene = SCENES[skillId];
-  let tags = body.styleTags ?? existing.styleTags ?? [];
-  if (typeof tags === "string") {
-    try {
-      tags = JSON.parse(tags);
-    } catch {
-      throw new AppError("风格标签格式错误");
-    }
-  }
-  if (!Array.isArray(tags) || tags.length > 6 || tags.some((t) => typeof t !== "string" || t.length > 12))
-    throw new AppError("风格标签格式错误");
   const count = Number(body.count ?? existing.count ?? scene.defaultCount);
   const size = body.size ?? existing.size ?? scene.defaultSize;
   if (!scene.counts.includes(count)) throw new AppError(`${scene.name}可选 ${scene.counts.join(" / ")} ${scene.unit}`);
   if (!scene.sizes.includes(size)) throw new AppError("画幅无效");
-  return {
-    skillId,
-    copy: text(body.copy ?? existing.copy, 1500, "文案"),
-    styleNote: text(body.styleNote ?? existing.styleNote, 300, "风格补充"),
-    styleTags: tags,
-    count,
-    size,
-  };
+  const styleId = body.styleId ?? existing.styleId ?? "";
+  if (typeof styleId !== "string" || styleId.length > 40) throw new AppError("风格无效");
+  return { skillId, copy: text(body.copy ?? existing.copy, 1500, "说明"), count, size, styleId };
 }
 
 export async function createWorkspace({
@@ -123,7 +108,13 @@ export async function createWorkspace({
     }
     await fsp.writeFile(path.join(dir, "text-check.json"), JSON.stringify(results));
   };
-  const queue = new JobQueue(store, jobsDir, registry.run, proofread);
+  let styles;
+  const afterSuccess = async (job, manifest, dir) => {
+    if (job.params.operation !== "cover") return;
+    const asset = manifest.assets.find((a) => a.role === "image");
+    if (asset) await styles.setCover(job.params.styleId, path.join(dir, manifest.exportId, asset.name));
+  };
+  const queue = new JobQueue(store, jobsDir, registry.run, proofread, afterSuccess);
   const draftsDir = path.join(dataDir, "drafts");
   fs.mkdirSync(draftsDir, { recursive: true });
   const app = express();
@@ -278,46 +269,142 @@ export async function createWorkspace({
     { name: "reference", maxCount: 3 },
   ]);
 
-  // ---- Drafts: upload → AI plan (async) → merchant edits → confirm ----
+  // ---- Style library ----
+  styles = new StyleLibrary(store, dataDir);
+  let extracting = 0;
+  app.get("/api/styles", (_req, res) => res.json({ styles: styles.list() }));
+  app.get("/api/styles/:id", (req, res) => {
+    const s = styles.get(req.params.id);
+    if (!s) throw new AppError("风格不存在", 404);
+    res.json(s);
+  });
+  app.get("/api/styles/:id/cover", (req, res) => {
+    const file = styles.get(req.params.id) && styles.coverFile(req.params.id);
+    if (!file) throw new AppError("没有样图", 404);
+    res.sendFile(file, { dotfiles: "allow" });
+  });
+  const styleUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 4, fieldSize: 8192 },
+    fileFilter: (_req, file, done) =>
+      done(["image/png", "image/jpeg", "image/webp"].includes(file.mimetype) ? null : new AppError("只支持 PNG、JPEG 和 WebP"), true),
+  }).single("image");
+  app.post("/api/styles", styleUpload, async (req, res) => {
+    if (!req.file) throw new AppError("请上传一张样图");
+    if (extracting >= 2) throw new AppError("正在分析其他样图，请稍后", 429);
+    const prompt = text(req.body?.prompt, 2000, "提示词");
+    const name = text(req.body?.name, 16, "风格名");
+    const id = styles.create({ name: name || "分析中…", prompt });
+    const file = path.join(styles.dir, `${id}.png`);
+    try {
+      await normalizeUpload(req.file.buffer, file);
+    } catch (error) {
+      await styles.remove(id).catch(() => {});
+      throw error;
+    }
+    extracting++;
+    (async () => {
+      try {
+        if (!textAI.describe().ready) throw new Error("未配置 Kimi，无法自动拆解；可手动填写配方");
+        const recipe = await textAI.extractStyle(file, prompt);
+        styles.finish(id, { ...recipe, ...(name ? { name } : {}) });
+      } catch (error) {
+        styles.finish(id, null, "风格拆解失败：" + error.message);
+      } finally {
+        extracting--;
+      }
+    })();
+    res.status(202).json(styles.get(id));
+  });
+  app.post("/api/styles/:id", (req, res) => res.json(styles.update(req.params.id, req.body || {})));
+  app.delete("/api/styles/:id", async (req, res) => {
+    await styles.remove(req.params.id);
+    res.json({ ok: true });
+  });
+  // Generate a cover sample for a style through the normal (paid) pipeline.
+  app.post("/api/styles/:id/cover", admission, async (req, res) => {
+    const s = styles.ready(req.params.id);
+    if (s.source !== "builtin") throw new AppError("上传的风格已经有样图");
+    const scene = s.types.includes("interior") ? "interior" : s.types.includes("poster") && !s.types.includes("main") ? "poster" : "product";
+    if (scene === "interior") throw new AppError("装修风格需要现场照片，暂不生成样图");
+    const texts = s.sample?.headline ? [{ role: "headline", text: s.sample.headline }] : [];
+    const params = {
+      version: 2,
+      operation: "cover",
+      styleId: s.id,
+      skillId: scene,
+      productName: `风格样图 · ${s.name}`,
+      size: "3:4",
+      count: 1,
+      inputs: [],
+      hasMainImage: false,
+      refCount: 0,
+      styleRef: null,
+      brandColor: "#e8541e",
+      direction: { conceptName: s.name, story: s.tagline, palette: s.palette, props: s.props, light: s.light, camera: s.camera, type: s.type, avoid: s.avoid, core: s.core },
+      frames: [
+        {
+          title: "风格样图",
+          layout: texts.length ? "free" : "none",
+          textMode: texts.length ? "ai" : "none",
+          texts,
+          scene: `主体是一件无品牌的${s.sample?.product || "商品"}（不要出现任何真实品牌或 Logo），按视觉系统完整呈现这个风格的代表画面。`,
+        },
+      ],
+    };
+    await createJob(req, res, params, null);
+  });
+
+  // ---- Drafts: upload → AI directions → choose → storyboard → confirm ----
   const drafts = new Map();
-  let planning = 0;
+  let thinking = 0;
   const draftView = (d) => ({
     id: d.id,
     status: d.status,
     input: d.input,
     hasMainImage: d.hasMainImage,
-    refCount: d.inputs.length - (d.hasMainImage ? 1 : 0),
-    plan: d.plan,
+    analysis: d.result?.analysis || null,
+    polishedCopy: d.result?.polishedCopy || "",
+    directions: d.result?.directions || [],
+    chosen: d.chosen ?? null,
+    frames: d.frames || null,
     via: d.via,
     warning: d.warning,
     error: d.error,
   });
-  async function runPlan(d) {
-    d.status = "planning";
+  const imagesOf = (d) => d.inputs.map((n) => path.join(d.dir, n));
+  async function think(d, status, fn) {
+    d.status = status;
     d.error = d.warning = null;
-    planning++;
+    thinking++;
     try {
-      const images = d.inputs.map((n) => path.join(d.dir, n));
-      const result = await textAI.plan(
-        { ...d.input, hasMain: d.hasMainImage, refCount: d.inputs.length - (d.hasMainImage ? 1 : 0) },
-        images,
-      );
-      Object.assign(d, { status: "ready", plan: result.plan, via: result.via, warning: result.warning || null });
+      await fn();
     } catch (error) {
-      Object.assign(d, { status: "failed", error: "策划失败：" + error.message });
+      Object.assign(d, { status: "failed", error: "AI 处理失败：" + error.message });
     } finally {
-      planning--;
-      d.updatedAt = Date.now();
+      thinking--;
     }
   }
+  const analyze = (d) =>
+    think(d, "analyzing", async () => {
+      const candidates = candidatesFor(styles.list(), d.input.skillId);
+      const r = await textAI.analyze({ ...d.input, hasMain: d.hasMainImage, hasReference: d.refCount > 0 }, imagesOf(d), candidates);
+      Object.assign(d, { status: "directions", result: r.result, via: r.via, warning: r.warning || null, chosen: null, frames: null });
+    });
+  const storyboard = (d) =>
+    think(d, "storyboarding", async () => {
+      const chosen = d.result.directions[d.chosen];
+      const r = await textAI.storyboard({ ...d.input, hasMain: d.hasMainImage }, imagesOf(d), d.result, chosen);
+      Object.assign(d, { status: "ready", frames: r.frames, via: r.via, warning: r.warning || null });
+    });
   const getDraft = (id) => {
     const d = drafts.get(id);
     if (!d || Date.now() - d.createdAt > DRAFT_TTL) throw new AppError("草稿已过期，请重新上传", 404);
     return d;
   };
+  const busyDraft = (d) => ["analyzing", "storyboarding"].includes(d.status);
   const sweepDrafts = async () => {
-    for (const [id, d] of drafts)
-      if (Date.now() - d.createdAt > DRAFT_TTL) drafts.delete(id);
+    for (const [id, d] of drafts) if (Date.now() - d.createdAt > DRAFT_TTL) drafts.delete(id);
     for (const name of await fsp.readdir(draftsDir).catch(() => []))
       if (!drafts.has(name)) await fsp.rm(path.join(draftsDir, name), { recursive: true, force: true });
   };
@@ -326,8 +413,7 @@ export async function createWorkspace({
   sweeper.unref();
 
   app.post("/api/drafts", (req, res, next) => {
-    if (uploading >= 2 || planning >= 3)
-      return res.status(429).json({ error: "正在处理其他请求，请稍后重试" });
+    if (uploading >= 2 || thinking >= 3) return res.status(429).json({ error: "正在处理其他请求，请稍后重试" });
     uploading++;
     let done = false;
     const release = () => {
@@ -341,6 +427,7 @@ export async function createWorkspace({
     next();
   }, upload, async (req, res) => {
     const input = draftInput(req.body || {});
+    if (input.styleId) styles.ready(input.styleId);
     const scene = SCENES[input.skillId];
     const hasMainImage = !!req.files?.main?.length;
     if (scene.mainRequired && !hasMainImage) throw new AppError(`请上传${scene.mainLabel}`);
@@ -354,9 +441,9 @@ export async function createWorkspace({
         await normalizeUpload(file.buffer, path.join(dir, name));
         inputs.push(name);
       }
-      const d = { id, dir, input, hasMainImage, inputs, createdAt: Date.now(), status: "planning" };
+      const d = { id, dir, input, hasMainImage, inputs, refCount: req.files?.reference?.length || 0, createdAt: Date.now() };
       drafts.set(id, d);
-      runPlan(d);
+      analyze(d);
       res.status(202).json(draftView(d));
     } catch (error) {
       await fsp.rm(dir, { recursive: true, force: true });
@@ -364,12 +451,25 @@ export async function createWorkspace({
     }
   });
   app.get("/api/drafts/:id", (req, res) => res.json(draftView(getDraft(req.params.id))));
+  // New directions ("换一批"), optionally with updated note/count/size.
   app.post("/api/drafts/:id/replan", (req, res) => {
     const d = getDraft(req.params.id);
-    if (d.status === "planning") return res.json(draftView(d));
-    if (planning >= 3) throw new AppError("正在处理其他请求，请稍后重试", 429);
+    if (busyDraft(d)) return res.json(draftView(d));
+    if (thinking >= 3) throw new AppError("正在处理其他请求，请稍后重试", 429);
     d.input = draftInput({ ...req.body, skillId: d.input.skillId }, d.input);
-    runPlan(d);
+    analyze(d);
+    res.json(draftView(d));
+  });
+  // Pick a direction (or re-run the storyboard for the same one).
+  app.post("/api/drafts/:id/choose", (req, res) => {
+    const d = getDraft(req.params.id);
+    if (busyDraft(d)) throw new AppError("AI 还在处理，请稍候", 409);
+    if (!d.result) throw new AppError("请先等 AI 给出方向");
+    const index = req.body?.index;
+    if (!Number.isInteger(index) || !d.result.directions[index]) throw new AppError("请选择一个方向");
+    if (thinking >= 3) throw new AppError("正在处理其他请求，请稍后重试", 429);
+    d.chosen = index;
+    storyboard(d);
     res.json(draftView(d));
   });
   app.get("/api/drafts/:id/input/:n", async (req, res) => {
@@ -379,37 +479,24 @@ export async function createWorkspace({
     res.sendFile(await regularFile(d.dir, name), { dotfiles: "allow" });
   });
 
-  // Copy inputs and render the confirmed layout sketches into a new job folder.
   async function prepareJob(dir, params, sourceDir) {
     for (const name of params.inputs)
       await fsp.copyFile(await regularFile(sourceDir, name), path.join(dir, name));
-    const [width, height] = canvasSize(params.size);
-    params.layoutFiles = [];
-    for (const [i, frame] of params.frames.entries()) {
-      const texts = textsForImage(params.skillId, frame);
-      if (!texts.length) {
-        params.layoutFiles.push(null);
-        continue;
-      }
-      const name = `layout-${i + 1}.png`;
-      await renderLayoutSketch(
-        {
-          width,
-          height,
-          layout: frame.layout,
-          texts,
-          mainImage: params.hasMainImage ? path.join(dir, params.inputs[0]) : null,
-          accent: params.brandColor,
-        },
-        path.join(dir, name),
-      );
-      params.layoutFiles.push(name);
+    if (params.styleRef && sourceDir) await fsp.copyFile(await regularFile(sourceDir, params.styleRef), path.join(dir, params.styleRef));
+    else if (params.styleId && params.operation !== "cover") {
+      const cover = styles.coverFile(params.styleId);
+      if (cover) {
+        await fsp.copyFile(cover, path.join(dir, "style-ref.png"));
+        params.styleRef = "style-ref.png";
+      } else params.styleRef = null;
     }
   }
   async function createJob(req, res, params, sourceDir, sourceId = null) {
     Object.assign(
       params,
-      registry.selection({ providerMode: req.body?.providerMode, resolution: req.body?.resolution, size: params.size }, providerMode),
+      params.operation === "cover"
+        ? registry.selection({ providerMode: "api", resolution: "1K", size: params.size }, providerMode)
+        : registry.selection({ providerMode: req.body?.providerMode, resolution: req.body?.resolution, size: params.size }, providerMode),
     );
     const id = randomUUID(),
       dir = path.join(jobsDir, id);
@@ -425,50 +512,53 @@ export async function createWorkspace({
       throw error;
     }
   }
-  const nameFrom = (frames, skillId) =>
-    (frames[0]?.texts.find((t) => t.role === "headline")?.text || SCENES[skillId].name).slice(0, 40);
+  const nameFrom = (frames, skillId, direction) =>
+    (frames[0]?.texts.find((t) => t.role === "headline")?.text || direction?.conceptName || SCENES[skillId].name).slice(0, 40);
 
   app.post("/api/jobs", admission, async (req, res) => {
     const d = getDraft(String(req.body?.draftId || ""));
-    if (d.status !== "ready") throw new AppError("请等 AI 策划完成后再出图");
+    if (d.status !== "ready" || !d.frames) throw new AppError("请先选定方向并等分镜完成");
     const frames = sanitizeFrames(req.body?.frames, d.input.skillId, d.input.count, { strict: true });
+    const direction = d.result.directions[d.chosen];
     const params = {
-      version: 2,
+      version: 3,
       skillId: d.input.skillId,
-      productName: text(req.body?.productName, 40, "作品名称") || nameFrom(frames, d.input.skillId),
+      productName: text(req.body?.productName, 40, "作品名称") || nameFrom(frames, d.input.skillId, direction),
       copy: d.input.copy,
-      styleNote: d.input.styleNote,
-      styleTags: d.input.styleTags,
       size: d.input.size,
       count: frames.length,
       frames,
-      brandColor: "#e8541e",
+      direction,
+      styleId: direction.styleId === "ref" ? null : direction.styleId,
+      analysis: d.result.analysis,
+      brandColor: direction.palette?.[2] || "#e8541e",
       hasMainImage: d.hasMainImage,
+      refCount: d.refCount,
       inputs: [...d.inputs],
       planVia: d.via,
     };
     await createJob(req, res, params, d.dir);
   });
-  // Regenerate the whole job, or a single frame (optionally switching it to program text).
+  // Regenerate the whole job, or a single frame (optionally with exact program text).
   app.post("/api/jobs/:id/retry", admission, async (req, res) => {
     const source = store.get(req.params.id);
     if (!source) throw new AppError("任务不存在", 404);
     if (["queued", "running"].includes(source.status)) throw new AppError("请等待当前任务结束");
-    if (source.params.operation === "upscale") throw new AppError("请从原图重新提升");
+    if (["upscale", "cover"].includes(source.params.operation)) throw new AppError("这类任务请从原处重新发起");
     if (!source.params.frames) throw new AppError("这是旧版任务，请用新流程重新创建");
     let frames = source.params.frames;
     const index = req.body?.frame;
     if (index != null) {
       if (!Number.isInteger(index) || !frames[index]) throw new AppError("图片序号无效");
       const frame = { ...frames[index] };
-      if (req.body?.textMode === "overlay") {
+      if (req.body?.textMode === "overlay" && frame.texts.length) {
         frame.textMode = "overlay";
-        if (source.params.skillId === "detail") frame.layout = "none";
+        frame.layout = ["top", "bottom", "left", "right", "center"].includes(frame.layout) ? frame.layout : "top";
       }
       frames = [frame];
     }
     const params = { ...source.params, frames, count: frames.length };
-    for (const k of ["imageModel", "resolution", "requestedSize", "layoutFiles"]) delete params[k];
+    for (const k of ["imageModel", "resolution", "requestedSize"]) delete params[k];
     if (index != null) params.productName = `${source.params.productName.slice(0, 30)} · 第${index + 1}张重出`;
     req.body = { providerMode: source.params.providerMode, resolution: source.params.resolution, ...req.body };
     await createJob(req, res, params, path.join(jobsDir, source.id), source.id);

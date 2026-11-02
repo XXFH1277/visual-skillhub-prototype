@@ -4,46 +4,54 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
-import { normalizePlan, sanitizeFrames, fallbackPlan, planMessages, sceneGuide } from "../backend/planner.js";
+import { normalizeAnalysis, normalizeStoryboard, sanitizeFrames, analyzeMessages, storyboardMessages, sceneGuide, candidatesFor } from "../backend/planner.js";
+import { STYLES } from "../shared/styles.js";
 import { compareTexts, createTextAI } from "../backend/text-ai.js";
 import { framePrompt } from "../backend/prompts.js";
 import { renderLayoutSketch, overlayTexts, wrap } from "../backend/render.js";
+const lib = STYLES.map((x) => ({ ...x, status: "ready" }));
 
-test("skills feed the planner, not the image model", () => {
-  for (const id of ["product", "detail", "poster", "interior"]) {
-    const guide = sceneGuide(id);
-    assert.ok(guide.length > 400, id);
-  }
-  assert.match(sceneGuide("product"), /五要素/);
-  assert.match(sceneGuide("detail"), /Food and Beverage/);
-  const m = planMessages({ skillId: "product", count: 2, size: "1:1", copy: "保温杯", hasMain: true, refCount: 1, styleTags: ["极简"] });
-  assert.match(m.system, /只输出一个 JSON/);
-  assert.match(m.text, /恰好 2 个 frames/);
+test("skills and the style library feed the planner, not the image model", () => {
+  for (const id of ["product", "detail", "poster", "interior"]) assert.ok(sceneGuide(id).length > 400, id);
+  const candidates = candidatesFor(lib, "product");
+  assert.ok(candidates.length > 20 && candidates.every((c) => !c.types.includes("interior")));
+  const m = analyzeMessages({ skillId: "product", count: 2, size: "1:1", copy: "保温杯", hasMain: true, hasReference: true }, candidates);
+  assert.match(m.system, /wabi｜侘寂自然/);
+  assert.match(m.system, /styleId="ref"/);
+  const result = normalizeAnalysis({ directions: [{ styleId: "wabi", conceptName: "一日三刻" }] }, { skillId: "product" }, candidates);
+  const sb = storyboardMessages({ skillId: "detail", count: 6, copy: "" }, result, result.directions[0]);
+  assert.match(sb.system, /一日三刻/);
+  assert.match(sb.system, /恰好 6 个 frames/);
   const prompt = framePrompt(
-    { skillId: "product", size: "1:1", hasMainImage: true, inputs: ["input-0.png"], styleTags: [], styleNote: "", layoutFiles: [null], frames: [{ title: "主图", layout: "none", textMode: "none", texts: [], scene: "浅木桌面" }] },
+    { skillId: "product", size: "1:1", hasMainImage: true, refCount: 0, inputs: ["input-0.png"], styleRef: null, direction: result.directions[0], frames: [{ title: "主图", layout: "none", textMode: "none", texts: [], scene: "浅木桌面" }] },
     0,
   );
-  assert.ok(prompt.length < 900);
+  assert.ok(prompt.length < 1400, prompt.length);
+  assert.match(prompt, /陶/);
   assert.doesNotMatch(prompt, /五要素|光照三要素|Skill/);
 });
 
-test("AI plans are repaired: counts, roles, lengths, scene rules", () => {
-  const raw = `好的：{"summary":"s","frames":[{"title":"主图","layout":"weird","textMode":"ai","texts":[{"role":"headline","text":"${"超".repeat(30)}"},{"role":"x","text":"y"}],"scene":"a"}]}`;
-  const plan = normalizePlan(raw, { skillId: "product", count: 2 });
-  assert.equal(plan.frames.length, 2);
-  assert.equal(Array.from(plan.frames[0].texts[0].text).length, 16);
-  assert.equal(plan.frames[0].texts[1].role, "body");
-  assert.equal(plan.frames[0].layout, "top");
-  const interior = normalizePlan({ frames: [{ texts: [{ role: "headline", text: "x" }], textMode: "ai" }] }, { skillId: "interior", count: 1 });
-  assert.deepEqual(interior.frames[0].texts, []);
-  assert.equal(interior.frames[0].textMode, "none");
-  const detail = normalizePlan({ frames: [{ textMode: "ai", texts: [{ role: "point", text: "a" }, { role: "body", text: "b" }] }] }, { skillId: "detail", count: 1 });
-  assert.equal(detail.frames[0].texts[0].role, "headline");
-  assert.equal(detail.frames[0].layout, "top");
-  assert.equal(normalizePlan("no json", { skillId: "product", count: 1 }), null);
-  assert.throws(() => sanitizeFrames([{ texts: [{ role: "headline", text: "长".repeat(17) }] }], "product", 1, { strict: true }), /不能超过/);
-  const rules = fallbackPlan({ skillId: "poster", count: 1, copy: "秋日咖啡节\n第二杯半价\n地址：xx路" });
-  assert.equal(rules.frames[0].texts[0].text, "秋日咖啡节");
+test("AI output is repaired: unknown styles dropped, directions topped up, frames sanitized", () => {
+  const candidates = candidatesFor(lib, "product");
+  const r = normalizeAnalysis(
+    `好的 {"analysis":{"product":"杯子","category":"乱写"},"directions":[{"styleId":"nope"},{"styleId":"dark","palette":["#000000","bad"]},{"styleId":"dark"}]}`,
+    { skillId: "product", styleId: "" },
+    candidates,
+  );
+  assert.equal(r.directions.length, 3);
+  assert.equal(r.directions[0].styleId, "dark");
+  assert.deepEqual(r.directions[0].palette, ["#000000"]);
+  assert.equal(new Set(r.directions.map((d) => d.styleId)).size, 3);
+  assert.equal(r.analysis.category, "");
+  const frames = normalizeStoryboard({ frames: [{ title: "a", scene: "s", textMode: "ai", texts: [{ role: "x", text: "长".repeat(100) }] }] }, { skillId: "product", count: 2 });
+  assert.equal(frames, null, "missing scene for frame 2 is rejected");
+  const ok = normalizeStoryboard({ frames: [{ scene: "s", texts: [{ role: "headline", text: "超".repeat(30) }] }, { scene: "t" }] }, { skillId: "product", count: 2 });
+  assert.equal(Array.from(ok[0].texts[0].text).length, 16);
+  assert.equal(ok[0].layout, "free");
+  assert.equal(ok[1].textMode, "none");
+  const interior = normalizeStoryboard({ frames: [{ scene: "s", texts: [{ role: "headline", text: "x" }], textMode: "ai" }] }, { skillId: "interior", count: 1 });
+  assert.deepEqual(interior[0].texts, []);
+  assert.throws(() => sanitizeFrames([{ scene: "s", texts: [{ role: "headline", text: "长".repeat(17) }] }], "product", 1, { strict: true }), /不能超过/);
 });
 
 test("proofreading compares exact text, tolerant of spacing and punctuation", () => {
@@ -54,28 +62,30 @@ test("proofreading compares exact text, tolerant of spacing and punctuation", ()
   assert.deepEqual(bad.problems.map((p) => p.text), ["一键开盖"]);
 });
 
-test("Kimi client sends images, falls back to rules on failure", async () => {
+test("Kimi client sends images, falls back to common styles on failure", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kimi-"));
   const file = path.join(dir, "a.png");
   await sharp({ create: { width: 300, height: 300, channels: 3, background: "#fff" } }).png().toFile(file);
+  const candidates = candidatesFor(lib, "product");
   let body;
   const ai = createTextAI({
     env: { KIMI_API_KEY: "k", KIMI_MODEL: "kimi-test" },
     fetchImpl: async (url, init) => {
       body = JSON.parse(init.body);
       assert.equal(url.href, "https://api.moonshot.cn/v1/chat/completions");
-      return Response.json({ choices: [{ message: { content: JSON.stringify({ summary: "杯子", frames: [{ title: "主图", layout: "top", textMode: "ai", texts: [{ role: "headline", text: "好杯子" }], scene: "s" }] }) } }] });
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ analysis: { product: "杯子" }, directions: [{ styleId: "wabi", conceptName: "一日三刻" }] }) } }] });
     },
   });
-  const r = await ai.plan({ skillId: "product", count: 1, size: "1:1", copy: "杯子", hasMain: true }, [file]);
+  const r = await ai.analyze({ skillId: "product", count: 1, size: "1:1", copy: "杯子", hasMain: true }, [file], candidates);
   assert.equal(r.via, "kimi");
-  assert.equal(r.plan.frames[0].texts[0].text, "好杯子");
+  assert.equal(r.result.directions[0].conceptName, "一日三刻");
   assert.equal(body.model, "kimi-test");
   assert.match(body.messages[1].content[0].image_url.url, /^data:image\/jpeg;base64,/);
   const broken = createTextAI({ env: { KIMI_API_KEY: "k" }, fetchImpl: async () => new Response("{}", { status: 500 }) });
-  const f = await broken.plan({ skillId: "product", count: 1, size: "1:1", copy: "杯子" }, []);
+  const f = await broken.analyze({ skillId: "product", count: 1, size: "1:1", copy: "杯子" }, [], candidates);
   assert.equal(f.via, "rules");
   assert.match(f.warning, /500/);
+  assert.equal(f.result.directions.length, 3);
   assert.equal(createTextAI({ env: {} }).describe().ready, false);
   await fs.rm(dir, { recursive: true, force: true });
 });

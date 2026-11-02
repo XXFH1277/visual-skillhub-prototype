@@ -2,9 +2,10 @@ import path from "node:path";
 import { deliver } from "./media.js";
 
 export class JobQueue {
-  constructor(store, jobsDir, runner, afterRun = null) {
+  constructor(store, jobsDir, runner, afterRun = null, onSuccess = null) {
     this.store = store;
     this.afterRun = afterRun;
+    this.onSuccess = onSuccess;
     this.jobsDir = jobsDir;
     this.runner = runner;
     this.stopped = false;
@@ -32,6 +33,7 @@ export class JobQueue {
         const manifest = await deliver(job, dir);
         controller.signal.throwIfAborted();
         this.store.succeed(job.id, manifest);
+        await this.onSuccess?.(job, manifest, dir).catch?.(() => {});
       } catch (error) {
         this.store.fail(
           job.id,

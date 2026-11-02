@@ -8,27 +8,37 @@ import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { createWorkspace } from "../backend/app.js";
 import { createProviders } from "../backend/providers.js";
-import { fallbackPlan } from "../backend/planner.js";
+import { fallbackAnalysis, fallbackStoryboard } from "../backend/planner.js";
 
 const ACCESS = "test-only-access-code-123456";
 const image = await sharp({ create: { width: 640, height: 640, channels: 3, background: "#6677aa" } }).png().toBuffer();
 
-// Fake Kimi: plans from rules but marks itself, reads back configurable text.
+// Fake Kimi: rule-based directions/storyboard, configurable text read-back.
 function fakeAI({ seen = null, ready = true } = {}) {
-  const calls = { plan: 0, read: 0 };
+  const calls = { analyze: 0, storyboard: 0, read: 0, extract: 0 };
   return {
     calls,
     describe: () => (ready ? { ready: true, via: "kimi", label: "test" } : { ready: false, via: "rules", label: "off" }),
-    async plan(input, images) {
-      calls.plan++;
+    async analyze(input, images, candidates) {
+      calls.analyze++;
       calls.images = images.length;
-      const plan = fallbackPlan(input);
-      plan.summary = "测试方案";
-      return { plan, via: ready ? "kimi" : "rules" };
+      calls.candidates = candidates.map((c) => c.id);
+      const result = fallbackAnalysis(input, candidates);
+      result.analysis.product = "测试商品";
+      return { result, via: ready ? "kimi" : "rules" };
+    },
+    async storyboard(input, images, result, chosen) {
+      calls.storyboard++;
+      calls.chosen = chosen.styleId;
+      return { frames: fallbackStoryboard(input, chosen), via: ready ? "kimi" : "rules" };
     },
     async readTexts() {
       calls.read++;
       return seen || [];
+    },
+    async extractStyle() {
+      calls.extract++;
+      return { name: "测试风格", tagline: "t", categories: ["美妆护肤"], types: ["main"], tone: "清新", palette: ["#112233"], props: "p", light: "l", camera: "c", type: "t", core: "core" };
     },
   };
 }
@@ -72,19 +82,26 @@ async function setup(t, runner = writeResults, options = {}) {
     for (let i = 0; i < refs; i++) form.append("reference", new Blob([image], { type: "image/png" }), "ref.png");
     return request("/api/drafts", { method: "POST", body: form });
   };
-  const ready = async (id) => {
+  const settle = async (id) => {
     for (let i = 0; i < 200; i++) {
       const d = await (await request("/api/drafts/" + id)).json();
-      if (d.status !== "planning") return d;
+      if (!["analyzing", "storyboarding"].includes(d.status)) return d;
       await new Promise((r) => setTimeout(r, 10));
     }
-    throw new Error("draft did not finish");
+    throw new Error("draft did not settle");
+  };
+  const ready = async (id, index = 0) => {
+    const d = await settle(id);
+    assert.equal(d.status, "directions", JSON.stringify(d));
+    const chosen = await post(`/api/drafts/${id}/choose`, { index });
+    assert.equal(chosen.status, 200, await chosen.clone().text());
+    return settle(id);
   };
   const submit = async ({ fields, edit, key = randomUUID(), extra = {}, main } = {}) => {
     const created = await draft({ fields, main });
     assert.equal(created.status, 202, await created.clone().text());
     const d = await ready((await created.json()).id);
-    const frames = structuredClone(d.plan.frames);
+    const frames = structuredClone(d.frames);
     edit?.(frames);
     return post("/api/jobs", { draftId: d.id, frames, ...extra }, { "Idempotency-Key": key });
   };
@@ -97,40 +114,40 @@ async function setup(t, runner = writeResults, options = {}) {
     throw new Error("job did not finish");
   };
   const balance = async () => (await (await request("/api/workspace")).json()).account.balance;
-  return { request, post, draft, ready, submit, terminal, balance, url, w, ai };
+  return { request, post, draft, ready, settle, submit, terminal, balance, url, w, ai };
 }
 
-test("draft → AI plan → confirm → generate → proofread; nothing is charged before confirmation", async (t) => {
+test("upload → directions → choose → storyboard → confirm → generate → proofread", async (t) => {
   const ai = fakeAI({ seen: ["保温杯", "保温12小时"] });
   const s = await setup(t, writeResults, { textAI: ai });
-  const created = await s.draft({ refs: 2, fields: { count: "2" } });
+  const created = await s.draft({ refs: 1, fields: { count: "2" } });
   assert.equal(created.status, 202);
-  const d = await s.ready((await created.json()).id);
-  assert.equal(d.status, "ready");
-  assert.equal(d.refCount, 2);
-  assert.equal(ai.calls.images, 3);
-  assert.equal(d.plan.frames.length, 2);
+  const id = (await created.json()).id;
+  const d = await s.settle(id);
+  assert.equal(d.status, "directions");
+  assert.equal(d.directions.length, 3);
+  assert.equal(d.analysis.product, "测试商品");
+  assert.equal(ai.calls.images, 2);
+  assert.ok(ai.calls.candidates.includes("wabi") && !ai.calls.candidates.includes("cream-home"));
+  assert.equal((await s.post("/api/jobs", { draftId: id, frames: [] }, { "Idempotency-Key": randomUUID() })).status, 400);
+  const ready = await s.ready(id, 1);
+  assert.equal(ready.status, "ready");
+  assert.equal(ai.calls.chosen, d.directions[1].styleId);
   assert.equal(await s.balance(), 500);
-  const frames = structuredClone(d.plan.frames);
-  frames[0].textMode = "ai";
-  frames[0].texts = [{ role: "headline", text: "保温杯" }, { role: "point", text: "一键开盖" }];
-  frames[1].textMode = "overlay";
-  frames[1].layout = "bottom";
-  frames[1].texts = [{ role: "headline", text: "精确排字" }];
-  const res = await s.post("/api/jobs", { draftId: d.id, frames }, { "Idempotency-Key": randomUUID() });
-  assert.equal(res.status, 202);
+  const frames = structuredClone(ready.frames);
+  frames[0] = { ...frames[0], textMode: "ai", texts: [{ role: "headline", text: "保温杯" }, { role: "point", text: "一键开盖" }] };
+  frames[1] = { ...frames[1], textMode: "overlay", layout: "bottom", texts: [{ role: "headline", text: "精确排字" }] };
+  const res = await s.post("/api/jobs", { draftId: id, frames }, { "Idempotency-Key": randomUUID() });
+  assert.equal(res.status, 202, await res.clone().text());
   const job = await res.json();
   assert.equal(job.cost, 20);
-  assert.deepEqual(job.params.layoutFiles, ["layout-1.png", null]);
+  assert.equal(job.params.direction.styleId, d.directions[1].styleId);
+  assert.equal(job.params.frames[0].layout, "free");
   const done = await s.terminal(job.id);
   assert.equal(done.status, "succeeded", done.error);
   assert.equal(ai.calls.read, 1);
-  assert.equal(done.manifest.textCheck.length, 1);
-  assert.equal(done.manifest.textCheck[0].ok, false);
   assert.deepEqual(done.manifest.textCheck[0].problems.map((p) => p.text), ["一键开盖"]);
   assert.equal(await s.balance(), 480);
-  // layout sketch is viewable, uploads too; nothing else
-  assert.equal((await s.request(`/api/jobs/${job.id}/source/layout-1.png`)).status, 200);
   assert.equal((await s.request(`/api/jobs/${job.id}/source/input-0.png`)).status, 200);
   assert.equal((await s.request(`/api/jobs/${job.id}/source/text-check.json`)).status, 404);
   // overlay frame: free text edit re-exports without generation
@@ -144,32 +161,21 @@ test("draft → AI plan → confirm → generate → proofread; nothing is charg
   assert.equal(await s.balance(), 480);
 });
 
-test("detail pages: caption under each screen, long image, free caption edits", async (t) => {
-  const s = await setup(t);
-  const res = await s.submit({
-    fields: { skillId: "detail", count: "3", copy: "陶瓷杯｜手工上釉\n细节｜杯口圆润\n场景｜早餐时光" },
-    edit: (frames) => {
-      frames[0].textMode = "ai";
-      frames[0].texts = [{ role: "headline", text: "手工陶瓷杯" }, { role: "body", text: "每一只都由匠人手工上釉" }];
-    },
+test("detail pages: vertical screens stitched into one long image", async (t) => {
+  const s = await setup(t, async (job, dir) => {
+    const tall = await sharp({ create: { width: 768, height: 1024, channels: 3, background: "#aa8866" } }).png().toBuffer();
+    for (let i = 1; i <= job.params.count; i++) await fs.writeFile(path.join(dir, `result-${i}.png`), tall);
   });
+  const res = await s.submit({ fields: { skillId: "detail", count: "4", size: "3:4", copy: "陶瓷杯\n手工上釉\n杯口圆润\n早餐时光" } });
   assert.equal(res.status, 202, await res.clone().text());
   const done = await s.terminal((await res.json()).id);
   assert.equal(done.status, "succeeded", done.error);
   const modules = done.manifest.assets.filter((a) => a.role === "module");
   const long = done.manifest.assets.find((a) => a.role === "long");
-  assert.equal(modules.length, 3);
-  assert.ok(modules.every((m) => m.width === 750 && m.height > 750));
-  assert.equal(long.height, modules.reduce((h, m) => h + m.height, 0));
-  assert.equal(done.params.frames[0].layout, "top");
-  // AI headline is locked; only body edits apply
-  const edited = await s.post(`/api/jobs/${done.id}/texts`, {
-    frames: [{ texts: [{ role: "body", text: "新的说明" }] }, null, null],
-  });
-  assert.equal(edited.status, 200, await edited.clone().text());
-  const after = await edited.json();
-  assert.deepEqual(after.params.frames[0].texts, [{ role: "headline", text: "手工陶瓷杯" }, { role: "body", text: "新的说明" }]);
-  assert.equal(await s.balance(), 500 - 90);
+  assert.equal(modules.length, 4);
+  assert.ok(modules.every((m) => m.width === 750 && m.height === 1000));
+  assert.equal(long.height, 4000);
+  assert.equal(await s.balance(), 500 - 120);
 });
 
 test("posters work without images; product requires one; invalid edits never charge", async (t) => {
@@ -207,9 +213,7 @@ test("single-frame regenerate can switch to exact text; failures refund", async 
   const res = await s.submit({
     fields: { count: "2" },
     edit: (f) => {
-      f[1].textMode = "ai";
-      f[1].layout = "top";
-      f[1].texts = [{ role: "headline", text: "第二张" }];
+      f[1] = { ...f[1], textMode: "ai", layout: "free", texts: [{ role: "headline", text: "第二张" }] };
     },
   });
   const done = await s.terminal((await res.json()).id);
@@ -220,7 +224,6 @@ test("single-frame regenerate can switch to exact text; failures refund", async 
   assert.equal(one.params.count, 1);
   assert.equal(one.params.frames[0].textMode, "overlay");
   assert.equal(one.sourceId, done.id);
-  assert.deepEqual(one.params.layoutFiles, [null]);
   assert.equal(await s.balance(), 500 - 20 - 10);
   fail = true;
   const again = await s.post(`/api/jobs/${done.id}/retry`, {}, { "Idempotency-Key": randomUUID() });
@@ -230,12 +233,12 @@ test("single-frame regenerate can switch to exact text; failures refund", async 
   assert.equal(await s.balance(), 470);
 });
 
-test("no Kimi configured: rules plan, no proofreading", async (t) => {
+test("no Kimi configured: common styles, rule storyboard, no proofreading", async (t) => {
   const ai = fakeAI({ ready: false });
   const s = await setup(t, writeResults, { textAI: ai });
   const d = await s.ready((await (await s.draft()).json()).id);
   assert.equal(d.via, "rules");
-  const res = await s.post("/api/jobs", { draftId: d.id, frames: d.plan.frames }, { "Idempotency-Key": randomUUID() });
+  const res = await s.post("/api/jobs", { draftId: d.id, frames: d.frames }, { "Idempotency-Key": randomUUID() });
   const done = await s.terminal((await res.json()).id);
   assert.equal(done.status, "succeeded");
   assert.equal(ai.calls.read, 0);
@@ -250,12 +253,48 @@ test("duplicate confirmations create one job and one charge", async (t) => {
   });
   const d = await s.ready((await (await s.draft()).json()).id);
   const key = randomUUID();
-  const send = () => s.post("/api/jobs", { draftId: d.id, frames: d.plan.frames }, { "Idempotency-Key": key });
+  const send = () => s.post("/api/jobs", { draftId: d.id, frames: d.frames }, { "Idempotency-Key": key });
   const jobs = await Promise.all((await Promise.all([send(), send()])).map((r) => r.json()));
   assert.equal(jobs[0].id, jobs[1].id);
   assert.equal((await s.terminal(jobs[0].id)).status, "succeeded");
   assert.equal(calls, 1);
   assert.equal(await s.balance(), 490);
+});
+
+test("style library: list, filter data, upload → AI recipe, pick it for a draft, delete", async (t) => {
+  const ai = fakeAI();
+  const s = await setup(t, writeResults, { textAI: ai });
+  const list = (await (await s.request("/api/styles")).json()).styles;
+  assert.ok(list.length >= 30);
+  assert.ok(list.every((x) => x.categories.length && x.types.length));
+  const form = new FormData();
+  form.append("image", new Blob([image], { type: "image/png" }), "good.png");
+  form.append("prompt", "soft light, ceramic, moss");
+  const up = await s.request("/api/styles", { method: "POST", body: form });
+  assert.equal(up.status, 202, await up.clone().text());
+  const id = (await up.json()).id;
+  let style;
+  for (let i = 0; i < 100; i++) {
+    style = await (await s.request("/api/styles/" + id)).json();
+    if (style.status !== "analyzing") break;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.equal(style.status, "ready");
+  assert.equal(style.name, "测试风格");
+  assert.equal(style.prompt, "soft light, ceramic, moss");
+  assert.equal(style.cover, `/api/styles/${id}/cover`);
+  assert.equal((await s.request(style.cover)).status, 200);
+  // a chosen style goes first and its sample is attached to the job as a style reference
+  const created = await s.draft({ fields: { styleId: id } });
+  const d = await s.settle((await created.json()).id);
+  assert.equal(d.directions[0].styleId, id);
+  const ready = await s.ready(d.id, 0);
+  const res = await s.post("/api/jobs", { draftId: d.id, frames: ready.frames }, { "Idempotency-Key": randomUUID() });
+  const job = await res.json();
+  assert.equal(job.params.styleRef, "style-ref.png");
+  assert.equal((await s.request(`/api/styles/${id}`, { method: "DELETE" })).status, 200);
+  assert.equal((await s.request(`/api/styles/wabi`, { method: "DELETE" })).status, 400);
+  assert.equal((await s.draft({ fields: { styleId: "nope" } })).status, 400);
 });
 
 test("outputs require login; missing output fails and refunds", async (t) => {
@@ -305,14 +344,15 @@ test("public-origin mode rejects other origins and sets a secure cookie", async 
   assert.equal(await status({ Host: "workspace.example", Origin: "https://workspace.example" }), 200);
 });
 
-test("API mode sends layout sketch for AI text and upscale keeps working", async (t) => {
+test("API mode: brief carries the visual system and exact text; covers feed the library", async (t) => {
   const sent = [];
   const providers = createProviders({
     env: { IMAGE_API_BASE_URL: "https://relay.example", IMAGE_API_KEY: "private-test-key", IMAGE_API_MODEL_2K: "m25", IMAGE_API_MODEL_4K: "m20" },
     codexCheck: async () => ({ ready: true }),
     fetchImpl: async (url, init) => {
       if (url.pathname.endsWith("models")) return Response.json({ data: [{ id: "m25" }, { id: "m20" }] });
-      sent.push({ path: url.pathname, model: init.body.get("model"), prompt: init.body.get("prompt"), images: init.body.getAll("image[]").map((f) => f.name) });
+      const json = typeof init.body === "string" ? JSON.parse(init.body) : null;
+      sent.push({ path: url.pathname, model: json?.model || init.body.get("model"), prompt: json?.prompt || init.body.get("prompt"), images: json ? [] : init.body.getAll("image[]").map((f) => f.name) });
       return Response.json({ data: [{ b64_json: image.toString("base64") }] });
     },
   });
@@ -321,28 +361,35 @@ test("API mode sends layout sketch for AI text and upscale keeps working", async
     fields: { count: "2" },
     extra: { providerMode: "api", resolution: "2K" },
     edit: (f) => {
-      f[0].textMode = "ai";
-      f[0].layout = "top";
-      f[0].texts = [{ role: "headline", text: "一键开盖" }];
-      f[1].textMode = "overlay";
-      f[1].layout = "bottom";
-      f[1].texts = [{ role: "headline", text: "保温12小时" }];
+      f[0] = { ...f[0], textMode: "ai", texts: [{ role: "headline", text: "一键开盖" }] };
+      f[1] = { ...f[1], textMode: "overlay", layout: "bottom", texts: [{ role: "headline", text: "保温12小时" }] };
     },
   });
   const done = await s.terminal((await res.json()).id);
   assert.equal(done.status, "succeeded", done.error);
-  assert.deepEqual(sent[0].images, ["input-0.png", "layout-1.png"]);
+  assert.deepEqual(sent[0].images, ["input-0.png"]);
   assert.match(sent[0].prompt, /"一键开盖"/);
-  assert.match(sent[0].prompt, /版式稿/);
-  assert.deepEqual(sent[1].images, ["input-0.png"]);
+  assert.match(sent[0].prompt, /【视觉系统/);
   assert.match(sent[1].prompt, /后期会在这里排字/);
   assert.doesNotMatch(sent[1].prompt, /保温12小时/);
-  assert.equal(done.params.imageModel, "m25");
+  // generate a cover for a built-in style: text-only request, then it shows in the library
+  const cover = await s.post("/api/styles/wabi/cover", {}, { "Idempotency-Key": randomUUID() });
+  assert.equal(cover.status, 202, await cover.clone().text());
+  const coverDone = await s.terminal((await cover.json()).id);
+  assert.equal(coverDone.status, "succeeded", coverDone.error);
+  assert.equal(sent.at(-1).path, "/v1/images/generations");
+  assert.match(sent.at(-1).prompt, /侘寂|wabi/);
+  const wabi = await (await s.request("/api/styles/wabi")).json();
+  assert.equal(wabi.cover, "/api/styles/wabi/cover");
+  // the next job using wabi attaches the cover as a style reference
+  const next = await s.submit({ fields: { styleId: "wabi" }, extra: { providerMode: "api", resolution: "2K" } });
+  const nextDone = await s.terminal((await next.json()).id);
+  assert.equal(nextDone.status, "succeeded", nextDone.error);
+  assert.deepEqual(sent.at(-1).images, ["input-0.png", "style-ref.png"]);
+  assert.match(sent.at(-1).prompt, /风格样图/);
   const up = await s.post(`/api/jobs/${done.id}/upscale`, { asset: "image-1.png" }, { "Idempotency-Key": randomUUID() });
   assert.equal(up.status, 202, await up.clone().text());
-  const upDone = await s.terminal((await up.json()).id);
-  assert.equal(upDone.status, "succeeded", upDone.error);
+  assert.equal((await s.terminal((await up.json()).id)).status, "succeeded");
   assert.equal(sent.at(-1).model, "m20");
-  const state = await (await s.request("/api/workspace")).text();
-  assert.doesNotMatch(state, /private-test-key/);
+  assert.doesNotMatch(await (await s.request("/api/workspace")).text(), /private-test-key/);
 });

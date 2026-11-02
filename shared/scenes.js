@@ -6,30 +6,28 @@ export const SCENES = {
     tagline: "主图 · 场景图 · 卖点图",
     mainLabel: "商品原图",
     mainRequired: true,
-    copyLabel: "商品文案 / 卖点",
+    copyLabel: "一句话说明（可选）",
     copyPlaceholder:
-      "随便写，AI 会帮你整理。例如：\n316 不锈钢保温杯，保温 12 小时，一键开盖，500ml，适合通勤和健身",
+      "例如：品牌叫栖光，手作陶土香薰蜡烛，主打安静、治愈。不写也行，AI 会先看图分析。",
     unit: "张",
     counts: [1, 2, 3, 4],
     defaultCount: 2,
     sizes: ["1:1", "3:4"],
     defaultSize: "1:1",
-    styles: ["干净白底", "高级质感", "温馨生活", "清新自然", "科技感", "国潮", "极简", "节日氛围"],
   },
   detail: {
     name: "详情页",
-    tagline: "AI 拆屏 · 长图 + 切片",
+    tagline: "AI 分镜 · 竖版分屏 · 拼长图",
     mainLabel: "商品原图",
     mainRequired: true,
-    copyLabel: "商品介绍 / 卖点",
+    copyLabel: "商品介绍（可选）",
     copyPlaceholder:
-      "把你知道的都写上：材质、功能、规格、适合谁、怎么用。AI 会拆成每一屏的标题和说明。",
+      "知道多少写多少：品牌名、材质、功能、规格、适合谁。不写也行，AI 会先看图分析。",
     unit: "屏",
-    counts: [3, 4, 5, 6],
-    defaultCount: 4,
-    sizes: ["1:1"],
-    defaultSize: "1:1",
-    styles: ["干净白底", "高级质感", "温馨生活", "清新自然", "科技感", "国潮", "极简", "母婴柔和"],
+    counts: [4, 5, 6],
+    defaultCount: 6,
+    sizes: ["3:4"],
+    defaultSize: "3:4",
   },
   poster: {
     name: "海报",
@@ -44,7 +42,6 @@ export const SCENES = {
     defaultCount: 1,
     sizes: ["3:4", "1:1", "16:9"],
     defaultSize: "3:4",
-    styles: ["复古", "大字报", "清新插画", "高级极简", "国潮", "节日喜庆", "潮流撞色", "手绘"],
   },
   interior: {
     name: "装修效果",
@@ -59,7 +56,6 @@ export const SCENES = {
     defaultCount: 1,
     sizes: ["16:9", "3:4", "1:1"],
     defaultSize: "16:9",
-    styles: ["原木风", "奶油风", "现代简约", "侘寂风", "新中式", "法式复古", "工业风", "轻奢"],
   },
 };
 
@@ -73,6 +69,7 @@ export const LAYOUTS = {
   right: "文字在右",
   center: "文字居中",
   none: "不放文字",
+  free: "按风格排版",
 };
 
 export const TEXT_MODES = {
@@ -85,7 +82,8 @@ export const TEXT_ROLES = {
   headline: { name: "主标题", max: 16 },
   sub: { name: "副标题", max: 28 },
   point: { name: "卖点", max: 16 },
-  body: { name: "说明", max: 60 },
+  body: { name: "说明", max: 80 },
+  tag: { name: "小标/英文", max: 30 },
   price: { name: "价格/优惠", max: 20 },
   cta: { name: "行动号召", max: 12 },
   footer: { name: "落款/时间/地址", max: 40 },
@@ -121,14 +119,7 @@ export function canvasSize(size) {
   return { "1:1": [1024, 1024], "3:4": [768, 1024], "16:9": [1344, 756] }[size] || [1024, 1024];
 }
 
-// Detail pages: the image model only draws the headline; the body is typeset below the image.
-export function textsForImage(skillId, frame) {
-  if (frame.textMode !== "ai") return [];
-  return skillId === "detail"
-    ? frame.texts.filter((t) => t.role === "headline")
-    : frame.texts;
-}
-
-export function frameCost(skillId, costs) {
-  return costs[skillId]?.cost ?? 10;
+// Text the image model must draw (and Kimi must proofread).
+export function textsForImage(_skillId, frame) {
+  return frame.textMode === "ai" ? frame.texts : [];
 }
