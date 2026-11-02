@@ -2,8 +2,9 @@ import path from "node:path";
 import { deliver } from "./media.js";
 
 export class JobQueue {
-  constructor(store, jobsDir, runner) {
+  constructor(store, jobsDir, runner, afterRun = null) {
     this.store = store;
+    this.afterRun = afterRun;
     this.jobsDir = jobsDir;
     this.runner = runner;
     this.stopped = false;
@@ -24,6 +25,8 @@ export class JobQueue {
       const dir = path.join(this.jobsDir, job.id);
       try {
         await this.runner(job, dir, controller.signal);
+        controller.signal.throwIfAborted();
+        if (this.afterRun) await this.afterRun(job, dir, controller.signal, (phase) => this.store.phase(job.id, phase));
         controller.signal.throwIfAborted();
         this.store.phase(job.id, "检查图片与导出");
         const manifest = await deliver(job, dir);

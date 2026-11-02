@@ -3,6 +3,8 @@ import path from "node:path";
 import sharp from "sharp";
 import { createHash, randomUUID } from "node:crypto";
 import { AppError } from "./store.js";
+import { overlayTexts, detailCaption } from "./render.js";
+import { canvasSize } from "../shared/scenes.js";
 
 const OPTIONS = { limitInputPixels: 40_000_000, failOn: "warning" };
 const xml = (text) =>
@@ -57,163 +59,94 @@ export async function regularFile(root, name) {
   return target;
 }
 
-function textSvg(title, body, color) {
-  // Conservative character wrapping leaves generous room for CJK and Latin text.
-  const wrap = (s, n) =>
-    Array.from(s).reduce((a, c, i) => {
-      if (i % n === 0) a.push("");
-      a[a.length - 1] += c;
-      return a;
-    }, []);
-  const titles = wrap(title, 16);
-  const lines = wrap(body, 28);
-  if (titles.length > 2 || lines.length > 4)
-    throw new AppError("模块文案过长，请缩短标题或卖点");
-  return Buffer.from(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="750" height="300"><rect width="750" height="300" fill="#ffffff"/><rect x="42" y="36" width="6" height="42" fill="${color}"/><g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" fill="#17202c">${titles.map((s, i) => `<text x="68" y="${70 + i * 46}" font-size="36" font-weight="600">${xml(s)}</text>`).join("")}${lines.map((s, i) => `<text x="48" y="${titles.length * 46 + 70 + i * 32}" font-size="23">${xml(s)}</text>`).join("")}</g></svg>`,
-  );
+async function readJson(file) {
+  try {
+    return JSON.parse(await fs.readFile(file, "utf8"));
+  } catch {
+    return null;
+  }
 }
+
+const captionTexts = (frame) =>
+  frame.textMode === "ai" ? frame.texts.filter((t) => t.role !== "headline") : frame.texts;
 
 export async function deliver(job, dir) {
   // Immutable export revisions: a failed re-layout cannot corrupt the last delivery.
+  const p = job.params;
   const exportId = "exports-" + randomUUID();
   const out = path.join(dir, exportId);
   await fs.mkdir(out, { recursive: true });
   const assets = [];
   const warnings = [];
-  const sourceDimensions = [];
-  const add = async (name, role) => {
-    const file = path.join(out, name),
-      bytes = await fs.readFile(file);
+  const accent = p.brandColor || "#e8541e";
+  const textCheck = (await readJson(path.join(dir, "text-check.json"))) || [];
+  const add = async (name, role, frame = null) => {
+    const bytes = await fs.readFile(path.join(out, name));
     const meta = await sharp(bytes, OPTIONS).metadata();
     assets.push({
       name,
       role,
+      frame,
       width: meta.width,
       height: meta.height,
       bytes: bytes.length,
       sha256: createHash("sha256").update(bytes).digest("hex"),
     });
   };
-  for (let i = 0; i < job.params.count; i++) {
+  const modules = [];
+  for (let i = 0; i < p.count; i++) {
     const source = await regularFile(dir, `result-${i + 1}.png`);
     const meta = await sharp(source, OPTIONS).metadata();
-    if (
-      !["png", "jpeg", "webp"].includes(meta.format) ||
-      (meta.pages || 1) > 1 ||
-      meta.width < 256 ||
-      meta.height < 256
-    )
+    if (!["png", "jpeg", "webp"].includes(meta.format) || (meta.pages || 1) > 1 || meta.width < 256 || meta.height < 256)
       throw new Error("生成的图片尺寸或格式不符合要求");
-    const actualSize = `${meta.width}x${meta.height}`;
-    sourceDimensions.push(actualSize);
-    if (job.params.requestedSize && actualSize !== job.params.requestedSize)
-      warnings.push(
-        `第 ${i + 1} 张请求 ${job.params.requestedSize}，实际返回 ${actualSize}。已保留真实像素，未放大为请求尺寸。`,
-      );
+    const actual = `${meta.width}x${meta.height}`;
+    if (p.requestedSize && actual !== p.requestedSize && p.operation !== "upscale")
+      warnings.push(`第 ${i + 1} 张请求 ${p.requestedSize}，实际返回 ${actual}，已保留真实像素。`);
+    const frame = p.frames?.[i] || { textMode: "none", texts: [], layout: "none" };
     const name = `image-${i + 1}.png`;
-    const dimensions =
-      job.params.skillId === "detail"
-        ? [750, 750]
-        : job.params.providerMode === "api"
-          ? [meta.width, meta.height]
-          : { "1:1": [1024, 1024], "3:4": [768, 1024], "16:9": [1344, 756] }[
-              job.params.size
-            ];
-    await sharp(source, OPTIONS)
-      .rotate()
-      .resize(...dimensions, { fit: "contain", background: "#ffffff" })
-      .png()
-      .toFile(path.join(out, name));
-    if (job.params.skillId === "detail") {
-      if (job.params.providerMode === "api") {
-        const originalName = `original-${i + 1}.png`;
-        await fs.copyFile(source, path.join(out, originalName));
-        await add(originalName, "original");
-      }
-      const module = job.params.modules[i];
-      const panel = textSvg(module.title, module.body, job.params.brandColor);
-      const image = await fs.readFile(path.join(out, name));
+    if (p.skillId === "detail") {
+      const square = await sharp(source, OPTIONS).rotate().resize(750, 750, { fit: "cover" }).png().toBuffer();
+      await fs.writeFile(path.join(out, name), square);
+      const caption = detailCaption(captionTexts(frame), accent);
+      const height = 750 + (caption?.height || 0);
       const moduleName = `module-${i + 1}.png`;
-      await sharp({
-        create: {
-          width: 750,
-          height: 1050,
-          channels: 3,
-          background: "#ffffff",
-        },
-      })
-        .composite([
-          { input: image, top: 0, left: 0 },
-          { input: panel, top: 750, left: 0 },
-        ])
+      await sharp({ create: { width: 750, height, channels: 3, background: "#ffffff" } })
+        .composite([{ input: square, top: 0, left: 0 }, ...(caption ? [{ input: caption.svg, top: 750, left: 0 }] : [])])
         .png()
         .toFile(path.join(out, moduleName));
-      await add(moduleName, "module");
-    } else await add(name, "image");
+      await add(moduleName, "module", i);
+      modules.push({ name: moduleName, height });
+      continue;
+    }
+    const dims = p.providerMode === "api" || p.operation === "upscale" ? [meta.width, meta.height] : canvasSize(p.size);
+    const base = await sharp(source, OPTIONS).rotate().resize(...dims, { fit: "cover" }).png().toBuffer();
+    if (frame.textMode === "overlay" && frame.texts.length)
+      await overlayTexts(base, { layout: frame.layout, texts: frame.texts, accent }, path.join(out, name));
+    else await fs.writeFile(path.join(out, name), base);
+    await add(name, "image", i);
   }
-  if (job.params.skillId === "detail") {
-    const moduleAssets = assets.filter((a) => a.role === "module");
-    await sharp({
-      create: {
-        width: 750,
-        height: 1050 * moduleAssets.length,
-        channels: 3,
-        background: "#ffffff",
-      },
-    })
-      .composite(
-        moduleAssets.map((a, i) => ({
-          input: path.join(out, a.name),
-          left: 0,
-          top: i * 1050,
-        })),
-      )
+  if (p.skillId === "detail") {
+    const total = modules.reduce((h, m) => h + m.height, 0);
+    let top = 0;
+    await sharp({ create: { width: 750, height: total, channels: 3, background: "#ffffff" } })
+      .composite(modules.map((m) => { const layer = { input: path.join(out, m.name), left: 0, top }; top += m.height; return layer; }))
       .png()
       .toFile(path.join(out, "detail-long.png"));
-    await add("detail-long.png", "long-preview");
+    await add("detail-long.png", "long", null);
   }
   const manifest = {
-    version: 1,
+    version: 2,
     exportId,
     jobId: job.id,
     sourceId: job.sourceId,
-    sourceAsset: job.params.sourceAsset || null,
-    sourceExportId: job.params.sourceExportId || null,
-    productName: job.params.productName,
-    poster: job.params.poster || null,
-    platform: job.params.platform,
+    productName: p.productName,
     generatedAt: new Date().toISOString(),
     assets,
-    generation: {
-      mode: job.params.providerMode || "codex",
-      model: job.params.imageModel || null,
-      requestedSize: job.params.requestedSize || null,
-      sourceDimensions,
-    },
-    workflow: job.params.workflow || null,
+    frames: p.frames || [],
+    textCheck,
+    generation: { mode: p.providerMode || "codex", model: p.imageModel || null, requestedSize: p.requestedSize || null },
     warnings,
-    checks: { decodable: true, exactCount: true, dimensions: true },
-    reviewRequired: [
-      ...(job.params.skillId === "interior"
-        ? [
-            "请核对建筑结构、门窗、梁柱、透视、保留对象与改造范围；效果图不是施工图",
-          ]
-        : [
-            "请核对商品外观、Logo 和细节是否与原图一致",
-            "请按实际发布平台确认尺寸与图片规则",
-          ]),
-      ...(job.params.skillId === "poster"
-        ? [
-            "请逐项核对海报中文字、价格、日期与联系方式，图片解码检查不代表文字校对通过",
-          ]
-        : []),
-    ],
-    modules: job.params.modules || [],
   };
-  await fs.writeFile(
-    path.join(out, "manifest.json"),
-    JSON.stringify(manifest, null, 2),
-  );
+  await fs.writeFile(path.join(out, "manifest.json"), JSON.stringify(manifest, null, 2));
   return manifest;
 }

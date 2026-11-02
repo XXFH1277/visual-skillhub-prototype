@@ -3,7 +3,7 @@ import path from "node:path";
 import sharp from "sharp";
 import { regularFile } from "./media.js";
 import { imageSize, upscaleSize } from "../shared/generation.js";
-import { preparePrompts } from "./skill-workflow.js";
+import { preparePrompts, frameInputs } from "./prompts.js";
 
 // The endpoint and credential are server-only configuration. Never accept either
 // from job parameters, and never echo upstream bodies into browser-visible errors.
@@ -119,7 +119,8 @@ export function createImageRunner(config, fetchImpl = fetch) {
         form.set("n", "1");
         form.set("response_format", "b64_json");
         form.set("prompt", prompts[i]);
-        for (const name of p.inputs) {
+        const files = p.operation === "upscale" ? p.inputs : frameInputs(p, i);
+        for (const name of files) {
           const file = await regularFile(dir, name);
           form.append(
             "image[]",
@@ -128,7 +129,7 @@ export function createImageRunner(config, fetchImpl = fetch) {
           );
         }
         // No automatic retries: a timeout does not prove the upstream did not bill.
-        const textOnly = p.inputs.length === 0;
+        const textOnly = files.length === 0;
         if (textOnly && p.skillId !== "poster")
           throw new Error("生图任务缺少参考素材");
         const requestBody = textOnly

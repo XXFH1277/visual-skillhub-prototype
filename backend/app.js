@@ -4,78 +4,52 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  randomBytes,
-  randomUUID,
-  createHash,
-  timingSafeEqual,
-} from "node:crypto";
+import { randomBytes, randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { Store, SKILLS, AppError } from "./store.js";
 import { normalizeUpload, regularFile, deliver } from "./media.js";
 import { JobQueue } from "./queue.js";
 import { createProviders } from "./providers.js";
-import { parsePoster } from "./poster.js";
-import { parseCreative, moduleDirection } from "./creation.js";
-import { snapshotWorkflow } from "./skill-workflow.js";
+import { createTextAI, compareTexts } from "./text-ai.js";
+import { sanitizeFrames } from "./planner.js";
+import { renderLayoutSketch } from "./render.js";
+import { SCENES, canvasSize, textsForImage } from "../shared/scenes.js";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const digest = (value) => createHash("sha256").update(value).digest();
 const text = (value, max, label, required = false) => {
-  if (
-    typeof value !== "string" ||
-    value.length > max ||
-    (required && !value.trim())
-  )
+  if (value == null) value = "";
+  if (typeof value !== "string" || value.length > max || (required && !value.trim()))
     throw new AppError(`${label}不能为空或超过 ${max} 字`);
   return value.trim();
 };
-function modules(value) {
-  let list;
-  try {
-    list = typeof value === "string" ? JSON.parse(value) : value;
-  } catch {
-    throw new AppError("模块文案格式错误");
+const DRAFT_TTL = 24 * 60 * 60 * 1000;
+
+function draftInput(body, existing = {}) {
+  const skillId = body.skillId ?? existing.skillId;
+  if (typeof skillId !== "string" || !Object.hasOwn(SCENES, skillId)) throw new AppError("请选择有效的场景");
+  const scene = SCENES[skillId];
+  let tags = body.styleTags ?? existing.styleTags ?? [];
+  if (typeof tags === "string") {
+    try {
+      tags = JSON.parse(tags);
+    } catch {
+      throw new AppError("风格标签格式错误");
+    }
   }
-  if (!Array.isArray(list) || list.length < 2 || list.length > 6)
-    throw new AppError("详情页需要 2–6 个模块");
-  return list.map((m, i) => ({
-    title: text(m?.title, 28, "模块标题", true),
-    body: text(m?.body ?? "", 100, "模块正文"),
-    ...moduleDirection(m, i),
-  }));
-}
-function parameters(body) {
-  const skillId = body.skillId;
-  if (skillId === "upscale")
-    throw new AppError("请从已完成图片的「提升至 4K」按钮创建任务");
-  if (!Object.hasOwn(SKILLS, skillId)) throw new AppError("请选择有效的技能");
-  const p = {
+  if (!Array.isArray(tags) || tags.length > 6 || tags.some((t) => typeof t !== "string" || t.length > 12))
+    throw new AppError("风格标签格式错误");
+  const count = Number(body.count ?? existing.count ?? scene.defaultCount);
+  const size = body.size ?? existing.size ?? scene.defaultSize;
+  if (!scene.counts.includes(count)) throw new AppError(`${scene.name}可选 ${scene.counts.join(" / ")} ${scene.unit}`);
+  if (!scene.sizes.includes(size)) throw new AppError("画幅无效");
+  return {
     skillId,
-    productName: text(body.productName, 60, "项目名称", true),
-    platform: text(body.platform, 40, "使用场景", true),
-    styleNote: text(body.styleNote ?? "", 1000, "风格说明"),
-    facts: text(body.facts ?? "", 1200, "已确认卖点"),
-    brandColor: body.brandColor || "#5755d9",
-    size: body.size || "1:1",
+    copy: text(body.copy ?? existing.copy, 1500, "文案"),
+    styleNote: text(body.styleNote ?? existing.styleNote, 300, "风格补充"),
+    styleTags: tags,
+    count,
+    size,
   };
-  if (!/^#[0-9a-f]{6}$/i.test(p.brandColor))
-    throw new AppError("品牌颜色格式错误");
-  if (!["1:1", "3:4", "16:9"].includes(p.size))
-    throw new AppError("画幅比例无效");
-  if (skillId === "poster") p.poster = parsePoster(body.poster);
-  else p.creative = parseCreative(skillId, body.creative);
-  if (skillId === "interior" && p.creative.style === "custom" && !p.styleNote)
-    throw new AppError("自定义装修风格请填写风格说明");
-  if (skillId === "detail") {
-    p.modules = modules(body.modules);
-    p.count = p.modules.length;
-    p.size = "1:1";
-  } else {
-    p.count = Number(body.count);
-    if (!Number.isInteger(p.count) || p.count < 1 || p.count > 3)
-      throw new AppError("每次生成 1–3 张");
-  }
-  return p;
 }
 
 export async function createWorkspace({
@@ -85,6 +59,7 @@ export async function createWorkspace({
   provider,
   providers,
   publicOrigin = process.env.PUBLIC_ORIGIN || "",
+  ...options
 } = {}) {
   fs.mkdirSync(dataDir, { recursive: true });
   const jobsDir = path.join(dataDir, "jobs");
@@ -125,7 +100,31 @@ export async function createWorkspace({
       .prepare("SELECT value FROM settings WHERE key='generation-provider'")
       .get()?.value || registry.defaultMode;
   registry.validate(providerMode);
-  const queue = new JobQueue(store, jobsDir, registry.run);
+  const textAI =
+    options.textAI ||
+    createTextAI({ codexReady: () => registry.describe("codex").ready });
+  // After generation: let the vision model read back text the image model drew.
+  const proofread = async (job, dir, signal, phase) => {
+    const p = job.params;
+    if (!p.frames || !textAI.describe().ready) return;
+    const targets = p.frames.map((f, i) => [i, textsForImage(p.skillId, f)]).filter(([, t]) => t.length);
+    if (!targets.length) return;
+    phase("核对图中文字");
+    const results = [];
+    for (const [i, expected] of targets) {
+      try {
+        const seen = await textAI.readTexts(path.join(dir, `result-${i + 1}.png`), { signal });
+        results.push({ frame: i, ...compareTexts(expected, seen) });
+      } catch (error) {
+        if (signal.aborted) throw error;
+        results.push({ frame: i, ok: null, error: "文字校对暂不可用" });
+      }
+    }
+    await fsp.writeFile(path.join(dir, "text-check.json"), JSON.stringify(results));
+  };
+  const queue = new JobQueue(store, jobsDir, registry.run, proofread);
+  const draftsDir = path.join(dataDir, "drafts");
+  fs.mkdirSync(draftsDir, { recursive: true });
   const app = express();
   app.disable("x-powered-by");
   const publicURL = publicOrigin ? new URL(publicOrigin) : null;
@@ -171,7 +170,7 @@ export async function createWorkspace({
     }
     next();
   });
-  app.use(express.json({ limit: "24kb" }));
+  app.use(express.json({ limit: "96kb" }));
   const cookieOptions = {
     httpOnly: true,
     sameSite: "strict",
@@ -228,6 +227,7 @@ export async function createWorkspace({
       skills: SKILLS,
       provider: registry.describe(providerMode),
       providers: registry.list(),
+      textAI: textAI.describe(),
       mode: "private-workspace",
     }),
   );
@@ -260,29 +260,11 @@ export async function createWorkspace({
       return res.status(400).json({ error: "缺少有效的提交编号" });
     const old = store.byKey(key);
     if (old) return res.status(200).json(old);
-    if (uploading >= 2)
-      return res.status(429).json({ error: "正在处理上传，请稍后重试" });
-    uploading++;
-    let released = false;
-    const release = () => {
-      if (!released) {
-        released = true;
-        uploading--;
-      }
-    };
-    res.once("finish", release);
-    res.once("close", release);
     next();
   };
   const upload = multer({
     storage: multer.memoryStorage(),
-    limits: {
-      fileSize: 10 * 1024 * 1024,
-      files: 4,
-      fields: 16,
-      parts: 20,
-      fieldSize: 8192,
-    },
+    limits: { fileSize: 10 * 1024 * 1024, files: 4, fields: 16, parts: 20, fieldSize: 8192 },
     fileFilter: (_req, file, done) =>
       done(
         ["image/png", "image/jpeg", "image/webp"].includes(file.mimetype)
@@ -294,74 +276,146 @@ export async function createWorkspace({
     { name: "main", maxCount: 1 },
     { name: "reference", maxCount: 3 },
   ]);
-  app.post("/api/jobs", admission, upload, async (req, res) => {
-    const params = parameters(req.body || {});
-    Object.assign(
-      params,
-      registry.selection({ ...req.body, size: params.size }, providerMode),
-    );
-    if (!req.files?.main?.length && params.skillId !== "poster")
-      throw new AppError(
-        params.skillId === "interior" ? "请上传现状空间照片" : "请上传商品主图",
+
+  // ---- Drafts: upload → AI plan (async) → merchant edits → confirm ----
+  const drafts = new Map();
+  let planning = 0;
+  const draftView = (d) => ({
+    id: d.id,
+    status: d.status,
+    input: d.input,
+    hasMainImage: d.hasMainImage,
+    refCount: d.inputs.length - (d.hasMainImage ? 1 : 0),
+    plan: d.plan,
+    via: d.via,
+    warning: d.warning,
+    error: d.error,
+  });
+  async function runPlan(d) {
+    d.status = "planning";
+    d.error = d.warning = null;
+    planning++;
+    try {
+      const images = d.inputs.map((n) => path.join(d.dir, n));
+      const result = await textAI.plan(
+        { ...d.input, hasMain: d.hasMainImage, refCount: d.inputs.length - (d.hasMainImage ? 1 : 0) },
+        images,
       );
-    params.hasMainImage = !!req.files?.main?.length;
-    const id = randomUUID(),
-      dir = path.join(jobsDir, id);
+      Object.assign(d, { status: "ready", plan: result.plan, via: result.via, warning: result.warning || null });
+    } catch (error) {
+      Object.assign(d, { status: "failed", error: "策划失败：" + error.message });
+    } finally {
+      planning--;
+      d.updatedAt = Date.now();
+    }
+  }
+  const getDraft = (id) => {
+    const d = drafts.get(id);
+    if (!d || Date.now() - d.createdAt > DRAFT_TTL) throw new AppError("草稿已过期，请重新上传", 404);
+    return d;
+  };
+  const sweepDrafts = async () => {
+    for (const [id, d] of drafts)
+      if (Date.now() - d.createdAt > DRAFT_TTL) drafts.delete(id);
+    for (const name of await fsp.readdir(draftsDir).catch(() => []))
+      if (!drafts.has(name)) await fsp.rm(path.join(draftsDir, name), { recursive: true, force: true });
+  };
+  await sweepDrafts();
+  const sweeper = setInterval(() => sweepDrafts().catch(() => {}), 60 * 60 * 1000);
+  sweeper.unref();
+
+  app.post("/api/drafts", (req, res, next) => {
+    if (uploading >= 2 || planning >= 3)
+      return res.status(429).json({ error: "正在处理其他请求，请稍后重试" });
+    uploading++;
+    let done = false;
+    const release = () => {
+      if (!done) {
+        done = true;
+        uploading--;
+      }
+    };
+    res.once("finish", release);
+    res.once("close", release);
+    next();
+  }, upload, async (req, res) => {
+    const input = draftInput(req.body || {});
+    const scene = SCENES[input.skillId];
+    const hasMainImage = !!req.files?.main?.length;
+    if (scene.mainRequired && !hasMainImage) throw new AppError(`请上传${scene.mainLabel}`);
+    const id = randomUUID();
+    const dir = path.join(draftsDir, id);
     await fsp.mkdir(dir);
     try {
-      params.inputs = [];
-      for (const [index, file] of [
-        ...(req.files?.main || []),
-        ...(req.files?.reference || []),
-      ].entries()) {
+      const inputs = [];
+      for (const [index, file] of [...(req.files?.main || []), ...(req.files?.reference || [])].entries()) {
         const name = `input-${index}.png`;
         await normalizeUpload(file.buffer, path.join(dir, name));
-        params.inputs.push(name);
+        inputs.push(name);
       }
-      await snapshotWorkflow(params, dir);
-      const job = store.create(params, req.get("Idempotency-Key"), { id });
-      if (job.id !== id) await fsp.rm(dir, { recursive: true, force: true });
-      res.status(202).json(job);
-      queue.kick();
+      const d = { id, dir, input, hasMainImage, inputs, createdAt: Date.now(), status: "planning" };
+      drafts.set(id, d);
+      runPlan(d);
+      res.status(202).json(draftView(d));
     } catch (error) {
       await fsp.rm(dir, { recursive: true, force: true });
       throw error;
     }
   });
-  app.post("/api/jobs/:id/retry", admission, async (req, res) => {
-    const source = store.get(req.params.id);
-    if (!source) throw new AppError("任务不存在", 404);
-    if (["queued", "running"].includes(source.status))
-      throw new AppError("请等待当前任务结束");
-    const params = { ...source.params };
-    const choice =
-      source.params.operation === "upscale"
-        ? registry.upscaleSelection(
-            source.params.sourceWidth,
-            source.params.sourceHeight,
-          )
-        : registry.selection(
-            { ...source.params, ...req.body },
-            source.params.providerMode || "codex",
-          );
-    delete params.imageModel;
-    delete params.resolution;
-    delete params.requestedSize;
-    Object.assign(params, choice);
+  app.get("/api/drafts/:id", (req, res) => res.json(draftView(getDraft(req.params.id))));
+  app.post("/api/drafts/:id/replan", (req, res) => {
+    const d = getDraft(req.params.id);
+    if (d.status === "planning") return res.json(draftView(d));
+    if (planning >= 3) throw new AppError("正在处理其他请求，请稍后重试", 429);
+    d.input = draftInput({ ...req.body, skillId: d.input.skillId }, d.input);
+    runPlan(d);
+    res.json(draftView(d));
+  });
+  app.get("/api/drafts/:id/input/:n", async (req, res) => {
+    const d = getDraft(req.params.id);
+    const name = d.inputs[Number(req.params.n)];
+    if (!name) throw new AppError("文件不存在", 404);
+    res.sendFile(await regularFile(d.dir, name), { dotfiles: "allow" });
+  });
+
+  // Copy inputs and render the confirmed layout sketches into a new job folder.
+  async function prepareJob(dir, params, sourceDir) {
+    for (const name of params.inputs)
+      await fsp.copyFile(await regularFile(sourceDir, name), path.join(dir, name));
+    const [width, height] = canvasSize(params.size);
+    params.layoutFiles = [];
+    for (const [i, frame] of params.frames.entries()) {
+      const texts = textsForImage(params.skillId, frame);
+      if (!texts.length) {
+        params.layoutFiles.push(null);
+        continue;
+      }
+      const name = `layout-${i + 1}.png`;
+      await renderLayoutSketch(
+        {
+          width,
+          height,
+          layout: frame.layout,
+          texts,
+          mainImage: params.hasMainImage ? path.join(dir, params.inputs[0]) : null,
+          accent: params.brandColor,
+        },
+        path.join(dir, name),
+      );
+      params.layoutFiles.push(name);
+    }
+  }
+  async function createJob(req, res, params, sourceDir, sourceId = null) {
+    Object.assign(
+      params,
+      registry.selection({ providerMode: req.body?.providerMode, resolution: req.body?.resolution, size: params.size }, providerMode),
+    );
     const id = randomUUID(),
       dir = path.join(jobsDir, id);
     await fsp.mkdir(dir);
     try {
-      for (const name of source.params.inputs)
-        await fsp.copyFile(
-          await regularFile(path.join(jobsDir, source.id), name),
-          path.join(dir, name),
-        );
-      await snapshotWorkflow(params, dir);
-      const job = store.create(params, req.get("Idempotency-Key"), {
-        id,
-        sourceId: source.id,
-      });
+      await prepareJob(dir, params, sourceDir);
+      const job = store.create(params, req.get("Idempotency-Key"), { id, sourceId });
       if (job.id !== id) await fsp.rm(dir, { recursive: true, force: true });
       res.status(202).json(job);
       queue.kick();
@@ -369,6 +423,54 @@ export async function createWorkspace({
       await fsp.rm(dir, { recursive: true, force: true });
       throw error;
     }
+  }
+  const nameFrom = (frames, skillId) =>
+    (frames[0]?.texts.find((t) => t.role === "headline")?.text || SCENES[skillId].name).slice(0, 40);
+
+  app.post("/api/jobs", admission, async (req, res) => {
+    const d = getDraft(String(req.body?.draftId || ""));
+    if (d.status !== "ready") throw new AppError("请等 AI 策划完成后再出图");
+    const frames = sanitizeFrames(req.body?.frames, d.input.skillId, d.input.count, { strict: true });
+    const params = {
+      version: 2,
+      skillId: d.input.skillId,
+      productName: text(req.body?.productName, 40, "作品名称") || nameFrom(frames, d.input.skillId),
+      copy: d.input.copy,
+      styleNote: d.input.styleNote,
+      styleTags: d.input.styleTags,
+      size: d.input.size,
+      count: frames.length,
+      frames,
+      brandColor: "#e8541e",
+      hasMainImage: d.hasMainImage,
+      inputs: [...d.inputs],
+      planVia: d.via,
+    };
+    await createJob(req, res, params, d.dir);
+  });
+  // Regenerate the whole job, or a single frame (optionally switching it to program text).
+  app.post("/api/jobs/:id/retry", admission, async (req, res) => {
+    const source = store.get(req.params.id);
+    if (!source) throw new AppError("任务不存在", 404);
+    if (["queued", "running"].includes(source.status)) throw new AppError("请等待当前任务结束");
+    if (source.params.operation === "upscale") throw new AppError("请从原图重新提升");
+    if (!source.params.frames) throw new AppError("这是旧版任务，请用新流程重新创建");
+    let frames = source.params.frames;
+    const index = req.body?.frame;
+    if (index != null) {
+      if (!Number.isInteger(index) || !frames[index]) throw new AppError("图片序号无效");
+      const frame = { ...frames[index] };
+      if (req.body?.textMode === "overlay") {
+        frame.textMode = "overlay";
+        if (source.params.skillId === "detail") frame.layout = "none";
+      }
+      frames = [frame];
+    }
+    const params = { ...source.params, frames, count: frames.length };
+    for (const k of ["imageModel", "resolution", "requestedSize", "layoutFiles"]) delete params[k];
+    if (index != null) params.productName = `${source.params.productName.slice(0, 30)} · 第${index + 1}张重出`;
+    req.body = { providerMode: source.params.providerMode, resolution: source.params.resolution, ...req.body };
+    await createJob(req, res, params, path.join(jobsDir, source.id), source.id);
   });
   app.post("/api/jobs/:id/upscale", admission, async (req, res) => {
     const source = store.get(req.params.id);
@@ -422,31 +524,31 @@ export async function createWorkspace({
     queue.cancel(req.params.id);
     res.json({ ok: true });
   });
+  // Free edits for text the program typesets (detail captions, overlay frames).
   const exportLocks = new Set();
-  app.post("/api/jobs/:id/copy", async (req, res) => {
+  app.post("/api/jobs/:id/texts", async (req, res) => {
     const job = store.get(req.params.id);
-    if (!job || job.status !== "succeeded" || job.params.skillId !== "detail")
-      throw new AppError("该任务不能修改详情页文案");
-    if (exportLocks.has(job.id))
-      throw new AppError("正在重新排版，请稍候", 409);
-    const copy = modules(req.body?.modules).map((m, i) => ({
-      ...m,
-      ...moduleDirection(job.params.modules[i], i),
-    }));
-    if (copy.length !== job.params.count)
-      throw new AppError("模块数量不可改变");
+    if (!job || job.status !== "succeeded" || !job.params.frames)
+      throw new AppError("该任务不能修改文字");
+    if (exportLocks.has(job.id)) throw new AppError("正在重新排版，请稍候", 409);
+    const edits = req.body?.frames;
+    if (!Array.isArray(edits) || edits.length !== job.params.frames.length)
+      throw new AppError("文字格式错误");
+    const merged = job.params.frames.map((f, i) => {
+      const locked = textsForImage(job.params.skillId, f);
+      if (!edits[i]) return f;
+      const editable = f.texts.filter((t) => !locked.includes(t));
+      if (!editable.length) return f;
+      const next = sanitizeFrames([{ ...f, texts: [...locked, ...(edits[i].texts || [])] }], job.params.skillId, 1, { strict: true })[0];
+      return { ...f, texts: next.texts };
+    });
     exportLocks.add(job.id);
     try {
-      const changed = { ...job, params: { ...job.params, modules: copy } };
+      const changed = { ...job, params: { ...job.params, frames: merged } };
       const manifest = await deliver(changed, path.join(jobsDir, job.id));
       store.db
         .prepare("UPDATE jobs SET params=?,manifest=?,updated_at=? WHERE id=?")
-        .run(
-          JSON.stringify(changed.params),
-          JSON.stringify(manifest),
-          new Date().toISOString(),
-          job.id,
-        );
+        .run(JSON.stringify(changed.params), JSON.stringify(manifest), new Date().toISOString(), job.id);
       res.json(store.get(job.id));
     } finally {
       exportLocks.delete(job.id);
@@ -473,15 +575,13 @@ export async function createWorkspace({
       res.download(file, name, { dotfiles: "allow" });
     else res.sendFile(file, { dotfiles: "allow" });
   });
-  app.get("/api/jobs/:id/input", async (req, res) => {
+  // Uploaded material and layout sketches of a job.
+  app.get("/api/jobs/:id/source/:name", async (req, res) => {
     const job = store.get(req.params.id);
-    if (!job) throw new AppError("任务不存在", 404);
-    if (!job.params.inputs.length)
-      throw new AppError("此任务没有上传素材", 404);
-    res.sendFile(
-      await regularFile(path.join(jobsDir, job.id), job.params.inputs[0]),
-      { dotfiles: "allow" },
-    );
+    const name = req.params.name;
+    if (!job || !([...(job.params.inputs || []), ...(job.params.layoutFiles || [])].includes(name)))
+      throw new AppError("文件不存在", 404);
+    res.sendFile(await regularFile(path.join(jobsDir, job.id), name), { dotfiles: "allow" });
   });
   app.use("/api", (_req, res) => res.status(404).json({ error: "接口不存在" }));
   app.use(express.static(path.join(ROOT, "dist"), { index: "index.html" }));
@@ -508,6 +608,7 @@ export async function createWorkspace({
     queue,
     secretFile,
     close: async () => {
+      clearInterval(sweeper);
       await queue.close();
       store.close();
     },

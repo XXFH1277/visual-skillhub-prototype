@@ -1,9 +1,14 @@
+import fs from "node:fs";
 import { createWorkspace } from "./app.js";
 const workspace = await createWorkspace();
 const port = Number(process.env.PORT) || 8787;
 const server = workspace.app.listen(port, "127.0.0.1", () => {
   console.log(`SkillHub: http://localhost:${port}`);
-  console.log(`本机访问码文件（请勿公开）：${workspace.secretFile}`);
+  console.log(`访问码文件：${workspace.secretFile}`);
+  try {
+    if (!process.env.ACCESS_CODE) console.log(`本机访问码：${fs.readFileSync(workspace.secretFile, "utf8").trim()}`);
+  } catch {}
+  console.log("关闭这个窗口即可停止服务。");
 });
 server.requestTimeout = 60_000;
 server.headersTimeout = 15_000;
