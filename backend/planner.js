@@ -160,8 +160,16 @@ const STRUCTURE = {
   poster: (n) => `出 ${n} 张海报方案，文字内容相同，版式和主视觉不同。文字层级：主标题、副标题、正文/活动信息、行动号召、落款。`,
   interior: (n) => `出 ${n} 个改造方案：同一空间同一视角，每个方案换一种配色或软装组合。不加任何文字。`,
 };
+const lean = new Map();
+function leanGuide(skillId) {
+  if (!lean.has(skillId)) {
+    const read = (file) => fs.readFileSync(new URL(`../skills/${file}`, import.meta.url), "utf8");
+    lean.set(skillId, [read(`runtime/${skillId}/SKILL.md`), section(read(CRAFT), "## 〇、五要素组装法则（GPT-Image-2.5 基线）")].join("\n\n"));
+  }
+  return lean.get(skillId);
+}
 export function storyboardMessages(input, result, chosen) {
-  const system = `${sceneGuide(input.skillId)}
+  const system = `${leanGuide(input.skillId)}
 
 ---
 你现在按选定的创意方向写分镜。

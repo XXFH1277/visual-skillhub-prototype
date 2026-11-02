@@ -266,7 +266,7 @@ function updateAction() {
   if (d && ["analyzing", "storyboarding"].includes(d.status)) {
     b.textContent = d.status === "analyzing" ? "AI 正在看图…" : "AI 正在写分镜…";
     b.disabled = true;
-    note.textContent = "通常 20–60 秒";
+    note.textContent = d.status === "analyzing" ? "通常 20–60 秒" : "通常 1–2 分钟";
     return;
   }
   if (!d || d.status === "failed" || state.stale || state.filesDirty) {
@@ -391,7 +391,7 @@ function renderPlan() {
     <div class="directions">${d.directions.map((dir, i) => directionCard(dir, i, d.chosen === i)).join("")}</div>
     ${
       d.status === "storyboarding"
-        ? `<section class="card planning"><div class="spinner"></div><div><b>AI 正在写分镜</b><p class="muted">按选定方向，规划每一张的画面、排版和文字</p></div></section>`
+        ? `<section class="card planning"><div class="spinner"></div><div><b>AI 正在写分镜</b><p class="muted">按选定方向，规划每一张的画面、排版和文字（通常 1–2 分钟）</p></div></section>`
         : d.status === "ready" && state.frames
           ? `<section class="plan-head"><h2>分镜 <small class="muted">${esc(d.directions[d.chosen].conceptName)}</small></h2>
               ${d.polishedCopy ? `<details class="polished"><summary>AI 整理的文案</summary><pre>${esc(d.polishedCopy)}</pre></details>` : ""}
