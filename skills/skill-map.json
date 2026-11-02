@@ -1,0 +1,5 @@
+{
+ "product":["gpt-image2-ecommerce/SKILL.md","gpt-image2-ecommerce/references/craft.md","gpt-image2-ecommerce/references/style-blacklist.md","gpt-image2-ecommerce/references/platform-constraints.md"],
+ "detail":["ecommerce-detail-page-generator/SKILL.md","ecommerce-detail-page-generator/references/prompt-recipes.md","ecommerce-detail-page-generator/references/platform-style-guide.md","1click-ecom-detailpage/SKILL.md"],
+ "poster":["gpt-image2-ecommerce/references/campaign-style-lock.md","gpt-image2-ecommerce/references/craft.md","gpt-image2-ecommerce/references/style-blacklist.md"]
+}
