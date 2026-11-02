@@ -367,7 +367,8 @@ test("API mode: brief carries the visual system and exact text; covers feed the 
   });
   const done = await s.terminal((await res.json()).id);
   assert.equal(done.status, "succeeded", done.error);
-  assert.deepEqual(sent[0].images, ["input-0.png"]);
+  assert.deepEqual(sent[0].images, ["input-0.png", "style-ref.png"]);
+  assert.deepEqual(sent[1].images, ["input-0.png"]);
   assert.match(sent[0].prompt, /"一键开盖"/);
   assert.match(sent[0].prompt, /【视觉系统/);
   assert.match(sent[1].prompt, /后期会在这里排字/);
@@ -396,5 +397,7 @@ test("API mode: brief carries the visual system and exact text; covers feed the 
   assert.equal(sent.at(-1).model, "m20");
   assert.doesNotMatch(await (await s.request("/api/workspace")).text(), /private-test-key/);
   const batch = await (await s.post("/api/styles-covers", { providerMode: "api" })).json();
-  assert.ok(batch.missing >= 25 && batch.missing <= 30, JSON.stringify(batch));
+  assert.equal(batch.missing, 0, "bundled covers ship with the repo");
+  const all = (await (await s.request("/api/styles")).json()).styles;
+  assert.equal(all.filter((x) => x.source === "builtin" && !x.types.includes("interior") && !x.cover).length, 0);
 });

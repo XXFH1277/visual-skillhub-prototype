@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { STYLES, CATEGORIES, IMAGE_TYPES, TONES } from "../shared/styles.js";
 import { AppError } from "./store.js";
 
@@ -39,9 +40,13 @@ export class StyleLibrary {
       created_at TEXT NOT NULL)`);
     this.db.exec("UPDATE styles SET status='failed', error='服务重启中断了分析，请删除后重新上传' WHERE status='analyzing'");
   }
+  // A cover generated or uploaded in this workspace wins over the bundled default.
   coverFile(id) {
     const file = path.join(this.dir, `${id}.png`);
-    return fs.existsSync(file) ? file : null;
+    if (fs.existsSync(file)) return file;
+    if (!/^[a-z0-9-]+$/.test(id)) return null;
+    const bundled = fileURLToPath(new URL(`../public/styles/${id}.jpg`, import.meta.url));
+    return fs.existsSync(bundled) ? bundled : null;
   }
   view(style, source, extra = {}) {
     return { ...style, source, cover: this.coverFile(style.id) ? `/api/styles/${style.id}/cover` : null, ...extra };

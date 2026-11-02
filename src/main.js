@@ -535,7 +535,7 @@ function styleModal(id) {
         ${s.status === "failed" ? `<p class="warn-text">${esc(s.error || "")}</p>` : ""}
         <dl><dt>道具材质</dt><dd>${esc(s.props)}</dd><dt>光线</dt><dd>${esc(s.light)}</dd><dt>机位构图</dt><dd>${esc(s.camera)}</dd><dt>字体排版</dt><dd>${esc(s.type)}</dd><dt>避免</dt><dd>${esc(s.avoid)}</dd><dt>提示词核心</dt><dd class="mono">${esc(s.core)}</dd>${s.prompt ? `<dt>原始提示词</dt><dd class="mono">${esc(s.prompt)}</dd>` : ""}</dl>
         <div class="row wrap">${scenes.map((sc) => `<button class="btn primary" data-use="${sc}">用它做${SCENES[sc].name}</button>`).join("")}
-          ${s.source === "builtin" && !s.cover && !s.types.includes("interior") ? `<button class="btn" id="make-cover">生成样图${codexReady ? "（本机 Codex，不扣积分）" : "（中转站，不扣积分）"}</button>` : ""}
+          ${s.source === "builtin" && !s.types.includes("interior") ? `<button class="btn" id="make-cover">${s.cover ? "重新生成样图" : "生成样图"}${codexReady ? "（本机 Codex，不扣积分）" : "（中转站，不扣积分）"}</button>` : ""}
           ${s.source === "upload" ? `<button class="link" id="del-style">删除</button>` : ""}</div>
       </div>
     </div>`);
