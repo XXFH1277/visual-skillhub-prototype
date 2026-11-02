@@ -92,3 +92,16 @@ test("program typesetting renders sketches and overlays", async () => {
   assert.equal((await sharp(over).metadata()).width, 500);
   await fs.rm(dir, { recursive: true, force: true });
 });
+
+test("relay model check switches to an available Kimi model", async () => {
+  const ai = createTextAI({
+    env: { KIMI_API_KEY: "k", KIMI_API_BASE_URL: "https://relay.example", KIMI_MODEL: "kimi-k3" },
+    fetchImpl: async (url) => {
+      assert.equal(url.href, "https://relay.example/v1/models");
+      return Response.json({ data: [{ id: "gpt-image-2.5" }, { id: "kimi-k2.6" }, { id: "kimi-k2.5" }] });
+    },
+  });
+  const state = await ai.check();
+  assert.equal(state.model, "kimi-k2.6");
+  assert.deepEqual(state.models, ["kimi-k2.6", "kimi-k2.5"]);
+});

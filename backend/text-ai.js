@@ -77,6 +77,7 @@ export function createTextAI({
 } = {}) {
   const config = textConfig(env);
   let lastError = null;
+  let available = null;
 
   async function viaApi({ system, text, images = [], json = false }, signal) {
     const content = [
@@ -146,7 +147,7 @@ export function createTextAI({
 
   const describe = () =>
     config
-      ? { ready: true, via: "kimi", model: config.model, label: `Kimi · ${config.model}`, lastError }
+      ? { ready: true, via: "kimi", model: config.model, label: `Kimi · ${config.model}`, lastError, models: available }
       : codexReady()
         ? { ready: true, via: "codex", label: "本机 Codex（临时，较慢）", lastError }
         : { ready: false, via: "rules", label: "未配置 Kimi", message: "未配置 Kimi：请在 .env 填写 KIMI_API_KEY", lastError };
@@ -164,8 +165,40 @@ export function createTextAI({
     }
   }
 
+  // Relays expose many models under one key: confirm the configured Kimi model exists,
+  // otherwise switch to the best available Kimi model with image input.
+  async function check() {
+    if (!config) return describe();
+    try {
+      const response = await fetchImpl(new URL("models", config.base), {
+        headers: { Authorization: `Bearer ${config.key}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!response.ok) {
+        await response.body?.cancel();
+        lastError = `Kimi 模型列表 HTTP ${response.status}`;
+        return describe();
+      }
+      const ids = ((await response.json())?.data || []).map((m) => m?.id).filter((id) => typeof id === "string");
+      available = ids.filter((id) => /kimi|moonshot/i.test(id));
+      if (ids.length && !ids.includes(config.model)) {
+        const prefer = ["kimi-k3", "kimi-k3.1-pro", "kimi-k2.6", "kimi-k2.5", "kimi-latest", "moonshot-v1-32k-vision-preview", "moonshot-v1-8k-vision-preview"];
+        const pick = prefer.find((id) => ids.includes(id)) || available.find((id) => /vision|k3|k2\.[5-9]/i.test(id));
+        if (pick) {
+          console.log(`Kimi 模型 ${config.model} 不在列表中，改用 ${pick}`);
+          config.model = pick;
+        } else lastError = `没有找到 ${config.model}，可用的 Kimi 模型：${available.join("、") || "无"}`;
+      }
+    } catch (error) {
+      lastError = "Kimi 连接检查失败：" + error.message;
+    }
+    return describe();
+  }
+
   return {
     describe,
+    check,
     complete,
     // Returns { plan, via, warning? } — never throws for model problems; falls back to rules.
     async plan(input, images, { signal } = {}) {

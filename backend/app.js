@@ -103,6 +103,7 @@ export async function createWorkspace({
   const textAI =
     options.textAI ||
     createTextAI({ codexReady: () => registry.describe("codex").ready });
+  await textAI.check?.();
   // After generation: let the vision model read back text the image model drew.
   const proofread = async (job, dir, signal, phase) => {
     const p = job.params;
