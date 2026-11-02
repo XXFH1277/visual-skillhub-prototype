@@ -473,7 +473,7 @@ async function stylesPage() {
     `<div class="filter"><span>${label}</span><button class="chip ${!lib[field] ? "on" : ""}" data-f="${field}" data-v="">全部</button>${items
       .map(([v, n]) => `<button class="chip ${lib[field] === v ? "on" : ""}" data-f="${field}" data-v="${esc(v)}">${esc(n)}</button>`)
       .join("")}</div>`;
-  app.innerHTML = `<div class="page-head"><div><h1>风格库</h1><p class="muted">挑一个样子直接用；看到好图就传上来，AI 会拆成可复用的配方。</p></div><button class="btn primary" id="upload-style">＋ 上传好图</button></div>
+  app.innerHTML = `<div class="page-head"><div><h1>风格库</h1><p class="muted">挑一个样子直接用；看到好图就传上来，AI 会拆成可复用的配方。</p></div><div class="row wrap">${all.some((s) => s.source === "builtin" && !s.cover && !s.types.includes("interior")) ? `<button class="btn" id="all-covers">批量生成缺失样图</button>` : ""}<button class="btn primary" id="upload-style">＋ 上传好图</button></div></div>
   <section class="filters card">
     ${chips("cat", CATEGORIES.map((c) => [c, c]), "品类")}
     ${chips("type", Object.entries(IMAGE_TYPES), "类型")}
@@ -494,6 +494,13 @@ async function stylesPage() {
   $$("[data-mine]").forEach((b) => (b.onclick = () => ((lib.mine = b.dataset.mine === "1"), stylesPage())));
   $$("[data-style]").forEach((b) => (b.onclick = () => styleModal(b.dataset.style)));
   $("#upload-style").onclick = uploadModal;
+  $("#all-covers")?.addEventListener("click", (e) =>
+    busy(e.currentTarget, async () => {
+      const codex = workspace.providers.find((p) => p.mode === "codex")?.ready;
+      const r = await api("/styles-covers", json({ providerMode: codex ? "codex" : "api" }));
+      toast(`已排队 ${r.queued} 张样图（${codex ? "本机 Codex" : "中转站"}，不扣积分），生成好会自动出现`);
+    }),
+  );
   if (all.some((s) => s.status === "analyzing")) {
     const t = setTimeout(() => location.hash.startsWith("#/styles") && stylesPage(), 3000);
     cleanup = () => clearTimeout(t);
@@ -516,7 +523,7 @@ function styleModal(id) {
   const s = styleOf(id);
   if (!s) return;
   const scenes = Object.keys(SCENES).filter((sc) => s.types?.some((t) => sceneTypes[sc].includes(t)));
-  const coverCost = workspace.skills[s.types.includes("main") ? "product" : "poster"]?.cost;
+  const codexReady = workspace.providers.find((p) => p.mode === "codex")?.ready;
   const { wrap, close } = modal(`
     <div class="style-detail">
       <div class="style-detail-cover">${coverHtml(s)}</div>
@@ -528,7 +535,7 @@ function styleModal(id) {
         ${s.status === "failed" ? `<p class="warn-text">${esc(s.error || "")}</p>` : ""}
         <dl><dt>道具材质</dt><dd>${esc(s.props)}</dd><dt>光线</dt><dd>${esc(s.light)}</dd><dt>机位构图</dt><dd>${esc(s.camera)}</dd><dt>字体排版</dt><dd>${esc(s.type)}</dd><dt>避免</dt><dd>${esc(s.avoid)}</dd><dt>提示词核心</dt><dd class="mono">${esc(s.core)}</dd>${s.prompt ? `<dt>原始提示词</dt><dd class="mono">${esc(s.prompt)}</dd>` : ""}</dl>
         <div class="row wrap">${scenes.map((sc) => `<button class="btn primary" data-use="${sc}">用它做${SCENES[sc].name}</button>`).join("")}
-          ${s.source === "builtin" && !s.cover && !s.types.includes("interior") ? `<button class="btn" id="make-cover">生成样图 · ${coverCost} 积分</button>` : ""}
+          ${s.source === "builtin" && !s.cover && !s.types.includes("interior") ? `<button class="btn" id="make-cover">生成样图${codexReady ? "（本机 Codex，不扣积分）" : "（中转站，不扣积分）"}</button>` : ""}
           ${s.source === "upload" ? `<button class="link" id="del-style">删除</button>` : ""}</div>
       </div>
     </div>`);

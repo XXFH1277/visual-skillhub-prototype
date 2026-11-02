@@ -115,7 +115,8 @@ export class Store {
           .get().n >= 5
       )
         throw new AppError("队列已满，请稍后提交", 429);
-      const cost = SKILLS[params.skillId].cost * count;
+      // Style-library covers are workspace maintenance, not a merchant generation.
+      const cost = params.operation === "cover" ? 0 : SKILLS[params.skillId].cost * count;
       if (this.account().balance < cost)
         throw new AppError("测试积分不足，请联系工作台管理员", 402);
       const now = new Date().toISOString();
@@ -134,14 +135,12 @@ export class Store {
           null,
           null,
         );
-      this.db
-        .prepare("UPDATE wallet SET balance=balance-? WHERE id=1")
-        .run(cost);
-      this.db
-        .prepare(
-          "INSERT INTO ledger(job_id,kind,amount,created_at) VALUES(?,?,?,?)",
-        )
-        .run(id, "reserve", -cost, now);
+      if (cost) {
+        this.db.prepare("UPDATE wallet SET balance=balance-? WHERE id=1").run(cost);
+        this.db
+          .prepare("INSERT INTO ledger(job_id,kind,amount,created_at) VALUES(?,?,?,?)")
+          .run(id, "reserve", -cost, now);
+      }
       return this.get(id);
     });
   }
@@ -186,14 +185,12 @@ export class Store {
           now,
           id,
         );
-      this.db
-        .prepare("UPDATE wallet SET balance=balance+? WHERE id=1")
-        .run(job.cost);
-      this.db
-        .prepare(
-          "INSERT INTO ledger(job_id,kind,amount,created_at) VALUES(?,?,?,?)",
-        )
-        .run(id, "refund", job.cost, now);
+      if (job.cost) {
+        this.db.prepare("UPDATE wallet SET balance=balance+? WHERE id=1").run(job.cost);
+        this.db
+          .prepare("INSERT INTO ledger(job_id,kind,amount,created_at) VALUES(?,?,?,?)")
+          .run(id, "refund", job.cost, now);
+      }
       return true;
     });
   }

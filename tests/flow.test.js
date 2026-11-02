@@ -373,12 +373,15 @@ test("API mode: brief carries the visual system and exact text; covers feed the 
   assert.match(sent[1].prompt, /后期会在这里排字/);
   assert.doesNotMatch(sent[1].prompt, /保温12小时/);
   // generate a cover for a built-in style: text-only request, then it shows in the library
-  const cover = await s.post("/api/styles/wabi/cover", {}, { "Idempotency-Key": randomUUID() });
+  const before = await s.balance();
+  const cover = await s.post("/api/styles/wabi/cover", { providerMode: "api" }, { "Idempotency-Key": randomUUID() });
   assert.equal(cover.status, 202, await cover.clone().text());
   const coverDone = await s.terminal((await cover.json()).id);
   assert.equal(coverDone.status, "succeeded", coverDone.error);
   assert.equal(sent.at(-1).path, "/v1/images/generations");
   assert.match(sent.at(-1).prompt, /侘寂|wabi/);
+  assert.equal(coverDone.cost, 0);
+  assert.equal(await s.balance(), before);
   const wabi = await (await s.request("/api/styles/wabi")).json();
   assert.equal(wabi.cover, "/api/styles/wabi/cover");
   // the next job using wabi attaches the cover as a style reference
@@ -392,4 +395,6 @@ test("API mode: brief carries the visual system and exact text; covers feed the 
   assert.equal((await s.terminal((await up.json()).id)).status, "succeeded");
   assert.equal(sent.at(-1).model, "m20");
   assert.doesNotMatch(await (await s.request("/api/workspace")).text(), /private-test-key/);
+  const batch = await (await s.post("/api/styles-covers", { providerMode: "api" })).json();
+  assert.ok(batch.missing >= 25 && batch.missing <= 30, JSON.stringify(batch));
 });

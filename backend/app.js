@@ -321,15 +321,14 @@ export async function createWorkspace({
     await styles.remove(req.params.id);
     res.json({ ok: true });
   });
-  // Generate a cover sample for a style through the normal (paid) pipeline.
-  app.post("/api/styles/:id/cover", admission, async (req, res) => {
-    const s = styles.ready(req.params.id);
+  // Cover samples for built-in styles go through the normal pipeline (free of credits).
+  function coverParams(s) {
     if (s.source !== "builtin") throw new AppError("上传的风格已经有样图");
-    const scene = s.types.includes("interior") ? "interior" : s.types.includes("poster") && !s.types.includes("main") ? "poster" : "product";
-    if (scene === "interior") throw new AppError("装修风格需要现场照片，暂不生成样图");
+    if (s.types.includes("interior")) throw new AppError("装修风格需要现场照片，暂不生成样图");
+    const scene = s.types.includes("main") ? "product" : "poster";
     const texts = s.sample?.headline ? [{ role: "headline", text: s.sample.headline }] : [];
-    const params = {
-      version: 2,
+    return {
+      version: 3,
       operation: "cover",
       styleId: s.id,
       skillId: scene,
@@ -341,19 +340,46 @@ export async function createWorkspace({
       refCount: 0,
       styleRef: null,
       brandColor: "#e8541e",
-      direction: { conceptName: s.name, story: s.tagline, palette: s.palette, props: s.props, light: s.light, camera: s.camera, type: s.type, avoid: s.avoid, core: s.core },
+      direction: { conceptName: s.name, styleName: s.name, story: s.tagline, palette: s.palette, props: s.props, light: s.light, camera: s.camera, type: s.type, avoid: s.avoid, core: s.core },
       frames: [
         {
           title: "风格样图",
           layout: texts.length ? "free" : "none",
           textMode: texts.length ? "ai" : "none",
           texts,
-          scene: `主体是一件无品牌的${s.sample?.product || "商品"}（不要出现任何真实品牌或 Logo），按视觉系统完整呈现这个风格的代表画面。`,
+          scene: `主体是一件无品牌的${s.sample?.product || "商品"}（不要出现任何真实品牌或 Logo），按视觉系统完整呈现这个风格最有代表性的画面，构图完整、质感高级。`,
         },
       ],
     };
-    await createJob(req, res, params, null);
+  }
+  app.post("/api/styles/:id/cover", admission, async (req, res) => {
+    await createJob(req, res, coverParams(styles.ready(req.params.id)), null);
   });
+  // Batch: queue every missing cover, feeding the job queue a few at a time.
+  let coverBacklog = [];
+  let coverMode = "codex";
+  const coverActive = () =>
+    store.db.prepare("SELECT count(*) AS n FROM jobs WHERE status IN ('queued','running')").get().n;
+  const feedCovers = async () => {
+    while (coverBacklog.length && coverActive() < 2) {
+      const id = coverBacklog.shift();
+      const s = styles.get(id);
+      if (!s || s.cover) continue;
+      const fake = { body: { providerMode: coverMode }, get: () => "cover-" + id + "-" + randomUUID() };
+      const sink = { status: () => sink, json: () => {} };
+      await createJob(fake, sink, coverParams(s), null).catch((error) => console.error("样图任务创建失败：", id, error.message));
+    }
+  };
+  const coverTimer = setInterval(() => feedCovers().catch(() => {}), 5000);
+  coverTimer.unref();
+  app.post("/api/styles-covers", (req, res) => {
+    coverMode = req.body?.providerMode === "api" ? "api" : "codex";
+    const missing = styles.list().filter((s) => s.source === "builtin" && !s.cover && !s.types.includes("interior")).map((s) => s.id);
+    coverBacklog = [...new Set([...coverBacklog, ...missing])];
+    feedCovers().catch(() => {});
+    res.json({ queued: coverBacklog.length, missing: missing.length });
+  });
+  app.get("/api/styles-covers", (_req, res) => res.json({ pending: coverBacklog.length }));
 
   // ---- Drafts: upload → AI directions → choose → storyboard → confirm ----
   const drafts = new Map();
@@ -495,7 +521,12 @@ export async function createWorkspace({
     Object.assign(
       params,
       params.operation === "cover"
-        ? registry.selection({ providerMode: "api", resolution: "1K", size: params.size }, providerMode)
+        ? registry.selection(
+            req.body?.providerMode === "api" || !registry.describe("codex").ready
+              ? { providerMode: "api", resolution: "1K", size: params.size }
+              : { providerMode: "codex", size: params.size },
+            providerMode,
+          )
         : registry.selection({ providerMode: req.body?.providerMode, resolution: req.body?.resolution, size: params.size }, providerMode),
     );
     const id = randomUUID(),
@@ -700,6 +731,7 @@ export async function createWorkspace({
     secretFile,
     close: async () => {
       clearInterval(sweeper);
+      clearInterval(coverTimer);
       await queue.close();
       store.close();
     },
