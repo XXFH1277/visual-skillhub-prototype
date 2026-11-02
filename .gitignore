@@ -3,6 +3,12 @@ dist/
 backend/out/
 .env
 .env.*
+!.env.example
 *.log
 .codex/
 auth.json
+.data/
+.test-data/
+test-results/
+output/
+.playwright-cli/
