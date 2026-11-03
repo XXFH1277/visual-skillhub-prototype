@@ -293,7 +293,7 @@ test("style library: list, filter data, upload → AI recipe, pick it for a draf
   const job = await res.json();
   assert.equal(job.params.styleRef, "style-ref.png");
   assert.equal((await s.request(`/api/styles/${id}`, { method: "DELETE" })).status, 200);
-  assert.equal((await s.request(`/api/styles/wabi`, { method: "DELETE" })).status, 400);
+  assert.equal((await s.request(`/api/styles/wabi`, { method: "DELETE" })).status, 403);
   assert.equal((await s.draft({ fields: { styleId: "nope" } })).status, 400);
 });
 

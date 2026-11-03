@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import multer from "multer";
-import { AppError } from "./store.js";
+import { AppError } from "./errors.js";
 import { importNote } from "./importers.js";
 import { labelPhotos, buildProfile, normalizeProfile, writeNote, planFrames } from "./suite-ai.js";
 import { noteDocx } from "./docx-note.js";
@@ -12,10 +12,17 @@ import { SECTION_TYPES, SECTION_MODES, PHOTO_ROLES, QUICK, scanRisky } from "../
 
 // "商品全套": one product → profile → note → product images → detail page.
 // Each AI step is one multimodal call; image generation reuses the job queue.
-export function registerSuites({ app, store, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir }) {
+export function registerSuites({ app, store, users, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir }) {
   const root = path.join(dataDir, "suites");
   fs.mkdirSync(root, { recursive: true });
   store.db.exec(`CREATE TABLE IF NOT EXISTS suites (id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+  users.adopt("suites");
+  // Every /api/suites/:id/... route only ever sees the caller's own products.
+  app.use("/api/suites/:id", (req, _res, next) => {
+    const r = store.db.prepare("SELECT user_id FROM suites WHERE id=?").get(req.params.id);
+    if (!r || r.user_id !== req.user.id) throw new AppError("这个商品不存在", 404);
+    next();
+  });
   const read = (id) => {
     const r = store.db.prepare("SELECT * FROM suites WHERE id=?").get(id);
     if (!r) throw new AppError("这个商品不存在", 404);
@@ -172,11 +179,11 @@ export function registerSuites({ app, store, dataDir, textAI, normalizeUpload, r
   }
 
   app.get("/api/suite-meta", (_req, res) => res.json({ cases: CASES, sections: SECTION_TYPES, modes: SECTION_MODES, roles: PHOTO_ROLES, quick: QUICK }));
-  app.get("/api/suites", (_req, res) =>
+  app.get("/api/suites", (req, res) =>
     res.json({
       suites: store.db
-        .prepare("SELECT * FROM suites ORDER BY updated_at DESC LIMIT 100")
-        .all()
+        .prepare("SELECT * FROM suites WHERE user_id=? ORDER BY updated_at DESC LIMIT 100")
+        .all(req.user.id)
         .map((r) => {
           const d = JSON.parse(r.data);
           return { id: r.id, name: d.profile?.name || d.name || "未命名商品", cover: d.photos?.[0]?.file || null, updatedAt: r.updated_at, tasks: d.tasks };
@@ -210,7 +217,9 @@ export function registerSuites({ app, store, dataDir, textAI, normalizeUpload, r
       await addPhotos(s, photos.map((f) => f.buffer), "upload");
       if (!s.photos.length) throw new AppError("没有读到可用的图片，请单独上传实拍图");
       const { id: _id, ...data } = s;
-      store.db.prepare("INSERT INTO suites VALUES(?,?,?,?)").run(id, JSON.stringify(data), now, now);
+      store.db
+        .prepare("INSERT INTO suites(id,data,created_at,updated_at,user_id) VALUES(?,?,?,?,?)")
+        .run(id, JSON.stringify(data), now, now, req.user.id);
     } catch (error) {
       await fsp.rm(dirOf(id), { recursive: true, force: true });
       throw error;

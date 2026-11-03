@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { STYLES, CATEGORIES, IMAGE_TYPES, TONES } from "../shared/styles.js";
-import { AppError } from "./store.js";
+import { AppError } from "./errors.js";
 
 const clip = (v, n) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, n) : "");
 const list = (v, allowed, max) =>
@@ -33,12 +33,28 @@ export function cleanRecipe(r = {}) {
 export class StyleLibrary {
   constructor(store, dataDir) {
     this.db = store.db;
+    this.users = store.users;
     this.dir = path.join(dataDir, "styles");
     fs.mkdirSync(this.dir, { recursive: true });
     this.db.exec(`CREATE TABLE IF NOT EXISTS styles (
       id TEXT PRIMARY KEY, status TEXT NOT NULL, data TEXT NOT NULL, error TEXT,
       created_at TEXT NOT NULL)`);
     this.db.exec("UPDATE styles SET status='failed', error='服务重启中断了分析，请删除后重新上传' WHERE status='analyzing'");
+    store.users.adopt("styles");
+    if (!this.db.prepare("PRAGMA table_info(styles)").all().some((c) => c.name === "shared"))
+      this.db.exec("ALTER TABLE styles ADD COLUMN shared INTEGER NOT NULL DEFAULT 0");
+  }
+  // Uploads are private to their owner until the admin shares them with everyone.
+  row(r, user) {
+    return this.view({ ...JSON.parse(r.data), id: r.id }, "upload", {
+      status: r.status,
+      error: r.error,
+      shared: !!r.shared,
+      mine: !!user && r.user_id === user.id,
+    });
+  }
+  visible(r, user) {
+    return !!r && (r.shared || !user || user.role === "admin" || r.user_id === user.id);
   }
   // A cover generated or uploaded in this workspace wins over the bundled default.
   coverFile(id) {
@@ -51,30 +67,40 @@ export class StyleLibrary {
   view(style, source, extra = {}) {
     return { ...style, source, cover: this.coverFile(style.id) ? `/api/styles/${style.id}/cover` : null, ...extra };
   }
-  list() {
+  list(user) {
     const uploads = this.db
       .prepare("SELECT * FROM styles ORDER BY created_at DESC")
       .all()
-      .map((r) => this.view({ ...JSON.parse(r.data), id: r.id }, "upload", { status: r.status, error: r.error }));
+      .filter((r) => this.visible(r, user))
+      .map((r) => this.row(r, user));
     return [...uploads, ...STYLES.map((s) => this.view(s, "builtin", { status: "ready" }))];
   }
-  get(id) {
+  // Without a user this is an internal lookup (job pipeline); with one it respects privacy.
+  get(id, user) {
     const builtin = STYLES.find((s) => s.id === id);
     if (builtin) return this.view(builtin, "builtin", { status: "ready" });
     const r = this.db.prepare("SELECT * FROM styles WHERE id=?").get(id);
-    return r ? this.view({ ...JSON.parse(r.data), id: r.id }, "upload", { status: r.status, error: r.error }) : null;
+    return this.visible(r, user) ? this.row(r, user) : null;
   }
-  ready(id) {
-    const s = id && this.get(id);
+  ready(id, user) {
+    const s = id && this.get(id, user);
     if (!s || s.status !== "ready") throw new AppError("风格不存在或还在分析中");
     return s;
   }
-  create(data) {
+  create(data, userId) {
     const id = "u-" + randomUUID().slice(0, 12);
     this.db
-      .prepare("INSERT INTO styles VALUES(?,?,?,?,?)")
-      .run(id, "analyzing", JSON.stringify(data), null, new Date().toISOString());
+      .prepare("INSERT INTO styles(id,status,data,error,created_at,user_id) VALUES(?,?,?,?,?,?)")
+      .run(id, "analyzing", JSON.stringify(data), null, new Date().toISOString(), userId);
     return id;
+  }
+  editable(id, user) {
+    const old = this.get(id, user);
+    if (!old || old.source !== "upload" || !(old.mine || user?.role === "admin")) throw new AppError("只能修改自己上传的风格", 403);
+    return old;
+  }
+  share(id, shared) {
+    this.db.prepare("UPDATE styles SET shared=? WHERE id=?").run(shared ? 1 : 0, id);
   }
   finish(id, recipe, error = null) {
     const old = this.get(id);
@@ -84,15 +110,13 @@ export class StyleLibrary {
       .prepare("UPDATE styles SET status=?, data=?, error=? WHERE id=?")
       .run(error ? "failed" : "ready", JSON.stringify(data), error, id);
   }
-  update(id, recipe) {
-    const old = this.get(id);
-    if (!old || old.source !== "upload") throw new AppError("只能修改自己上传的风格");
+  update(id, recipe, user) {
+    const old = this.editable(id, user);
     this.db.prepare("UPDATE styles SET data=? WHERE id=?").run(JSON.stringify(cleanRecipe({ ...old, ...recipe })), id);
-    return this.get(id);
+    return this.get(id, user);
   }
-  async remove(id) {
-    const old = this.get(id);
-    if (!old || old.source !== "upload") throw new AppError("只能删除自己上传的风格");
+  async remove(id, user) {
+    this.editable(id, user);
     this.db.prepare("DELETE FROM styles WHERE id=?").run(id);
     await fsp.rm(path.join(this.dir, `${id}.png`), { force: true });
   }

@@ -58,12 +58,13 @@ function header() {
   const route = location.hash.replace(/^#\/?/, "").split("/")[0];
   const on = (r) => (r.includes(route) ? "on" : "");
   nav.innerHTML = workspace
-    ? `<a href="#/" class="${on(["", "suite"])}">商品</a><a href="#/new/product" class="${on(["new"])}">单张出图</a><a href="#/styles" class="${on(["styles"])}">风格库</a><a href="#/tasks" class="${on(["tasks", "job"])}">我的作品</a><a class="balance ${on(["credits"])}" href="#/credits">${workspace.account.balance} 积分</a><button class="link" id="logout">退出</button>`
+    ? `<a href="#/" class="${on(["", "suite"])}">商品</a><a href="#/new/product" class="${on(["new"])}">单张出图</a><a href="#/styles" class="${on(["styles"])}">风格库</a><a href="#/tasks" class="${on(["tasks", "job"])}">我的作品</a>${isAdmin() ? `<a href="#/admin" class="${on(["admin"])}">管理</a>` : ""}<a class="balance ${on(["credits"])}" href="#/credits" title="${esc(workspace.user.name)}">${workspace.account.balance} 积分</a><button class="link" id="logout">退出</button>`
     : "";
   $("#logout")?.addEventListener("click", () =>
     busy($("#logout"), async () => {
       await api("/logout", { method: "POST" });
       workspace = null;
+      styleCache = null;
       location.hash = "#/";
       render();
     }),
@@ -73,17 +74,43 @@ async function refresh() {
   workspace = await api("/workspace");
   header();
 }
-function login() {
+const isAdmin = () => workspace?.user?.role === "admin";
+// Login / sign-up. A shared link #/join/<邀请码> opens sign-up with the code filled in.
+function login(mode, invite = "") {
   nav.innerHTML = "";
-  app.innerHTML = `<section class="login card"><h1>出图工作台</h1><p class="muted">上传商品图，选一个风格，AI 帮你策划和出图。</p><form id="login-form"><label>访问码<input id="code" type="password" autocomplete="current-password" required placeholder="输入管理员给你的访问码"></label><button class="btn primary wide">进入</button><p class="err" id="login-error" role="alert"></p></form></section>`;
+  const [route, code] = location.hash.replace(/^#\/?/, "").split("/");
+  if (!mode) mode = route === "join" ? "register" : "login";
+  if (route === "join" && code) invite = decodeURIComponent(code);
+  const forms = {
+    login: `<label>手机号<input name="phone" type="tel" inputmode="tel" autocomplete="username" required placeholder="注册时用的手机号"></label>
+      <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary wide">登录</button>`,
+    register: `<label>邀请码<input name="invite" required value="${esc(invite)}" placeholder="找管理员要" autocomplete="off"></label>
+      <label>手机号<input name="phone" type="tel" inputmode="tel" autocomplete="username" required placeholder="以后用它登录"></label>
+      <label>设个密码<input name="password" type="password" autocomplete="new-password" required minlength="6" placeholder="至少 6 位"></label>
+      <label>店铺 / 称呼<input name="name" maxlength="20" placeholder="选填，例如：阿海水产"></label>
+      <button class="btn primary wide">注册并进入</button>`,
+    code: `<label>管理员访问码<input name="code" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary wide">进入</button>`,
+  };
+  app.innerHTML = `<section class="login card"><h1>出图工作台</h1><p class="muted">一个商品，一键出笔记、商品图和详情页。</p>
+    ${mode === "code" ? "" : `<div class="seg"><button data-mode="login" class="${mode === "login" ? "on" : ""}">登录</button><button data-mode="register" class="${mode === "register" ? "on" : ""}">注册</button></div>`}
+    <form id="login-form">${forms[mode]}<p class="err" id="login-error" role="alert"></p></form>
+    <button class="link login-alt" id="alt">${mode === "code" ? "← 用手机号登录" : "管理员用访问码登录"}</button></section>`;
+  $$("[data-mode]").forEach((b) => (b.onclick = () => login(b.dataset.mode, $("[name=invite]")?.value || invite)));
+  $("#alt").onclick = () => login(mode === "code" ? "login" : "code");
   $("#login-form").onsubmit = async (e) => {
     e.preventDefault();
     const b = e.currentTarget.querySelector("button");
+    const body = Object.fromEntries(new FormData(e.currentTarget));
     b.disabled = true;
     try {
-      await api("/login", json({ code: $("#code").value }));
+      await api(mode === "register" ? "/register" : "/login", json(body));
+      styleCache = null;
       await refresh();
-      render();
+      if (location.hash.startsWith("#/join")) location.hash = "#/";
+      else render();
+      if (mode === "register") toast(`注册成功，送你 ${workspace.account.balance} 积分`);
     } catch (error) {
       $("#login-error").textContent = error.message;
     } finally {
@@ -468,13 +495,13 @@ async function stylesPage() {
       (!lib.cat || s.categories?.includes(lib.cat)) &&
       (!lib.type || s.types?.includes(lib.type)) &&
       (!lib.tone || s.tone === lib.tone) &&
-      (!lib.mine || s.source === "upload"),
+      (!lib.mine || (s.source === "upload" && (s.mine || isAdmin()))),
   );
   const chips = (field, items, label) =>
     `<div class="filter"><span>${label}</span><button class="chip ${!lib[field] ? "on" : ""}" data-f="${field}" data-v="">全部</button>${items
       .map(([v, n]) => `<button class="chip ${lib[field] === v ? "on" : ""}" data-f="${field}" data-v="${esc(v)}">${esc(n)}</button>`)
       .join("")}</div>`;
-  app.innerHTML = `<div class="page-head"><div><h1>风格库</h1><p class="muted">挑一个样子直接用；看到好图就传上来，AI 会拆成可复用的配方。</p></div><div class="row wrap">${all.some((s) => s.source === "builtin" && !s.cover && !s.types.includes("interior")) ? `<button class="btn" id="all-covers">批量生成缺失样图</button>` : ""}<button class="btn primary" id="upload-style">＋ 上传好图</button></div></div>
+  app.innerHTML = `<div class="page-head"><div><h1>风格库</h1><p class="muted">挑一个样子直接用；看到好图就传上来，AI 会拆成可复用的配方。</p></div><div class="row wrap">${isAdmin() && all.some((s) => s.source === "builtin" && !s.cover && !s.types.includes("interior")) ? `<button class="btn" id="all-covers">批量生成缺失样图</button>` : ""}<button class="btn primary" id="upload-style">＋ 上传好图</button></div></div>
   <section class="filters card">
     ${chips("cat", CATEGORIES.map((c) => [c, c]), "品类")}
     ${chips("type", Object.entries(IMAGE_TYPES), "类型")}
@@ -536,8 +563,10 @@ function styleModal(id) {
         ${s.status === "failed" ? `<p class="warn-text">${esc(s.error || "")}</p>` : ""}
         <dl><dt>道具材质</dt><dd>${esc(s.props)}</dd><dt>光线</dt><dd>${esc(s.light)}</dd><dt>机位构图</dt><dd>${esc(s.camera)}</dd><dt>字体排版</dt><dd>${esc(s.type)}</dd><dt>避免</dt><dd>${esc(s.avoid)}</dd><dt>提示词核心</dt><dd class="mono">${esc(s.core)}</dd>${s.prompt ? `<dt>原始提示词</dt><dd class="mono">${esc(s.prompt)}</dd>` : ""}</dl>
         <div class="row wrap">${scenes.map((sc) => `<button class="btn primary" data-use="${sc}">用它做${SCENES[sc].name}</button>`).join("")}
-          ${s.source === "builtin" && !s.types.includes("interior") ? `<button class="btn" id="make-cover">${s.cover ? "重新生成样图" : "生成样图"}${codexReady ? "（本机 Codex，不扣积分）" : "（中转站，不扣积分）"}</button>` : ""}
-          ${s.source === "upload" ? `<button class="link" id="del-style">删除</button>` : ""}</div>
+          ${isAdmin() && s.source === "builtin" && !s.types.includes("interior") ? `<button class="btn" id="make-cover">${s.cover ? "重新生成样图" : "生成样图"}${codexReady ? "（本机 Codex，不扣积分）" : "（中转站，不扣积分）"}</button>` : ""}
+          ${isAdmin() && s.source === "upload" && s.status === "ready" ? `<button class="btn" id="share-style">${s.shared ? "取消公开" : "公开给所有商家"}</button>` : ""}
+          ${s.source === "upload" && (s.mine || isAdmin()) ? `<button class="link" id="del-style">删除</button>` : ""}</div>
+        ${s.source === "upload" ? `<p class="muted">${s.shared ? "已公开：所有商家都能看到和使用" : "仅自己可见"}</p>` : ""}
       </div>
     </div>`);
   $$("[data-use]", wrap).forEach(
@@ -557,6 +586,15 @@ function styleModal(id) {
       toast("已开始生成样图，完成后会出现在风格库");
       close();
       void job;
+    }),
+  );
+  $("#share-style", wrap)?.addEventListener("click", (e) =>
+    busy(e.currentTarget, async () => {
+      await api(`/styles/${s.id}/share`, json({ shared: !s.shared }));
+      await loadStyles(true);
+      close();
+      stylesPage();
+      toast(s.shared ? "已改为仅上传者可见" : "已公开，所有商家都能在风格库看到");
     }),
   );
   $("#del-style", wrap)?.addEventListener("click", (e) =>
@@ -723,10 +761,103 @@ function bindJob(job) {
 
 /* ---------------- credits ---------------- */
 function creditsPage() {
-  const kinds = { reserve: "出图预扣", refund: "失败 / 取消退回", grant: "管理员充值" };
-  app.innerHTML = `<div class="page-head"><h1>积分</h1></div>
-  <section class="card balance-card"><b>${workspace.account.balance}</b><span class="muted">可用积分 · 出图时预扣，失败或取消自动退回</span></section>
-  <section class="card ledger">${workspace.account.ledger.length ? workspace.account.ledger.map((l) => `<div class="ledger-row"><div><b>${kinds[l.kind] || l.kind}</b><small class="muted">${date(l.createdAt)}${l.jobId ? ` · <a href="#/job/${l.jobId}">查看</a>` : ""}</small></div><b class="${l.amount > 0 ? "plus" : ""}">${l.amount > 0 ? "+" : ""}${l.amount}</b></div>`).join("") : `<p class="muted">还没有积分记录。</p>`}</section>`;
+  const kinds = { reserve: "出图预扣", refund: "失败 / 取消退回", grant: "充值", signup: "注册赠送" };
+  const u = workspace.user;
+  app.innerHTML = `<div class="page-head"><div><h1>我的账号</h1><p class="muted">${esc(u.name)}${u.phone ? ` · ${esc(u.phone)}` : ""}</p></div></div>
+  <section class="card balance-card"><b>${workspace.account.balance}</b><span class="muted">可用积分 · 出图时预扣，失败或取消自动退回 · 充值请联系管理员</span></section>
+  <section class="card ledger">${workspace.account.ledger.length ? workspace.account.ledger.map((l) => `<div class="ledger-row"><div><b>${kinds[l.kind] || l.kind}</b><small class="muted">${date(l.createdAt)}${l.note ? ` · ${esc(l.note)}` : ""}${l.jobId ? ` · <a href="#/job/${l.jobId}">查看</a>` : ""}</small></div><b class="${l.amount > 0 ? "plus" : ""}">${l.amount > 0 ? "+" : ""}${l.amount}</b></div>`).join("") : `<p class="muted">还没有积分记录。</p>`}</section>
+  <section class="card account-form"><h2>${u.phone ? "修改密码" : "设置手机号登录"}</h2>
+    <form id="pw-form" class="row wrap">
+      ${u.phone ? `<input name="old" type="password" autocomplete="current-password" placeholder="原密码" required>` : isAdmin() ? `<input name="phone" type="tel" placeholder="手机号" required>` : ""}
+      <input name="password" type="password" autocomplete="new-password" minlength="6" placeholder="新密码（至少 6 位）" required>
+      <button class="btn">保存</button>
+    </form></section>
+  <p class="center-row"><button class="btn" id="logout2">退出登录</button></p>`;
+  $("#logout2").onclick = () => $("#logout").click();
+  $("#pw-form").onsubmit = (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    busy(form.querySelector("button"), async () => {
+      const body = Object.fromEntries(new FormData(form));
+      if (body.phone) await api("/me/phone", json({ phone: body.phone }));
+      await api("/me/password", json(body));
+      await refresh();
+      toast("已保存");
+      creditsPage();
+    });
+  };
+}
+
+/* ---------------- admin ---------------- */
+async function adminPage() {
+  const data = await api("/admin");
+  const link = (code) => `${location.origin}${location.pathname}#/join/${code}`;
+  const invite = (i) => `<tr class="${i.revoked || i.used >= i.maxUses ? "dim" : ""}">
+      <td class="mono">${esc(i.code)}</td><td>${i.credits}</td><td>${i.used}/${i.maxUses}</td><td>${esc(i.note)}</td>
+      <td>${i.revoked ? "已作废" : i.used >= i.maxUses ? "已用完" : `<div class="row"><button class="btn small" data-copy="${esc(i.code)}">复制邀请</button><button class="link" data-revoke="${esc(i.code)}">作废</button></div>`}</td></tr>`;
+  const user = (u) => `<tr>
+      <td><b>${esc(u.name)}</b>${u.role === "admin" ? ` <i class="tag">管理员</i>` : ""}<small class="muted">${esc(u.phone || "访问码登录")}</small></td>
+      <td><b>${u.balance}</b></td><td>${u.jobs} 次 / ${u.spent} 分</td>
+      <td class="muted">${u.lastLogin ? date(u.lastLogin) : "—"}</td>
+      <td><form class="row grant" data-user="${esc(u.id)}"><input name="amount" type="number" step="1" placeholder="+100" required><input name="note" maxlength="40" placeholder="备注（如：转账 50 元）"><button class="btn small">加积分</button></form>
+        ${u.role === "admin" ? "" : `<button class="link" data-reset="${esc(u.id)}" data-name="${esc(u.name)}">重置密码</button>`}</td></tr>`;
+  app.innerHTML = `<div class="page-head"><div><h1>管理</h1><p class="muted">发邀请码给要体验的人；他们转账后在这里加积分。</p></div></div>
+  <section class="card admin-block"><h2>新建邀请码</h2>
+    <form id="invite-form" class="row wrap">
+      <label class="inline">送积分<input name="credits" type="number" min="0" max="10000" value="100" required></label>
+      <label class="inline">可注册人数<input name="maxUses" type="number" min="1" max="1000" value="5" required></label>
+      <input name="note" maxlength="40" placeholder="备注：发给谁 / 哪个群">
+      <button class="btn primary">生成</button>
+    </form>
+    <p class="muted">每张图 10 积分起，详情页一屏 30 积分。邀请码不区分大小写，一个码可以发给多人。</p>
+    <div class="table-wrap"><table class="admin-table"><thead><tr><th>邀请码</th><th>送积分</th><th>已用</th><th>备注</th><th></th></tr></thead>
+    <tbody>${data.invites.map(invite).join("") || `<tr><td colspan="5" class="muted">还没有邀请码</td></tr>`}</tbody></table></div>
+  </section>
+  <section class="card admin-block"><h2>账号（${data.users.length}）</h2>
+    <div class="table-wrap"><table class="admin-table"><thead><tr><th>商家</th><th>余额</th><th>出图 / 消耗</th><th>最近登录</th><th>充值</th></tr></thead>
+    <tbody>${data.users.map(user).join("")}</tbody></table></div>
+  </section>`;
+  const copy = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("已复制，直接发到微信");
+    } catch {
+      window.prompt("复制下面这段发给对方：", text);
+    }
+  };
+  const message = (code) => `邀请你体验「出图工作台」：一个商品一键出笔记、商品图和详情页。\n打开链接注册：${link(code)}\n邀请码：${code}`;
+  $("#invite-form").onsubmit = (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    busy(form.querySelector("button"), async () => {
+      const body = Object.fromEntries(new FormData(form));
+      const r = await api("/admin/invites", json({ credits: Number(body.credits), maxUses: Number(body.maxUses), note: body.note }));
+      await adminPage();
+      await copy(message(r.code));
+    });
+  };
+  $$("[data-copy]").forEach((b) => (b.onclick = () => copy(message(b.dataset.copy))));
+  $$("[data-revoke]").forEach((b) => (b.onclick = () => busy(b, async () => {
+    await api(`/admin/invites/${encodeURIComponent(b.dataset.revoke)}/revoke`, json({}));
+    await adminPage();
+  })));
+  $$(".grant").forEach((form) => (form.onsubmit = (e) => {
+    e.preventDefault();
+    busy(form.querySelector("button"), async () => {
+      const body = Object.fromEntries(new FormData(form));
+      const u = await api(`/admin/users/${encodeURIComponent(form.dataset.user)}/grant`, json({ amount: Number(body.amount), note: body.note }));
+      toast(`${u.name} 现在有 ${u.balance} 积分`);
+      await refresh();
+      await adminPage();
+    });
+  }));
+  $$("[data-reset]").forEach((b) => (b.onclick = () => {
+    const password = window.prompt(`给「${b.dataset.name}」设一个新密码（至少 6 位），然后告诉对方：`);
+    if (password) busy(b, async () => {
+      await api(`/admin/users/${encodeURIComponent(b.dataset.reset)}/password`, json({ password }));
+      toast("已重置，对方需要用新密码重新登录");
+    });
+  }));
 }
 
 /* ---------------- router ---------------- */
@@ -760,6 +891,8 @@ async function render() {
     else if (route === "suite" && id === "new") await suite.newPage();
     else if (route === "suite" && id) await suite.suitePage(id, location.hash.split("/")[3]);
     else if (!route) await suite.homePage();
+    else if (route === "join") location.hash = "#/";
+    else if (route === "admin" && isAdmin()) await adminPage();
     else if (route === "credits") {
       await refresh();
       if (token === view) creditsPage();

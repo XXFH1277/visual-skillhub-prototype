@@ -12,6 +12,7 @@ import { createProviders } from "./providers.js";
 import { createTextAI, compareTexts } from "./text-ai.js";
 import { sanitizeFrames, candidatesFor } from "./planner.js";
 import { StyleLibrary } from "./styles.js";
+import { ADMIN_ID } from "./users.js";
 import { registerSuites } from "./suites.js";
 import { SCENES, textsForImage } from "../shared/scenes.js";
 
@@ -61,6 +62,11 @@ export async function createWorkspace({
   if (!accessCode && !process.env.ACCESS_CODE && !fs.existsSync(secretFile))
     fs.writeFileSync(secretFile, secret, { mode: 0o600 });
   const store = new Store(path.join(dataDir, "workspace.sqlite"));
+  const users = store.users;
+  if (!store.db.prepare("PRAGMA table_info(sessions)").all().some((c) => c.name === "user_id")) {
+    store.db.exec("DROP TABLE sessions");
+    store.db.exec("CREATE TABLE sessions (hash TEXT PRIMARY KEY, expires INTEGER NOT NULL, user_id TEXT NOT NULL)");
+  }
   const fingerprint = digest(secret).toString("hex");
   store.db.exec(
     "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)",
@@ -179,29 +185,57 @@ export async function createWorkspace({
       ?.slice(12) || "";
   const auth = (req, res, next) => {
     const hash = digest(cookie(req)).toString("hex");
-    if (
-      !store.db
-        .prepare("SELECT hash FROM sessions WHERE hash=? AND expires>?")
-        .get(hash, Date.now())
-    )
-      return res.status(401).json({ error: "请先输入访问码登录" });
+    const row = store.db
+      .prepare("SELECT user_id FROM sessions WHERE hash=? AND expires>?")
+      .get(hash, Date.now());
+    const user = row && users.get(row.user_id);
+    if (!user) return res.status(401).json({ error: "请先登录" });
+    req.user = user;
     next();
   };
-  let loginWindow = { started: 0, attempts: 0 };
-  app.post("/api/login", (req, res) => {
-    if (Date.now() - loginWindow.started > 60_000)
-      loginWindow = { started: Date.now(), attempts: 0 };
-    if (++loginWindow.attempts > 10)
-      throw new AppError("登录尝试过多，请一分钟后重试", 429);
-    const supplied = typeof req.body?.code === "string" ? req.body.code : "";
-    if (!timingSafeEqual(digest(supplied), digest(secret)))
-      throw new AppError("访问码不正确", 401);
+  const adminOnly = (req, _res, next) => {
+    if (req.user?.role !== "admin") throw new AppError("只有管理员可以操作", 403);
+    next();
+  };
+  // Per-IP and per-account sliding windows for password guessing and sign-up spam.
+  const windows = new Map();
+  const limit = (key, max, ms = 60_000) => {
+    const now = Date.now();
+    const w = windows.get(key);
+    if (!w || now - w.started > ms) return void windows.set(key, { started: now, n: 1 });
+    if (++w.n > max) throw new AppError("尝试次数过多，请稍后再试", 429);
+  };
+  const limitTimer = setInterval(() => {
+    for (const [k, w] of windows) if (Date.now() - w.started > 10 * 60_000) windows.delete(k);
+  }, 60_000);
+  limitTimer.unref();
+  const startSession = (res, userId) => {
     const token = randomBytes(32).toString("base64url");
     store.db.prepare("DELETE FROM sessions WHERE expires<?").run(Date.now());
     store.db
-      .prepare("INSERT INTO sessions VALUES(?,?)")
-      .run(digest(token).toString("hex"), Date.now() + cookieOptions.maxAge);
+      .prepare("INSERT INTO sessions VALUES(?,?,?)")
+      .run(digest(token).toString("hex"), Date.now() + cookieOptions.maxAge, userId);
+    users.touch(userId);
     res.cookie("vsh_session", token, cookieOptions).json({ ok: true });
+  };
+  app.post("/api/login", (req, res) => {
+    limit("login:" + req.ip, 10);
+    limit("login", 60);
+    // The workspace access code still opens the admin account (setup, recovery).
+    if (req.body?.code != null) {
+      const supplied = typeof req.body.code === "string" ? req.body.code : "";
+      if (!timingSafeEqual(digest(supplied), digest(secret)))
+        throw new AppError("访问码不正确", 401);
+      return startSession(res, ADMIN_ID);
+    }
+    limit("login-phone:" + String(req.body?.phone || ""), 8, 10 * 60_000);
+    startSession(res, users.verify(req.body?.phone, req.body?.password).id);
+  });
+  app.post("/api/register", (req, res) => {
+    limit("register:" + req.ip, 20, 10 * 60_000);
+    limit("register", 60, 10 * 60_000);
+    const user = users.register(req.body || {});
+    startSession(res, user.id);
   });
   const instanceId = process.env.SKILLHUB_INSTANCE_ID || randomUUID();
   app.get("/api/health", (_req, res) => res.json({ ok: true, instanceId }));
@@ -214,20 +248,46 @@ export async function createWorkspace({
       .clearCookie("vsh_session", { ...cookieOptions, maxAge: undefined })
       .json({ ok: true });
   });
-  app.get("/api/workspace", (_req, res) =>
+  app.get("/api/workspace", (req, res) =>
     res.json({
-      account: store.account(),
+      user: users.view(req.user),
+      account: store.account(req.user.id),
       skills: SKILLS,
       provider: registry.describe(providerMode),
       providers: registry.list(),
       textAI: textAI.describe(),
-      mode: "private-workspace",
+      mode: "accounts",
     }),
   );
-  app.post("/api/provider/check", async (req, res) => {
+  app.post("/api/me/password", (req, res) => {
+    limit("password:" + req.user.id, 5, 10 * 60_000);
+    if (req.user.pass) users.verify(req.user.phone, req.body?.old);
+    users.setPassword(req.user.id, req.body?.password);
+    res.json({ ok: true });
+  });
+  app.post("/api/me/phone", adminOnly, (req, res) => {
+    users.setPhone(req.user.id, req.body?.phone);
+    res.json(users.view(users.get(req.user.id)));
+  });
+  // ---- Admin: accounts, invite codes, top-ups ----
+  app.use("/api/admin", adminOnly);
+  app.get("/api/admin", (_req, res) => res.json({ users: users.list(), invites: users.invites() }));
+  app.post("/api/admin/invites", (req, res) => res.json({ code: users.createInvite(req.body || {}), invites: users.invites() }));
+  app.post("/api/admin/invites/:code/revoke", (req, res) => {
+    users.revokeInvite(req.params.code);
+    res.json({ invites: users.invites() });
+  });
+  app.post("/api/admin/users/:id/grant", (req, res) => res.json(users.grant(req.params.id, Number(req.body?.amount), req.body?.note)));
+  app.post("/api/admin/users/:id/password", (req, res) => {
+    if (!users.get(req.params.id)) throw new AppError("账号不存在", 404);
+    users.setPassword(req.params.id, req.body?.password);
+    store.db.prepare("DELETE FROM sessions WHERE user_id=?").run(req.params.id);
+    res.json({ ok: true });
+  });
+  app.post("/api/provider/check", adminOnly, async (req, res) => {
     res.json(await registry.check(req.body?.mode || providerMode));
   });
-  app.post("/api/provider", (req, res) => {
+  app.post("/api/provider", adminOnly, (req, res) => {
     const mode = req.body?.mode;
     registry.validate(mode);
     if (!registry.describe(mode).ready)
@@ -240,19 +300,24 @@ export async function createWorkspace({
     providerMode = mode;
     res.json(registry.describe(mode));
   });
-  app.get("/api/jobs", (_req, res) => res.json({ jobs: store.list() }));
-  app.get("/api/jobs/:id", (req, res) => {
+  // Every /api/jobs/:id/... route only ever sees the caller's own jobs.
+  app.use("/api/jobs/:id", (req, _res, next) => {
     const job = store.get(req.params.id);
-    if (!job) throw new AppError("任务不存在", 404);
-    res.json(job);
+    if (!job || job.userId !== req.user.id) throw new AppError("任务不存在", 404);
+    next();
   });
+  app.get("/api/jobs", (req, res) => res.json({ jobs: store.list(req.user.id) }));
+  app.get("/api/jobs/:id", (req, res) => res.json(store.get(req.params.id)));
   let uploading = 0;
   const admission = (req, res, next) => {
     const key = req.get("Idempotency-Key");
     if (!key || !/^[a-zA-Z0-9-]{16,100}$/.test(key))
       return res.status(400).json({ error: "缺少有效的提交编号" });
     const old = store.byKey(key);
-    if (old) return res.status(200).json(old);
+    if (old) {
+      if (old.userId !== req.user.id) return res.status(409).json({ error: "提交编号冲突，请刷新后重试" });
+      return res.status(200).json(old);
+    }
     next();
   };
   const upload = multer({
@@ -273,14 +338,14 @@ export async function createWorkspace({
   // ---- Style library ----
   styles = new StyleLibrary(store, dataDir);
   let extracting = 0;
-  app.get("/api/styles", (_req, res) => res.json({ styles: styles.list() }));
-  app.get("/api/styles/:id", (req, res) => {
-    const s = styles.get(req.params.id);
-    if (!s) throw new AppError("风格不存在", 404);
-    res.json(s);
+  app.use("/api/styles/:id", (req, _res, next) => {
+    if (!styles.get(req.params.id, req.user)) throw new AppError("风格不存在", 404);
+    next();
   });
+  app.get("/api/styles", (req, res) => res.json({ styles: styles.list(req.user) }));
+  app.get("/api/styles/:id", (req, res) => res.json(styles.get(req.params.id, req.user)));
   app.get("/api/styles/:id/cover", (req, res) => {
-    const file = styles.get(req.params.id) && styles.coverFile(req.params.id);
+    const file = styles.coverFile(req.params.id);
     if (!file) throw new AppError("没有样图", 404);
     res.sendFile(file, { dotfiles: "allow" });
   });
@@ -295,12 +360,12 @@ export async function createWorkspace({
     if (extracting >= 2) throw new AppError("正在分析其他样图，请稍后", 429);
     const prompt = text(req.body?.prompt, 2000, "提示词");
     const name = text(req.body?.name, 16, "风格名");
-    const id = styles.create({ name: name || "分析中…", prompt });
+    const id = styles.create({ name: name || "分析中…", prompt }, req.user.id);
     const file = path.join(styles.dir, `${id}.png`);
     try {
       await normalizeUpload(req.file.buffer, file);
     } catch (error) {
-      await styles.remove(id).catch(() => {});
+      await styles.remove(id, req.user).catch(() => {});
       throw error;
     }
     extracting++;
@@ -315,11 +380,16 @@ export async function createWorkspace({
         extracting--;
       }
     })();
-    res.status(202).json(styles.get(id));
+    res.status(202).json(styles.get(id, req.user));
   });
-  app.post("/api/styles/:id", (req, res) => res.json(styles.update(req.params.id, req.body || {})));
+  app.post("/api/styles/:id", (req, res) => res.json(styles.update(req.params.id, req.body || {}, req.user)));
+  app.post("/api/styles/:id/share", adminOnly, (req, res) => {
+    styles.editable(req.params.id, req.user);
+    styles.share(req.params.id, !!req.body?.shared);
+    res.json(styles.get(req.params.id, req.user));
+  });
   app.delete("/api/styles/:id", async (req, res) => {
-    await styles.remove(req.params.id);
+    await styles.remove(req.params.id, req.user);
     res.json({ ok: true });
   });
   // Cover samples for built-in styles go through the normal pipeline (free of credits).
@@ -353,7 +423,7 @@ export async function createWorkspace({
       ],
     };
   }
-  app.post("/api/styles/:id/cover", admission, async (req, res) => {
+  app.post("/api/styles/:id/cover", adminOnly, admission, async (req, res) => {
     await createJob(req, res, coverParams(styles.ready(req.params.id)), null);
   });
   // Batch: queue every missing cover, feeding the job queue a few at a time.
@@ -366,21 +436,21 @@ export async function createWorkspace({
       const id = coverBacklog.shift();
       const s = styles.get(id);
       if (!s || s.cover) continue;
-      const fake = { body: { providerMode: coverMode }, get: () => "cover-" + id + "-" + randomUUID() };
+      const fake = { body: { providerMode: coverMode }, user: users.get(ADMIN_ID), get: () => "cover-" + id + "-" + randomUUID() };
       const sink = { status: () => sink, json: () => {} };
       await createJob(fake, sink, coverParams(s), null).catch((error) => console.error("样图任务创建失败：", id, error.message));
     }
   };
   const coverTimer = setInterval(() => feedCovers().catch(() => {}), 5000);
   coverTimer.unref();
-  app.post("/api/styles-covers", (req, res) => {
+  app.post("/api/styles-covers", adminOnly, (req, res) => {
     coverMode = req.body?.providerMode === "api" ? "api" : "codex";
     const missing = styles.list().filter((s) => s.source === "builtin" && !s.cover && !s.types.includes("interior")).map((s) => s.id);
     coverBacklog = [...new Set([...coverBacklog, ...missing])];
     feedCovers().catch(() => {});
     res.json({ queued: coverBacklog.length, missing: missing.length });
   });
-  app.get("/api/styles-covers", (_req, res) => res.json({ pending: coverBacklog.length }));
+  app.get("/api/styles-covers", adminOnly, (_req, res) => res.json({ pending: coverBacklog.length }));
 
   // ---- Drafts: upload → AI directions → choose → storyboard → confirm ----
   const drafts = new Map();
@@ -414,7 +484,7 @@ export async function createWorkspace({
   }
   const analyze = (d) =>
     think(d, "analyzing", async () => {
-      const candidates = candidatesFor(styles.list(), d.input.skillId);
+      const candidates = candidatesFor(styles.list(users.get(d.userId)), d.input.skillId);
       const r = await textAI.analyze({ ...d.input, hasMain: d.hasMainImage, hasReference: d.refCount > 0 }, imagesOf(d), candidates);
       Object.assign(d, { status: "directions", result: r.result, via: r.via, warning: r.warning || null, chosen: null, frames: null });
     });
@@ -424,9 +494,9 @@ export async function createWorkspace({
       const r = await textAI.storyboard({ ...d.input, hasMain: d.hasMainImage }, imagesOf(d), d.result, chosen);
       Object.assign(d, { status: "ready", frames: r.frames, via: r.via, warning: r.warning || null });
     });
-  const getDraft = (id) => {
+  const getDraft = (id, user) => {
     const d = drafts.get(id);
-    if (!d || Date.now() - d.createdAt > DRAFT_TTL) throw new AppError("草稿已过期，请重新上传", 404);
+    if (!d || Date.now() - d.createdAt > DRAFT_TTL || d.userId !== user?.id) throw new AppError("草稿已过期，请重新上传", 404);
     return d;
   };
   const busyDraft = (d) => ["analyzing", "storyboarding"].includes(d.status);
@@ -454,7 +524,7 @@ export async function createWorkspace({
     next();
   }, upload, async (req, res) => {
     const input = draftInput(req.body || {});
-    if (input.styleId) styles.ready(input.styleId);
+    if (input.styleId) styles.ready(input.styleId, req.user);
     const scene = SCENES[input.skillId];
     const hasMainImage = !!req.files?.main?.length;
     if (scene.mainRequired && !hasMainImage) throw new AppError(`请上传${scene.mainLabel}`);
@@ -468,7 +538,7 @@ export async function createWorkspace({
         await normalizeUpload(file.buffer, path.join(dir, name));
         inputs.push(name);
       }
-      const d = { id, dir, input, hasMainImage, inputs, refCount: req.files?.reference?.length || 0, createdAt: Date.now() };
+      const d = { id, userId: req.user.id, dir, input, hasMainImage, inputs, refCount: req.files?.reference?.length || 0, createdAt: Date.now() };
       drafts.set(id, d);
       analyze(d);
       res.status(202).json(draftView(d));
@@ -477,10 +547,10 @@ export async function createWorkspace({
       throw error;
     }
   });
-  app.get("/api/drafts/:id", (req, res) => res.json(draftView(getDraft(req.params.id))));
+  app.get("/api/drafts/:id", (req, res) => res.json(draftView(getDraft(req.params.id, req.user))));
   // New directions ("换一批"), optionally with updated note/count/size.
   app.post("/api/drafts/:id/replan", (req, res) => {
-    const d = getDraft(req.params.id);
+    const d = getDraft(req.params.id, req.user);
     if (busyDraft(d)) return res.json(draftView(d));
     if (thinking >= 3) throw new AppError("正在处理其他请求，请稍后重试", 429);
     d.input = draftInput({ ...req.body, skillId: d.input.skillId }, d.input);
@@ -489,7 +559,7 @@ export async function createWorkspace({
   });
   // Pick a direction (or re-run the storyboard for the same one).
   app.post("/api/drafts/:id/choose", (req, res) => {
-    const d = getDraft(req.params.id);
+    const d = getDraft(req.params.id, req.user);
     if (busyDraft(d)) throw new AppError("AI 还在处理，请稍候", 409);
     if (!d.result) throw new AppError("请先等 AI 给出方向");
     const index = req.body?.index;
@@ -500,7 +570,7 @@ export async function createWorkspace({
     res.json(draftView(d));
   });
   app.get("/api/drafts/:id/input/:n", async (req, res) => {
-    const d = getDraft(req.params.id);
+    const d = getDraft(req.params.id, req.user);
     const name = d.inputs[Number(req.params.n)];
     if (!name) throw new AppError("文件不存在", 404);
     res.sendFile(await regularFile(d.dir, name), { dotfiles: "allow" });
@@ -535,7 +605,7 @@ export async function createWorkspace({
     await fsp.mkdir(dir);
     try {
       await prepareJob(dir, params, sourceDir);
-      const job = store.create(params, req.get("Idempotency-Key"), { id, sourceId });
+      const job = store.create(params, req.get("Idempotency-Key"), { id, sourceId, userId: req.user.id });
       if (job.id !== id) await fsp.rm(dir, { recursive: true, force: true });
       res.status(202).json(job);
       queue.kick();
@@ -548,7 +618,7 @@ export async function createWorkspace({
     (frames[0]?.texts.find((t) => t.role === "headline")?.text || direction?.conceptName || SCENES[skillId].name).slice(0, 40);
 
   app.post("/api/jobs", admission, async (req, res) => {
-    const d = getDraft(String(req.body?.draftId || ""));
+    const d = getDraft(String(req.body?.draftId || ""), req.user);
     if (d.status !== "ready" || !d.frames) throw new AppError("请先选定方向并等分镜完成");
     const frames = sanitizeFrames(req.body?.frames, d.input.skillId, d.input.count, { strict: true });
     const direction = d.result.directions[d.chosen];
@@ -595,7 +665,7 @@ export async function createWorkspace({
     req.body = { providerMode: source.params.providerMode, resolution: source.params.resolution, ...req.body };
     await createJob(req, res, params, path.join(jobsDir, source.id), source.id);
   });
-  registerSuites({ app, store, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir });
+  registerSuites({ app, store, users, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir });
   app.post("/api/jobs/:id/upscale", admission, async (req, res) => {
     const source = store.get(req.params.id);
     if (!source || source.status !== "succeeded")
@@ -634,6 +704,7 @@ export async function createWorkspace({
       const job = store.create(params, req.get("Idempotency-Key"), {
         id,
         sourceId: source.id,
+        userId: req.user.id,
       });
       if (job.id !== id) await fsp.rm(dir, { recursive: true, force: true });
       res.status(202).json(job);
@@ -734,6 +805,7 @@ export async function createWorkspace({
     close: async () => {
       clearInterval(sweeper);
       clearInterval(coverTimer);
+      clearInterval(limitTimer);
       await queue.close();
       store.close();
     },

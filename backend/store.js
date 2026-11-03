@@ -1,5 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { AppError } from "./errors.js";
+import { Users } from "./users.js";
 
 export const SKILLS = {
   upscale: { name: "4K 清晰度提升", cost: 10 },
@@ -8,14 +10,9 @@ export const SKILLS = {
   poster: { name: "海报 / 菜单", cost: 15 },
   interior: { name: "装修效果图", cost: 25 },
 };
-export class AppError extends Error {
-  constructor(message, status = 400) {
-    super(message);
-    this.status = status;
-  }
-}
+export { AppError };
 
-// One private workspace. SQLite owns all job transitions and credit accounting.
+// SQLite owns all job transitions and per-account credit accounting (wallets live in users).
 export class Store {
   constructor(filename) {
     this.db = new DatabaseSync(filename);
@@ -32,6 +29,7 @@ export class Store {
         amount INTEGER NOT NULL, created_at TEXT NOT NULL, UNIQUE(job_id,kind));
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, expires INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status,created_at);`);
+    this.users = new Users(this);
   }
   transaction(fn) {
     this.db.exec("BEGIN IMMEDIATE");
@@ -44,21 +42,25 @@ export class Store {
       throw error;
     }
   }
-  account() {
+  balance(userId) {
+    return this.db.prepare("SELECT balance FROM users WHERE id=?").get(userId)?.balance ?? 0;
+  }
+  account(userId) {
     return {
-      balance: this.db.prepare("SELECT balance FROM wallet WHERE id=1").get()
-        .balance,
+      balance: this.balance(userId),
       ledger: this.db
         .prepare(
-          "SELECT job_id AS jobId,kind,amount,created_at AS createdAt FROM ledger ORDER BY id DESC LIMIT 100",
+          "SELECT job_id AS jobId,kind,amount,created_at AS createdAt FROM ledger WHERE user_id=? ORDER BY id DESC LIMIT 100",
         )
-        .all(),
+        .all(userId)
+        .map((l) => (l.kind === "grant" ? { ...l, note: l.jobId, jobId: null } : l)),
     };
   }
   decode(row) {
     if (!row) return null;
     return {
       id: row.id,
+      userId: row.user_id,
       sourceId: row.source_id,
       status: row.status,
       phase: row.phase,
@@ -80,10 +82,10 @@ export class Store {
       this.db.prepare("SELECT * FROM jobs WHERE request_key=?").get(key),
     );
   }
-  list() {
+  list(userId) {
     return this.db
-      .prepare("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100")
-      .all()
+      .prepare("SELECT * FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT 100")
+      .all(userId)
       .map((r) => this.decode(r));
   }
   next() {
@@ -95,10 +97,14 @@ export class Store {
         .get(),
     );
   }
-  create(params, requestKey, { id = randomUUID(), sourceId = null } = {}) {
+  create(params, requestKey, { id = randomUUID(), sourceId = null, userId } = {}) {
+    if (!userId) throw new AppError("请先登录", 401);
     return this.transaction(() => {
       const old = this.byKey(requestKey);
-      if (old) return old;
+      if (old) {
+        if (old.userId !== userId) throw new AppError("提交编号冲突，请刷新后重试", 409);
+        return old;
+      }
       const count = params.count;
       if (
         !Object.hasOwn(SKILLS, params.skillId) ||
@@ -115,13 +121,21 @@ export class Store {
           .get().n >= 5
       )
         throw new AppError("队列已满，请稍后提交", 429);
+      if (
+        this.db
+          .prepare("SELECT count(*) AS n FROM jobs WHERE user_id=? AND status IN ('queued','running')")
+          .get(userId).n >= 3
+      )
+        throw new AppError("你已有 3 个任务在排队，请等它们完成后再提交", 429);
       // Style-library covers are workspace maintenance, not a merchant generation.
       const cost = params.operation === "cover" ? 0 : SKILLS[params.skillId].cost * count;
-      if (this.account().balance < cost)
-        throw new AppError("测试积分不足，请联系工作台管理员", 402);
+      if (this.balance(userId) < cost)
+        throw new AppError("积分不足，请联系管理员充值", 402);
       const now = new Date().toISOString();
       this.db
-        .prepare("INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+        .prepare(
+          "INSERT INTO jobs(id,request_key,source_id,status,phase,params,cost,created_at,updated_at,error,manifest,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        )
         .run(
           id,
           requestKey,
@@ -134,12 +148,13 @@ export class Store {
           now,
           null,
           null,
+          userId,
         );
       if (cost) {
-        this.db.prepare("UPDATE wallet SET balance=balance-? WHERE id=1").run(cost);
+        this.db.prepare("UPDATE users SET balance=balance-? WHERE id=?").run(cost, userId);
         this.db
-          .prepare("INSERT INTO ledger(job_id,kind,amount,created_at) VALUES(?,?,?,?)")
-          .run(id, "reserve", -cost, now);
+          .prepare("INSERT INTO ledger(job_id,kind,amount,created_at,user_id) VALUES(?,?,?,?,?)")
+          .run(id, "reserve", -cost, now, userId);
       }
       return this.get(id);
     });
@@ -186,10 +201,10 @@ export class Store {
           id,
         );
       if (job.cost) {
-        this.db.prepare("UPDATE wallet SET balance=balance+? WHERE id=1").run(job.cost);
+        this.db.prepare("UPDATE users SET balance=balance+? WHERE id=?").run(job.cost, job.userId);
         this.db
-          .prepare("INSERT INTO ledger(job_id,kind,amount,created_at) VALUES(?,?,?,?)")
-          .run(id, "refund", job.cost, now);
+          .prepare("INSERT INTO ledger(job_id,kind,amount,created_at,user_id) VALUES(?,?,?,?,?)")
+          .run(id, "refund", job.cost, now, job.userId);
       }
       return true;
     });
