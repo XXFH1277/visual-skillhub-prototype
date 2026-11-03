@@ -12,6 +12,7 @@ import { createProviders } from "./providers.js";
 import { createTextAI, compareTexts } from "./text-ai.js";
 import { sanitizeFrames, candidatesFor } from "./planner.js";
 import { StyleLibrary } from "./styles.js";
+import { registerSuites } from "./suites.js";
 import { SCENES, textsForImage } from "../shared/scenes.js";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -134,7 +135,7 @@ export async function createWorkspace({
       "Referrer-Policy": "no-referrer",
       "X-Frame-Options": "DENY",
       "Content-Security-Policy":
-        "default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     });
     if (!allowedHosts.has(req.hostname))
       return res
@@ -594,6 +595,7 @@ export async function createWorkspace({
     req.body = { providerMode: source.params.providerMode, resolution: source.params.resolution, ...req.body };
     await createJob(req, res, params, path.join(jobsDir, source.id), source.id);
   });
+  registerSuites({ app, store, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir });
   app.post("/api/jobs/:id/upscale", admission, async (req, res) => {
     const source = store.get(req.params.id);
     if (!source || source.status !== "succeeded")

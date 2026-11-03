@@ -13,7 +13,8 @@ const OPENERS = {
 const AREA = { top: "画面上方约四分之一", bottom: "画面下方约四分之一", left: "画面左侧约四成", right: "画面右侧约四成", center: "画面中央" };
 
 export function frameInputs(params, index) {
-  const files = [...params.inputs];
+  const frame = params.frames[index];
+  const files = frame?.photos?.length ? [...frame.photos] : [...params.inputs];
   if (params.styleRef && params.frames[index]?.textMode !== "overlay") files.push(params.styleRef);
   return files;
 }
@@ -27,7 +28,12 @@ export function framePrompt(params, index) {
 
   const roles = [];
   let n = 1;
-  if (params.hasMainImage) {
+  if (frame.photos?.length) {
+    frame.photos.forEach((_, i) => {
+      roles.push(`图${n}：商家实拍${frame.photoNotes?.[i] ? `（${frame.photoNotes[i]}）` : ""}——画面以它为基础重新布光、构图和排版；商品/包装的形状、颜色、图案、Logo 和文字保持真实，不重新设计。`);
+      n++;
+    });
+  } else if (params.hasMainImage) {
     roles.push(
       params.skillId === "interior"
         ? `图${n}：现场照片——保持同一机位、视角、透视、墙体、门窗位置与数量、梁柱和固定设施，只改造软装、饰面与配色。`
@@ -35,7 +41,7 @@ export function framePrompt(params, index) {
     );
     n++;
   }
-  const refs = params.refCount || 0;
+  const refs = frame.photos?.length ? 0 : params.refCount || 0;
   if (refs > 0) {
     roles.push(`图${n}${refs > 1 ? `–图${n + refs - 1}` : ""}：商家给的风格参考——照着它的色调、光线、道具和排版气质做，但不要复制其中的商品、文字和 Logo。`);
     n += refs;

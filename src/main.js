@@ -1,6 +1,7 @@
 import { SCENES, SIZE_NAMES, TEXT_MODES, TEXT_ROLES, MAX_TEXTS } from "../shared/scenes.js";
 import { CATEGORIES, IMAGE_TYPES, TONES, sceneTypes } from "../shared/styles.js";
 import { IMAGE_SIZES, upscaleSize } from "../shared/generation.js";
+import { initSuite } from "./suite.js";
 
 const app = document.querySelector("#app");
 const nav = document.querySelector("#nav");
@@ -57,7 +58,7 @@ function header() {
   const route = location.hash.replace(/^#\/?/, "").split("/")[0];
   const on = (r) => (r.includes(route) ? "on" : "");
   nav.innerHTML = workspace
-    ? `<a href="#/" class="${on(["", "new"])}">出图</a><a href="#/styles" class="${on(["styles"])}">风格库</a><a href="#/tasks" class="${on(["tasks", "job"])}">我的作品</a><a class="balance ${on(["credits"])}" href="#/credits">${workspace.account.balance} 积分</a><button class="link" id="logout">退出</button>`
+    ? `<a href="#/" class="${on(["", "suite"])}">商品</a><a href="#/new/product" class="${on(["new"])}">单张出图</a><a href="#/styles" class="${on(["styles"])}">风格库</a><a href="#/tasks" class="${on(["tasks", "job"])}">我的作品</a><a class="balance ${on(["credits"])}" href="#/credits">${workspace.account.balance} 积分</a><button class="link" id="logout">退出</button>`
     : "";
   $("#logout")?.addEventListener("click", () =>
     busy($("#logout"), async () => {
@@ -756,6 +757,9 @@ async function render() {
         cleanup = () => clearTimeout(t);
       } else await refresh();
     } else if (route === "styles") await stylesPage();
+    else if (route === "suite" && id === "new") await suite.newPage();
+    else if (route === "suite" && id) await suite.suitePage(id, location.hash.split("/")[3]);
+    else if (!route) await suite.homePage();
     else if (route === "credits") {
       await refresh();
       if (token === view) creditsPage();
@@ -771,6 +775,20 @@ async function render() {
     }
   }
 }
+const suite = initSuite({
+  app,
+  api,
+  json,
+  toast,
+  busy,
+  esc,
+  $,
+  $$,
+  key,
+  refresh,
+  getWorkspace: () => workspace,
+  setCleanup: (fn) => (cleanup = fn),
+});
 addEventListener("hashchange", () => {
   scrollTo(0, 0);
   render();
