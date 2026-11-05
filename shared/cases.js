@@ -20,7 +20,7 @@ export const CASES = [
     ],
     shots: [
       { id: "hero", title: "主图", photos: ["package", "product"], brief: "包装礼盒在上、实物整条摆在前景，暖色桌面，顶部大标题写品名，底部一条深色信息条写 2–3 个关键词" },
-      { id: "cooked", title: "成品吃法", photos: ["cooked"], brief: "成品菜特写，暖光家常餐桌，左上角大标题“清蒸一盘，尝一口××风味”式短句" },
+      { id: "cooked", title: "成品吃法", photos: ["cooked"], brief: "成品菜特写；标题里的做法要和所用成品图里的真实做法一致（图里是白灼就写白灼），一句让人想吃的短句" },
       { id: "product", title: "实物细节", photos: ["product", "detail"], brief: "实物近景，冰粒和光泽，标题强调外观细节看得见" },
       { id: "origin", title: "产地发货", photos: ["origin"], brief: "产地实景照片为主体，上方深色标题区“××发货，从××出发”" },
       { id: "gift", title: "礼赠场景", photos: ["package"], brief: "礼盒放在中式茶桌/餐边柜，温暖居家氛围，标题偏情感（带给惦记的人）" },

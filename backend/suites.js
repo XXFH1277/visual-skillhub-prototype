@@ -9,7 +9,7 @@ import { labelPhotos, buildProfile, normalizeProfile, writeNote, planFrames, pro
 import { STYLES } from "../shared/styles.js";
 import { noteDocx } from "./docx-note.js";
 import { caseById, CASES } from "../shared/cases.js";
-import { SECTION_TYPES, SECTION_MODES, PHOTO_ROLES, QUICK, scanRisky } from "../shared/suite.js";
+import { SECTION_TYPES, SECTION_MODES, PHOTO_ROLES, QUICK, scanRisky, paletteRoles } from "../shared/suite.js";
 
 // "商品全套": one product → profile → note → product images → detail page.
 // Each AI step is one multimodal call; image generation reuses the job queue.
@@ -49,7 +49,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
   const imgPaths = (s, list) => list.map((p) => path.join(dirOf(s.id), p.file));
   const view = (s) => ({
     ...s,
-    palette: s.look?.palette?.length >= 3 ? s.look.palette : s.profile?.palette,
+    palette: paletteRoles(s.look?.palette?.length >= 3 ? s.look.palette : s.profile?.palette),
     text: undefined,
     hasText: !!s.text,
     risky: scanRisky([s.note?.text, s.profile?.copy, JSON.stringify(s.profile || {})].join("\n")),

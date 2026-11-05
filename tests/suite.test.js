@@ -281,3 +281,14 @@ test("style directions vary the look; AI dish pictures join the photo library an
   // The Word note never shows AI pictures as real photos.
   assert.equal((await s.request(`/api/suites/${id}/note.docx`)).status, 200);
 });
+
+test("template palettes always get a readable text color, an accent and a light page", async () => {
+  const { paletteRoles } = await import("../shared/suite.js");
+  const lum = (h) => { const [r, g, b] = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)); return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255; };
+  for (const p of [["#BFDCE8", "#EAF4F8", "#D94F3D"], ["#E8572A", "#8A5A33", "#F5E6D0"], ["#ffffff", "#eeeeee", "#dddddd"], []]) {
+    const [dark, , bg] = paletteRoles(p);
+    assert.ok(lum(dark) <= 0.32, `${p} → text ${dark}`);
+    assert.ok(lum(bg) >= 0.8, `${p} → page ${bg}`);
+  }
+  assert.equal(paletteRoles(["#BFDCE8", "#EAF4F8", "#D94F3D"])[1], "#d94f3d");
+});

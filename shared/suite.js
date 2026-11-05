@@ -84,3 +84,28 @@ export function saferText(text) {
   for (const [word, fix] of RISKY_WORDS) if (!fix.startsWith("（")) out = out.split(word).join(fix === "删除" ? "" : fix);
   return out.replace(/，，/g, "，").replace(/\s+，/g, "，");
 }
+
+// Template screens need [dark text color, accent, light background] whatever order a
+// palette comes in; the dark one is darkened until it reads on white.
+export function paletteRoles(colors = []) {
+  const parse = (h) => (/^#[0-9a-f]{6}$/i.test(h || "") ? [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)) : null);
+  const hex = (rgb) => "#" + rgb.map((v) => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, "0")).join("");
+  const lum = ([r, g, b]) => (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  const sat = ([r, g, b]) => (Math.max(r, g, b) - Math.min(r, g, b)) / 255;
+  const list = colors.map(parse).filter(Boolean);
+  if (list.length < 2) return ["#1d3557", "#e8541e", "#f6efe6"];
+  // Accent = the most colorful; of the rest, the darkest carries text and the lightest is the page.
+  let accent = [...list].sort((a, b) => sat(b) - sat(a))[0];
+  const rest = list.filter((c) => c !== accent);
+  const byLum = [...rest].sort((a, b) => lum(a) - lum(b));
+  let dark = byLum[0];
+  const light = byLum.length > 1 ? byLum[byLum.length - 1] : [246, 239, 230];
+  while (lum(dark) > 0.3) {
+    // Darken, and pull channels apart a little so a pale tint becomes a deep tone, not grey.
+    const mean = (dark[0] + dark[1] + dark[2]) / 3;
+    dark = dark.map((v) => (v + (v - mean) * 0.35) * 0.8);
+  }
+  if (lum(accent) > 0.72) accent = accent.map((v) => v * 0.7);
+  const bg = lum(light) > 0.86 ? light : light.map((v) => v + (255 - v) * 0.75);
+  return [hex(dark), hex(accent), hex(bg)];
+}
