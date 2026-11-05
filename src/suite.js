@@ -457,6 +457,7 @@ export function initSuite(ctx) {
         .join("")}</div><p class="muted">点“用这张”加入实拍图库，商品图和详情页的“吃法”会用它。</p>`;
     return `<section class="card dish-card"><h2>${hasReal ? "再做几盘菜" : "还没做成菜？让 AI 做一盘"} <small class="muted">照着你的生鲜实拍图做，食材样子不变</small></h2>
       <div class="pills" id="dish-methods">${methods.map((m, i) => `<button class="pill ${i === 0 ? "on" : ""}" data-m="${esc(m)}">${esc(m)}</button>`).join("")}</div>
+      <div class="pills" id="dish-look"><button class="pill on" data-look="home">家常随手拍</button><button class="pill" data-look="shop">餐厅精致</button></div>
       <div class="row wrap"><input id="dish-custom" maxlength="20" placeholder="或者自己写，例如：雪菜蒸"><button class="btn" id="make-dish">做 2 盘 · ${2 * getWorkspace().skills.product.cost} 积分</button></div>
       <label class="mini"><input type="checkbox" id="ai-label" ${s.aiLabel === false ? "" : "checked"}>用到 AI 菜品图的商品图，角落标“烹饪示意 图片仅供参考”</label>
       ${results}</section>`;
@@ -474,11 +475,13 @@ export function initSuite(ctx) {
     $("#make-dish", box)?.addEventListener("click", (e) =>
       busy(e.currentTarget, async () => {
         const m = $("#dish-custom", box).value.trim() || method;
-        await api(`/suites/${s.id}/dish`, json({ method: m, count: 2 }, { "Idempotency-Key": key() }));
+        const look = $("#dish-look .pill.on", box)?.dataset.look || "home";
+        await api(`/suites/${s.id}/dish`, json({ method: m, count: 2, look }, { "Idempotency-Key": key() }));
         await refresh();
         suitePage(s.id);
       }),
     );
+    $$("#dish-look .pill", box).forEach((b) => (b.onclick = () => $$("#dish-look .pill", box).forEach((x) => x.classList.toggle("on", x === b))));
     $("#ai-label", box)?.addEventListener("change", (e) => saveSuite({ aiLabel: e.target.checked }));
     $$("[data-adopt]", box).forEach(
       (b) =>

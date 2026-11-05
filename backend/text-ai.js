@@ -87,12 +87,14 @@ export function createTextAI({
   const config = textConfig(env);
   let lastError = null;
   let available = null;
+  const recent = [];
 
   async function viaApi({ system, text, images = [], json = false }, signal) {
     const content = [
       ...(await Promise.all(images.map(async (f) => ({ type: "image_url", image_url: { url: await dataUrl(f) } })))),
       { type: "text", text },
     ];
+    const started = Date.now();
     const send = async (withJson) => {
       const timeout = AbortSignal.timeout(config.timeoutMs);
       return fetchImpl(new URL("chat/completions", config.base), {
@@ -127,6 +129,17 @@ export function createTextAI({
       throw new Error(`Kimi 返回 HTTP ${response.status}${message ? "：" + String(message).slice(0, 120) : ""}`);
     }
     const body = await response.json();
+    // Keep a little timing history so slow models are visible in the admin workspace info.
+    const u = body?.usage || {};
+    recent.unshift({
+      at: new Date().toISOString(),
+      seconds: Math.round((Date.now() - started) / 1000),
+      images: images.length,
+      promptTokens: u.prompt_tokens ?? null,
+      completionTokens: u.completion_tokens ?? null,
+      reasoningTokens: u.completion_tokens_details?.reasoning_tokens ?? null,
+    });
+    recent.length = Math.min(recent.length, 12);
     const answer = body?.choices?.[0]?.message?.content;
     if (typeof answer !== "string" || !answer.trim()) throw new Error("Kimi 没有返回内容");
     return answer.trim();
@@ -156,7 +169,7 @@ export function createTextAI({
 
   const describe = () =>
     config
-      ? { ready: true, via: "kimi", model: config.model, label: `Kimi · ${config.model}`, lastError, models: available }
+      ? { ready: true, via: "kimi", model: config.model, label: `Kimi · ${config.model}`, lastError, models: available, recent }
       : codexReady()
         ? { ready: true, via: "codex", label: "本机 Codex（临时，较慢）", lastError }
         : { ready: false, via: "rules", label: "未配置 Kimi", message: "未配置 Kimi：请在 .env 填写 KIMI_API_KEY", lastError };

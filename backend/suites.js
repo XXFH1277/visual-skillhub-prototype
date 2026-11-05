@@ -114,9 +114,12 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       await ensureLooks(s);
     },
     async profile(s) {
-      if (s.photos.length) {
-        const labels = await labelPhotos(textAI, imgPaths(s, s.photos));
-        s.photos = s.photos.map((p, i) => ({ ...p, ...labels[i] }));
+      // AI dish pictures keep their own label; only real photos are (re)read.
+      const real = s.photos.filter((p) => !p.ai);
+      if (real.length) {
+        const labels = await labelPhotos(textAI, imgPaths(s, real));
+        const byFile = new Map(real.map((p, i) => [p.file, labels[i]]));
+        s.photos = s.photos.map((p) => (byFile.has(p.file) ? { ...p, ...byFile.get(p.file) } : p));
         save(s);
       }
       const rep = ["package", "product", "cooked", "origin", "detail", "compare"]
@@ -431,17 +434,35 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
   });
 
   // ---- Dish pictures for merchants who haven't cooked the new stock yet ----
-  const DISH_PLATES = [
-    "白瓷圆盘，家常餐桌，俯拍 45 度，暖色自然光",
-    "深色粗陶盘，餐厅质感，侧光，浅景深",
-    "木托盘配小碗蘸料，生活感摆拍，正侧面",
-  ];
+  // "家常随手拍" looks like a real customer's phone photo (the AI-studio look reads as fake);
+  // "餐厅精致" is the polished option.
+  const DISH_LOOKS = {
+    home: {
+      opener: "一张普通人在家用手机随手拍的真实菜品照片（生活照，不是商业广告图、不是影棚摄影）。",
+      plates: [
+        "家里常见的白瓷盘或印花盘，放在略旧的餐桌上，旁边随手放着一小碟酱油、半瓶调料或筷子；手机从斜上方俯拍，室内顶灯加窗边自然光",
+        "家常搪瓷碗或不锈钢盘，饭桌上有一碗米饭和另一道家常菜的一角；手机正上方俯拍，光线普通、略偏暖",
+        "刚出锅装在家用大圆盘里，摆得不讲究、汤汁随意，桌上有纸巾或碗边入镜；手机近距离拍，背景是家里的厨房或餐桌",
+      ],
+      look: "像小红书网友晒的家常菜：颜色自然、不过饱和，摆盘随意不对称，有生活杂物入镜，轻微的手机拍摄感（自动曝光、景深不夸张）",
+      avoid: "影棚布光、完美对称摆盘、夸张热气烟雾、过度光泽和磨皮、过饱和的红色、CG/塑料质感、文字水印",
+      core: "casual smartphone photo of a home-cooked Chinese dish, natural indoor light, everyday plate, slightly messy table, realistic colors, not a commercial shoot",
+    },
+    shop: {
+      opener: "餐厅菜品摄影：真实、有食欲的成品菜照片。",
+      plates: ["白瓷圆盘，餐厅餐桌，俯拍 45 度，柔和自然光", "深色粗陶盘，侧光，浅景深", "木托盘配小碗蘸料，正侧面"],
+      look: "干净精致但真实，颜色自然不过饱和",
+      avoid: "塑料感、CG 质感、夸张特效、文字水印",
+      core: "realistic restaurant food photography, natural light, appetizing, true-to-life colors",
+    },
+  };
   app.post("/api/suites/:id/dish", admission, async (req, res) => {
     const s = read(req.params.id);
     needProfile(s);
     const method = String(req.body?.method || "").trim().slice(0, 20);
     if (!method) throw new AppError("选一种做法，例如清蒸、红烧");
     const count = Math.min(Math.max(Number(req.body?.count) || 2, 1), 3);
+    const looks = DISH_LOOKS[req.body?.look === "shop" ? "shop" : "home"];
     const refs = ["product", "detail", "package"]
       .flatMap((r) => s.photos.filter((p) => p.role === r && p.usable && !p.ai))
       .slice(0, 2);
@@ -450,6 +471,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     const params = {
       version: 3,
       skillId: "product",
+      opener: looks.opener,
       productName: `${name} · 菜品图（${method}）`,
       size: "1:1",
       count,
@@ -458,21 +480,21 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         textMode: "none",
         layout: "none",
         texts: [],
-        scene: `美食摄影：把实拍图里的${name}做成「${method}」的成品菜。食材的品种、形状、颜色、切法必须和实拍一致（看得出是同一种食材），按${method}的常见做法真实呈现：熟透的质感、酱汁和油光、热气。${DISH_PLATES[i % DISH_PLATES.length]}。只放这道菜和少量相关配料，不要包装、不要文字。`,
+        scene: `把实拍图里的${name}做成「${method}」，就是普通人家里做出来的样子。食材的品种、大小、形状、颜色必须和实拍一致（看得出是同一种食材），熟度、汤汁按${method}的家常做法如实呈现，不要美化成别的样子。${looks.plates[i % looks.plates.length]}。${looks.look}。只拍这道菜，不要包装、不要任何文字。`,
         photos: refs.map((p) => p.file),
         photoNotes: refs.map((p) => `生鲜实拍（只用来看食材长什么样）：${p.desc}`),
         ref: `dish-${i}`,
       })),
       direction: {
-        conceptName: "家常美味",
-        story: "让人一看就想吃的真实菜品照片",
+        conceptName: req.body?.look === "shop" ? "餐厅精致" : "家常随手拍",
+        story: "看起来就是真的有人做了这道菜、拍下来的照片",
         palette: ["#f4ede2", "#c8572b", "#3b2a20"],
-        props: "盘子、筷子、少量葱姜蒜辣椒等配料",
-        light: "柔和自然光，食物有光泽",
-        camera: "近景，菜品占画面主体",
+        props: "家用盘碗、筷子、调料碟等生活物件",
+        light: "室内自然光/顶灯，不打影棚光",
+        camera: "手机视角，俯拍或斜上方",
         type: "无文字",
-        avoid: "生的食材、塑料感、夸张特效、文字水印",
-        core: "appetizing Chinese home-style dish, realistic food photography, natural light, steam, glossy sauce",
+        avoid: looks.avoid,
+        core: looks.core,
       },
       hasMainImage: false,
       refCount: 0,

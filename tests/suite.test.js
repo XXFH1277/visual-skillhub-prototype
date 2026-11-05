@@ -239,6 +239,8 @@ test("style directions vary the look; AI dish pictures join the photo library an
   assert.equal(dish.status, "succeeded", dish.error);
   assert.equal(dish.params.count, 2);
   assert.match(dish.params.frames[0].scene, /清蒸/);
+  assert.match(dish.params.opener, /手机随手拍/);
+  assert.match(dish.params.direction.avoid, /影棚布光/);
   assert.ok(dish.params.frames[0].photos.length >= 1);
   assert.ok(dish.params.frames.every((f) => f.texts.length === 0));
   suite = await (await s.request(`/api/suites/${id}`)).json();

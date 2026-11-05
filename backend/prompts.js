@@ -45,7 +45,7 @@ export function framePrompt(params, index) {
   const d = params.direction || {};
   const texts = textsForImage(params.skillId, frame);
   const files = frameInputs(params, index);
-  const lines = [OPENERS[params.skillId] + `画幅 ${SIZE_NAMES[params.size] || params.size}。只输出一张图片。`];
+  const lines = [(params.opener || OPENERS[params.skillId]) + `画幅 ${SIZE_NAMES[params.size] || params.size}。只输出一张图片。`];
 
   const roles = [];
   let n = 1;
