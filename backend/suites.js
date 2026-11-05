@@ -70,9 +70,15 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       try {
         if (!textAI.describe().ready) throw new Error("未配置 Kimi，请在 .env 填写 KIMI_API_KEY");
         const latest = read(id);
+        const before = JSON.parse(JSON.stringify(latest));
         await fn(latest);
-        latest.tasks[name] = { status: "done", at: Date.now() };
-        save(latest);
+        // Steps run for minutes while the merchant (or another step) edits the product:
+        // write back only what this step changed, on top of the current state.
+        const fresh = read(id);
+        for (const k of Object.keys(latest))
+          if (k !== "tasks" && JSON.stringify(latest[k]) !== JSON.stringify(before[k])) fresh[k] = latest[k];
+        fresh.tasks = { ...(fresh.tasks || {}), [name]: { status: "done", at: Date.now() } };
+        save(fresh);
       } catch (error) {
         const latest = read(id);
         latest.tasks[name] = { status: "failed", error: error.message };
@@ -120,7 +126,9 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         const labels = await labelPhotos(textAI, imgPaths(s, real));
         const byFile = new Map(real.map((p, i) => [p.file, labels[i]]));
         s.photos = s.photos.map((p) => (byFile.has(p.file) ? { ...p, ...byFile.get(p.file) } : p));
-        save(s);
+        const fresh = read(s.id);
+        fresh.photos = fresh.photos.map((p) => s.photos.find((x) => x.file === p.file) || p);
+        save(fresh);
       }
       const rep = ["package", "product", "cooked", "origin", "detail", "compare"]
         .map((r) => s.photos.find((p) => p.role === r && p.usable))

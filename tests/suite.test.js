@@ -34,6 +34,7 @@ function fakeAI() {
         return JSON.stringify({ photos: images.map((_, i) => ({ i: i + 1, role: roles[i % roles.length], desc: "测试图" + (i + 1), usable: roles[i % roles.length] !== "design" })) });
       }
       if (system.includes("电商美工")) {
+        await new Promise((r) => setTimeout(r, 60));
         const items = JSON.parse(text.split("要做的图：")[1]);
         return JSON.stringify({ frames: items.map((it) => ({ id: it.id, texts: [{ role: "headline", text: it.title }], scene: "画面：" + it.brief })) });
       }
@@ -218,6 +219,12 @@ test("style directions vary the look; AI dish pictures join the photo library an
   assert.match(plan, /实拍里没有出现的包装形式/);
   assert.doesNotMatch(plan, /粗黑体中文大标题 \+ 细线装饰/);
 
+  // Edits made while a step runs survive it.
+  await s.post(`/api/suites/${id}/shots/plan`, {});
+  await s.post(`/api/suites/${id}`, { aiLabel: false });
+  suite = await s.waitTask(id, "shots");
+  assert.equal(suite.aiLabel, false);
+  await s.post(`/api/suites/${id}`, { aiLabel: true });
   // Switch to the second direction; the image job carries it.
   suite = await (await s.post(`/api/suites/${id}/look`, { index: 1 })).json();
   assert.equal(suite.look.conceptName, "年货礼盒");
