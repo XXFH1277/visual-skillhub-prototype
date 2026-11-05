@@ -60,6 +60,11 @@ test("proofreading compares exact text, tolerant of spacing and punctuation", ()
   const bad = compareTexts([{ role: "headline", text: "一键开盖" }, { role: "price", text: "¥99" }], ["一键开羔", "99"]);
   assert.equal(bad.ok, false);
   assert.deepEqual(bad.problems.map((p) => p.text), ["一键开盖"]);
+  // Big number and small label on separate lines, read out of order.
+  const split = compareTexts([{ role: "point", text: "60米深海生长" }, { role: "point", text: "-196℃液氮锁鲜" }, { role: "point", text: "深冷链全程冷链" }], ["深海生长", "液氮锁鲜", "全程冷链", "60米", "-196℃", "深冷链"]);
+  assert.equal(split.ok, true);
+  assert.equal(compareTexts([{ role: "point", text: "60米深海生长" }], ["深海生长", "80米"]).ok, false);
+  assert.equal(compareTexts([{ role: "point", text: "深冷链全程冷链" }], ["深冷链", "全程冷琏"]).ok, false);
 });
 
 test("Kimi client sends images, falls back to common styles on failure", async () => {

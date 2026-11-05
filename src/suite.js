@@ -1,5 +1,8 @@
 import { toPng } from "html-to-image";
 
+// Stat numbers are set big; longer ones (“48小时”) step down so they stay on one line.
+const bigSize = (t) => { const n = [...String(t)].length; return n > 5 ? "xs" : n > 3 ? "sm" : ""; };
+
 // 商品全套：资料 → 档案 → 笔记 → 商品图 → 详情页
 export function initSuite(ctx) {
   const { app, api, json, toast, busy, esc, $, $$, key, refresh, getWorkspace, setCleanup, tweak } = ctx;
@@ -511,7 +514,7 @@ export function initSuite(ctx) {
   function cardsTpl(v) {
     if (!v.headline && !v.body) return "";
     return `<div class="tp-kicker">${esc(v.kicker)}</div><h3 class="tp-head">${nl(v.headline)}</h3>
-      ${v.cards.length ? `<div class="tp-cards">${v.cards.map((c) => `<div><strong>${esc(c.big)}</strong><b>${esc(c.label)}</b><small>${esc(c.sub)}</small></div>`).join("")}</div>` : ""}
+      ${v.cards.length ? `<div class="tp-cards">${v.cards.map((c) => `<div><strong class="${bigSize(c.big)}">${esc(c.big)}</strong><b>${esc(c.label)}</b><small>${esc(c.sub)}</small></div>`).join("")}</div>` : ""}
       ${v.body ? `<p class="tp-body">${hi(v.body, v.highlight)}</p>` : ""}`;
   }
   function sectionHtml(s, sec, safe) {

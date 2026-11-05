@@ -57,13 +57,29 @@ function lcs(a, b) {
   return prev[y.length];
 }
 
+function splitRead(want, items, pieces = 0) {
+  if (!want) return pieces > 1;
+  if (pieces === 3) return false;
+  const chars = Array.from(want);
+  for (let k = chars.length; k >= 2; k--) {
+    const head = chars.slice(0, k).join("");
+    if (items.includes(head) && splitRead(chars.slice(k).join(""), items, pieces + 1)) return true;
+  }
+  return false;
+}
+
 // Compare confirmed text with what the vision model read off the image.
 export function compareTexts(expected, seen) {
   const haystack = normalize(seen.join(""));
+  const items = seen.map(normalize).filter(Boolean);
   const problems = [];
   for (const t of expected) {
     const want = normalize(t.text);
     if (!want || haystack.includes(want)) continue;
+    // Designs often split "60米深海生长" into a big number and a small label on
+    // separate lines, and the reader may list them out of order. Accept it when
+    // the text is 2–3 separately read lines, each read exactly.
+    if (splitRead(want, items)) continue;
     // best-matching window of the same length
     let best = 0;
     const h = Array.from(haystack);

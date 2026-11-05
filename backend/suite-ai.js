@@ -218,7 +218,7 @@ export async function planFrames(ai, profile, items, { kind, look }) {
 - scene：80-200 字的具体画面描述：用哪张实拍图里的什么、怎么摆、背景与道具、光线、文字放哪里多大。
 ${style}
 每项已经指定了版式（layout），按它来设计画面和文字位置。${kind === "detail" ? "\n详情页的每项带了 content（这一屏能用的要点）：文字从里面挑最有力的，整屏文字加起来不超过 50 字；数字、产地等事实照抄。" : ""}
-商品和包装只能画实拍图里有的样子：实拍里没有出现的包装形式（真空袋、保温箱、手提袋、内托等）不要画进画面，需要说明就放在文字里。生鲜没有被烹饪就不要加热气、蒸汽。
+商品和包装只能画实拍图里有的样子：实拍里没有出现的包装形式（真空袋、保温箱、手提袋、内托等）不要画进画面，需要说明就放在文字里。生鲜没有被烹饪就不要加热气、蒸汽。对比屏里“对方”只做中性示意，不要把别人的商品画得发白、发灰、变质或难看，不出现别家品牌和包装。
 ${FACTS}
 只输出 JSON：{"frames":[{"id":"同输入","texts":[{"role":"headline|sub|point","text":"..."}],"scene":"..."}]}`;
   // Two pictures per call, all calls at once: one long call for 6 pictures timed out.

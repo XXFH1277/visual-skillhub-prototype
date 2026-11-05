@@ -204,7 +204,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       hero: `首屏：${p.name}，包装和实物同框，大标题写品名，副标题一句概念`,
       why: `为什么是${p.origin || "这里"}：大标题 + 3 个关键数字/关键词（来自 content.cards），配产地或商品实拍`,
       origin: `产地/货源实景：${p.shipFrom || p.origin}`,
-      compare: "对比：左右或上下分屏，我们 vs 对方，2-3 个差异点用短词标注（来自 content.rows）",
+      compare: "对比：左右或上下分屏，我们 vs 对方，2-3 个差异点用短词标注（来自 content.rows）。“对方”一侧只用中性的示意（图标、剪影、文字格或同款中性摆放），不要画成发白、发灰、变质、脏乱等难看的样子，也不要出现别家的品牌或包装——广告法不允许贬低同行",
       pick: "怎么挑：商品特写，用引线标注 2-3 个看点（来自 content.points）",
       material: "选材与细节：近距离质感特写",
       usage: `吃法/用法：${p.usage?.headline || "成品展示"}`,
