@@ -19,7 +19,16 @@ function fakeAI() {
     calls,
     describe: () => ({ ready: true, via: "kimi", label: "test" }),
     async complete({ system, text, images }) {
-      calls.push({ step: system.slice(0, 12), images: images?.length || 0, text });
+      calls.push({ step: system.slice(0, 12), images: images?.length || 0, text, system });
+      if (system.includes("美术指导")) {
+        return JSON.stringify({
+          looks: [
+            { styleId: "wabi", conceptName: "渔港晨光", story: "清晨码头的冷暖对比", palette: ["#112233", "#c8572b", "#f4ede2"], props: "冰粒、麻绳", light: "清晨侧光", camera: "低机位", type: "粗宋体竖排", why: "有产地感" },
+            { styleId: "not-a-style", conceptName: "编造的", palette: [] },
+            { styleId: "oriental", conceptName: "年货礼盒", story: "红金喜庆", palette: ["#7d1f1a", "#c47a3d", "#e8dcc4"], props: "红绸", light: "暖光", camera: "居中", type: "书法标题", why: "适合送礼" },
+          ],
+        });
+      }
       if (system.includes("整理实拍图")) {
         const roles = ["package", "product", "cooked", "origin", "design", "detail", "compare", "other"];
         return JSON.stringify({ photos: images.map((_, i) => ({ i: i + 1, role: roles[i % roles.length], desc: "测试图" + (i + 1), usable: roles[i % roles.length] !== "design" })) });
@@ -181,4 +190,79 @@ test("ad-law words are flagged and softened for Taobao", () => {
   const text = "国内最好吃的雷达网油带鱼没有之一，假一赔十";
   assert.deepEqual(scanRisky(text).map((r) => r.word), ["没有之一", "最好吃", "假一赔十"]);
   assert.equal(saferText(text), "国内口碑好的雷达网油带鱼，假一赔十");
+});
+
+test("style directions vary the look; AI dish pictures join the photo library and get labelled", async (t) => {
+  const s = await setup(t);
+  const form = new FormData();
+  form.append("text", "舟山带鱼 清蒸好吃");
+  for (const c of ["#aa3311", "#3355aa", "#22aa66"]) form.append("photos", new Blob([await photo(c)], { type: "image/jpeg" }), "p.jpg");
+  const id = (await (await s.request("/api/suites", { method: "POST", body: form })).json()).id;
+  let suite = await s.waitTask(id, "profile");
+  assert.equal(suite.profile.category, "生鲜水产");
+
+  // Planning first picks 3 directions from the style library (unknown ids dropped).
+  await s.post(`/api/suites/${id}/shots/plan`, {});
+  suite = await s.waitTask(id, "shots");
+  assert.deepEqual(suite.looks.map((l) => l.styleId), ["wabi", "oriental"]);
+  assert.equal(suite.look.conceptName, "渔港晨光");
+  assert.deepEqual(suite.palette, ["#112233", "#c8572b", "#f4ede2"]);
+  const plan = s.ai.calls.findLast((c) => c.system.includes("电商美工")).system;
+  assert.match(plan, /渔港晨光/);
+  assert.match(plan, /相邻两张不要用同一种/);
+  assert.match(plan, /实拍里没有出现的包装形式/);
+  assert.doesNotMatch(plan, /粗黑体中文大标题 \+ 细线装饰/);
+
+  // Switch to the second direction; the image job carries it.
+  suite = await (await s.post(`/api/suites/${id}/look`, { index: 1 })).json();
+  assert.equal(suite.look.conceptName, "年货礼盒");
+  assert.equal((await s.post(`/api/suites/${id}/look`, { index: 7 })).status, 400);
+  const gen = await s.post(`/api/suites/${id}/shots/generate`, {}, { "Idempotency-Key": randomUUID() });
+  assert.equal(gen.status, 202, await gen.clone().text());
+  const job = await s.terminal((await gen.json()).id);
+  assert.equal(job.params.direction.conceptName, "年货礼盒");
+  assert.match(job.params.direction.core, /Chinese aesthetic/);
+  // "实拍精修" = no library style.
+  suite = await (await s.post(`/api/suites/${id}/look`, { index: null })).json();
+  assert.equal(suite.look, null);
+
+  // AI dish from the raw photos.
+  assert.equal((await s.post(`/api/suites/${id}/dish`, {}, { "Idempotency-Key": randomUUID() })).status, 400);
+  const d = await s.post(`/api/suites/${id}/dish`, { method: "清蒸", count: 2 }, { "Idempotency-Key": randomUUID() });
+  assert.equal(d.status, 202, await d.clone().text());
+  const dish = await s.terminal((await d.json()).id);
+  assert.equal(dish.status, "succeeded", dish.error);
+  assert.equal(dish.params.count, 2);
+  assert.match(dish.params.frames[0].scene, /清蒸/);
+  assert.ok(dish.params.frames[0].photos.length >= 1);
+  assert.ok(dish.params.frames.every((f) => f.texts.length === 0));
+  suite = await (await s.request(`/api/suites/${id}`)).json();
+  assert.equal(suite.jobs.dish.status, "succeeded");
+  const asset = dish.manifest.assets.find((a) => a.role === "image").name;
+  assert.equal((await s.post(`/api/suites/${id}/photos/adopt`, { jobId: dish.id, asset: "../x.png" })).status, 404);
+  assert.equal((await s.post(`/api/suites/${id}/photos/adopt`, { jobId: job.id, asset })).status, 404);
+  suite = await (await s.post(`/api/suites/${id}/photos/adopt`, { jobId: dish.id, asset })).json();
+  const added = suite.photos.at(-1);
+  assert.equal(added.ai, true);
+  assert.equal(added.role, "cooked");
+  assert.match(added.desc, /AI 示意：清蒸/);
+  assert.equal((await s.request(`/api/suites/${id}/photo/${added.file}`)).status, 200);
+  // Adopting twice doesn't duplicate.
+  assert.equal((await (await s.post(`/api/suites/${id}/photos/adopt`, { jobId: dish.id, asset })).json()).photos.length, suite.photos.length);
+
+  // Shots using the AI dish carry the disclaimer; turning it off removes it.
+  await s.post(`/api/suites/${id}/shots/plan`, {});
+  suite = await s.waitTask(id, "shots");
+  const cooked = suite.shots.find((x) => x.photos.includes(added.file));
+  assert.ok(cooked, "the AI dish is picked for a cooked shot");
+  let g = await s.terminal((await (await s.post(`/api/suites/${id}/shots/generate`, {}, { "Idempotency-Key": randomUUID() })).json()).id);
+  let frame = g.params.frames.find((f) => f.ref === cooked.id);
+  assert.ok(frame.texts.some((x) => x.text === "烹饪示意 图片仅供参考"));
+  assert.match(frame.photoNotes.join(), /AI 示意图/);
+  await s.post(`/api/suites/${id}`, { aiLabel: false });
+  g = await s.terminal((await (await s.post(`/api/suites/${id}/shots/generate`, {}, { "Idempotency-Key": randomUUID() })).json()).id);
+  frame = g.params.frames.find((f) => f.ref === cooked.id);
+  assert.ok(!frame.texts.some((x) => x.text.includes("仅供参考")));
+  // The Word note never shows AI pictures as real photos.
+  assert.equal((await s.request(`/api/suites/${id}/note.docx`)).status, 200);
 });

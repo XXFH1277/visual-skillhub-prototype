@@ -483,3 +483,28 @@ dd { margin: 0; line-height: 1.5; }
 @media (max-width: 720px) {
   .gap > span { width: 100%; }
 }
+
+/* ---------- style directions / AI dishes ---------- */
+@media (max-width: 520px) {
+  .tabs { gap: 0; }
+  .tabs button { padding: 10px 9px; font-size: 14px; }
+}
+.look-card h2 { margin: 0; font-size: 17px; }
+.looks { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 12px; }
+.look { display: grid; gap: 4px; text-align: left; padding: 8px; border: 1.5px solid var(--line); border-radius: 14px; background: #fff; cursor: pointer; font: inherit; color: inherit; }
+.look img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 9px; background: #f1eee8; }
+.look b { font-size: 14px; }
+.look small { font-size: 12px; color: var(--muted); line-height: 1.35; }
+.look.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.look.plain .plain-ico { display: grid; place-items: center; aspect-ratio: 1; border-radius: 9px; background: #f1eee8; font-size: 34px; }
+.swatches { display: flex; gap: 3px; }
+.swatches i { width: 14px; height: 14px; border-radius: 4px; border: 1px solid rgba(0, 0, 0, 0.08); }
+.photo-grid figure { position: relative; }
+.ai-badge { position: absolute; top: 6px; left: 6px; z-index: 1; font-style: normal; font-size: 11px; font-weight: 700; background: rgba(29, 53, 87, 0.85); color: #fff; padding: 2px 6px; border-radius: 6px; }
+.dish-card h2 { font-size: 17px; margin: 0 0 10px; }
+.dish-card .row { margin: 10px 0; }
+.dish-card #dish-custom { flex: 1; min-width: 160px; }
+.dish-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 12px; }
+.dish-results figure { margin: 0; display: grid; gap: 6px; }
+.dish-results img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px; }
+.checklist small { margin-left: 4px; }

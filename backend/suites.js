@@ -5,14 +5,15 @@ import { randomUUID } from "node:crypto";
 import multer from "multer";
 import { AppError } from "./errors.js";
 import { importNote } from "./importers.js";
-import { labelPhotos, buildProfile, normalizeProfile, writeNote, planFrames } from "./suite-ai.js";
+import { labelPhotos, buildProfile, normalizeProfile, writeNote, planFrames, proposeLooks } from "./suite-ai.js";
+import { STYLES } from "../shared/styles.js";
 import { noteDocx } from "./docx-note.js";
 import { caseById, CASES } from "../shared/cases.js";
 import { SECTION_TYPES, SECTION_MODES, PHOTO_ROLES, QUICK, scanRisky } from "../shared/suite.js";
 
 // "商品全套": one product → profile → note → product images → detail page.
 // Each AI step is one multimodal call; image generation reuses the job queue.
-export function registerSuites({ app, store, users, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir }) {
+export function registerSuites({ app, store, users, styles, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir }) {
   const root = path.join(dataDir, "suites");
   fs.mkdirSync(root, { recursive: true });
   store.db.exec(`CREATE TABLE IF NOT EXISTS suites (id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
@@ -48,6 +49,7 @@ export function registerSuites({ app, store, users, dataDir, textAI, normalizeUp
   const imgPaths = (s, list) => list.map((p) => path.join(dirOf(s.id), p.file));
   const view = (s) => ({
     ...s,
+    palette: s.look?.palette?.length >= 3 ? s.look.palette : s.profile?.palette,
     text: undefined,
     hasText: !!s.text,
     risky: scanRisky([s.note?.text, s.profile?.copy, JSON.stringify(s.profile || {})].join("\n")),
@@ -82,13 +84,29 @@ export function registerSuites({ app, store, users, dataDir, textAI, normalizeUp
     return read(id);
   }
 
+  const AI_LABEL = "烹饪示意 图片仅供参考";
   const pickPhotos = (s, roles, n = 2) => {
     const usable = s.photos.filter((p) => p.usable && p.role !== "design");
     const chosen = [];
     for (const role of roles) for (const p of usable) if (p.role === role && chosen.length < n && !chosen.includes(p)) chosen.push(p);
     return chosen;
   };
+  // Builtin and admin-shared styles that fit product shots / detail pages.
+  const styleCandidates = () =>
+    styles
+      .list({ id: "", role: "user" })
+      .filter((x) => x.status === "ready" && !x.types.includes("interior") && x.types.some((t) => ["main", "scene", "selling", "detail"].includes(t)));
+  async function ensureLooks(s) {
+    if (s.looks?.length) return;
+    const rep = ["package", "product", "cooked", "origin"].map((r) => s.photos.find((p) => p.role === r && p.usable && !p.ai)).filter(Boolean);
+    s.looks = await proposeLooks(textAI, s.profile, styleCandidates(), imgPaths(s, rep));
+    if (!s.look && s.looks.length) s.look = s.looks[0];
+  }
   const steps = {
+    async looks(s) {
+      s.looks = null;
+      await ensureLooks(s);
+    },
     async profile(s) {
       if (s.photos.length) {
         const labels = await labelPhotos(textAI, imgPaths(s, s.photos));
@@ -108,25 +126,27 @@ export function registerSuites({ app, store, users, dataDir, textAI, normalizeUp
       s.note = await writeNote(textAI, s.profile, { style: s.noteStyle || "私域" });
     },
     async shots(s) {
+      await ensureLooks(s);
       const c = caseById(s.caseId);
       const items = c.shots.map((shot) => {
         const photos = pickPhotos(s, shot.photos);
         return { id: shot.id, title: shot.title, brief: shot.brief, photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), files: photos.map((p) => p.file) };
       });
-      const planned = await planFrames(textAI, s.profile, items.filter((i) => i.files.length).map(({ files, ...rest }) => rest), { kind: "product" });
+      const planned = await planFrames(textAI, s.profile, items.filter((i) => i.files.length).map(({ files, ...rest }) => rest), { kind: "product", look: s.look });
       s.shots = items.map((it) => {
         const f = planned.find((p) => p.id === it.id);
         return { id: it.id, title: it.title, enabled: !!it.files.length, photos: it.files, texts: f?.texts || [], scene: f?.scene || it.brief, missing: it.files.length ? "" : `缺少${it.title}需要的实拍图` };
       });
     },
     async detail(s) {
+      await ensureLooks(s);
       const ai = s.sections.filter((x) => x.mode === "ai");
       const items = ai.map((x) => {
         const photos = pickPhotos(s, SECTION_TYPES[x.type].photo.length ? SECTION_TYPES[x.type].photo : ["product"]);
         x.photos = photos.map((p) => p.file);
         return { id: x.id, title: SECTION_TYPES[x.type].name, brief: sectionBrief(x.type, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`) };
       });
-      const planned = items.length ? await planFrames(textAI, s.profile, items, { kind: "detail" }) : [];
+      const planned = items.length ? await planFrames(textAI, s.profile, items, { kind: "detail", look: s.look }) : [];
       for (const x of ai) {
         const f = planned.find((p) => p.id === x.id);
         x.texts = f?.texts || [];
@@ -255,6 +275,7 @@ export function registerSuites({ app, store, users, dataDir, textAI, normalizeUp
       s.sections = defaultSections(s);
       s.shots = null;
     }
+    if (typeof b.aiLabel === "boolean") s.aiLabel = b.aiLabel;
     if (b.note && typeof b.note.text === "string") s.note = { title: String(b.note.title || "").slice(0, 40), text: b.note.text.slice(0, 3000) };
     if (Array.isArray(b.shots) && s.shots)
       s.shots = s.shots.map((x) => {
@@ -293,7 +314,7 @@ export function registerSuites({ app, store, users, dataDir, textAI, normalizeUp
   app.get("/api/suites/:id/note.docx", async (req, res) => {
     const s = read(req.params.id);
     needProfile(s);
-    const buf = await noteDocx({ profile: s.profile, note: s.note || (s.profile.copy ? { title: s.profile.name, text: s.profile.copy } : null), photos: s.photos, dir: dirOf(s.id) });
+    const buf = await noteDocx({ profile: s.profile, note: s.note || (s.profile.copy ? { title: s.profile.name, text: s.profile.copy } : null), photos: s.photos.filter((p) => !p.ai), dir: dirOf(s.id) });
     res.set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     res.set("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent((s.profile.name || "商品笔记") + ".docx")}`);
     res.send(buf);
@@ -310,7 +331,24 @@ export function registerSuites({ app, store, users, dataDir, textAI, normalizeUp
   });
 
   // Visual system shared by every image of the suite: the merchant's own colors and photos.
-  const direction = (s) => ({
+  const direction = (s) => {
+    const look = s.look;
+    if (!look) return plainDirection(s);
+    const recipe = STYLES.find((x) => x.id === look.styleId) || styles.get(look.styleId) || {};
+    return {
+      conceptName: look.conceptName,
+      styleName: recipe.name || "",
+      story: look.story,
+      palette: look.palette?.length ? look.palette : recipe.palette || plainDirection(s).palette,
+      props: `${look.props}。商品与包装以商家实拍为准，不改外观`,
+      light: look.light,
+      camera: look.camera,
+      type: look.type,
+      avoid: [recipe.avoid, "商品外观被改变、乱码小字、虚构认证标志"].filter(Boolean).join("；"),
+      core: recipe.core || "",
+    };
+  };
+  const plainDirection = (s) => ({
     conceptName: "实拍精修",
     styleName: caseById(s.caseId).name,
     story: "以商家实拍图为主体重新布光、构图和排版，真实可信又有设计感",
@@ -334,19 +372,24 @@ export function registerSuites({ app, store, users, dataDir, textAI, normalizeUp
       productName: `${s.profile.name || "商品"} · ${kind === "shots" ? "商品图" : "详情页"}`,
       size: kind === "shots" ? (req.body?.size === "3:4" ? "3:4" : "1:1") : "3:4",
       count: frames.length,
-      frames: frames.map((f) => ({
+      frames: frames.map((f) => {
+        // Pictures that use an AI-made dish say so on the image.
+        const usesAI = f.photos.some((file) => s.photos.find((p) => p.file === file)?.ai);
+        const texts = usesAI && s.aiLabel !== false ? [...f.texts, { role: "tag", text: AI_LABEL }] : f.texts;
+        return {
         title: f.title || SECTION_TYPES[f.type]?.name || "",
-        textMode: f.texts.length ? "ai" : "none",
-        layout: f.texts.length ? "free" : "none",
-        texts: f.texts,
+        textMode: texts.length ? "ai" : "none",
+        layout: texts.length ? "free" : "none",
+        texts,
         scene: f.scene,
         photos: f.photos,
         photoNotes: f.photos.map((file) => {
           const p = s.photos.find((x) => x.file === file);
-          return p ? `${PHOTO_ROLES[p.role]}：${p.desc}` : "";
+          return p ? `${PHOTO_ROLES[p.role]}${p.ai ? "（AI 示意图）" : ""}：${p.desc}` : "";
         }),
         ref: f.id,
-      })),
+        };
+      }),
       direction: direction(s),
       hasMainImage: false,
       refCount: 0,
@@ -364,11 +407,97 @@ export function registerSuites({ app, store, users, dataDir, textAI, normalizeUp
   }
   app.post("/api/suites/:id/shots/generate", admission, async (req, res) => generate(req, res, read(req.params.id), "shots"));
   app.post("/api/suites/:id/detail/generate", admission, async (req, res) => generate(req, res, read(req.params.id), "detail"));
+  // ---- Visual direction: AI suggests 3 from the style library; merchant picks ----
+  app.post("/api/suites/:id/looks", (req, res) => {
+    const s = read(req.params.id);
+    needProfile(s);
+    res.json(view(task(s.id, "looks", steps.looks)));
+  });
+  app.post("/api/suites/:id/look", (req, res) => {
+    const s = read(req.params.id);
+    const i = req.body?.index;
+    if (i === null) s.look = null; // 实拍精修: no library style
+    else if (Number.isInteger(i) && s.looks?.[i]) s.look = s.looks[i];
+    else throw new AppError("没有这个风格");
+    res.json(view(save(s)));
+  });
+
+  // ---- Dish pictures for merchants who haven't cooked the new stock yet ----
+  const DISH_PLATES = [
+    "白瓷圆盘，家常餐桌，俯拍 45 度，暖色自然光",
+    "深色粗陶盘，餐厅质感，侧光，浅景深",
+    "木托盘配小碗蘸料，生活感摆拍，正侧面",
+  ];
+  app.post("/api/suites/:id/dish", admission, async (req, res) => {
+    const s = read(req.params.id);
+    needProfile(s);
+    const method = String(req.body?.method || "").trim().slice(0, 20);
+    if (!method) throw new AppError("选一种做法，例如清蒸、红烧");
+    const count = Math.min(Math.max(Number(req.body?.count) || 2, 1), 3);
+    const refs = ["product", "detail", "package"]
+      .flatMap((r) => s.photos.filter((p) => p.role === r && p.usable && !p.ai))
+      .slice(0, 2);
+    if (!refs.length) throw new AppError("先上传一张生鲜/实物照片，AI 才知道食材长什么样");
+    const name = s.profile.name || "这种食材";
+    const params = {
+      version: 3,
+      skillId: "product",
+      productName: `${name} · 菜品图（${method}）`,
+      size: "1:1",
+      count,
+      frames: Array.from({ length: count }, (_, i) => ({
+        title: `${method} · ${i + 1}`,
+        textMode: "none",
+        layout: "none",
+        texts: [],
+        scene: `美食摄影：把实拍图里的${name}做成「${method}」的成品菜。食材的品种、形状、颜色、切法必须和实拍一致（看得出是同一种食材），按${method}的常见做法真实呈现：熟透的质感、酱汁和油光、热气。${DISH_PLATES[i % DISH_PLATES.length]}。只放这道菜和少量相关配料，不要包装、不要文字。`,
+        photos: refs.map((p) => p.file),
+        photoNotes: refs.map((p) => `生鲜实拍（只用来看食材长什么样）：${p.desc}`),
+        ref: `dish-${i}`,
+      })),
+      direction: {
+        conceptName: "家常美味",
+        story: "让人一看就想吃的真实菜品照片",
+        palette: ["#f4ede2", "#c8572b", "#3b2a20"],
+        props: "盘子、筷子、少量葱姜蒜辣椒等配料",
+        light: "柔和自然光，食物有光泽",
+        camera: "近景，菜品占画面主体",
+        type: "无文字",
+        avoid: "生的食材、塑料感、夸张特效、文字水印",
+        core: "appetizing Chinese home-style dish, realistic food photography, natural light, steam, glossy sauce",
+      },
+      hasMainImage: false,
+      refCount: 0,
+      styleRef: null,
+      inputs: refs.map((p) => p.file),
+      suiteId: s.id,
+      dishMethod: method,
+    };
+    const holder = { status: (code) => ({ json: (job) => (holder.result = { code, job }) }) };
+    await createJob(req, holder, params, dirOf(s.id));
+    const latest = read(s.id);
+    latest.jobs = { ...(latest.jobs || {}), dish: holder.result.job.id };
+    save(latest);
+    res.status(holder.result.code).json(holder.result.job);
+  });
+  // Put an AI dish picture into the product's photo library.
+  app.post("/api/suites/:id/photos/adopt", async (req, res) => {
+    const s = read(req.params.id);
+    const job = store.get(String(req.body?.jobId || ""));
+    if (!job || job.userId !== req.user.id || job.params.suiteId !== s.id || !job.params.dishMethod || job.status !== "succeeded") throw new AppError("这张图不能加入", 404);
+    const asset = job.manifest?.assets?.find((a) => a.name === req.body?.asset && a.role === "image");
+    if (!asset) throw new AppError("这张图不能加入", 404);
+    if (s.photos.some((p) => p.fromJob === `${job.id}/${asset.name}`)) return res.json(view(s));
+    if (s.photos.length >= 40) throw new AppError("照片最多 40 张");
+    const file = `photo-${s.photos.length + 1}-${randomUUID().slice(0, 6)}.png`;
+    await fsp.copyFile(await regularFile(path.join(jobsDir, job.id, job.manifest.exportId), asset.name), path.join(dirOf(s.id), file));
+    s.photos.push({ file, role: "cooked", desc: `AI 示意：${job.params.dishMethod || "成品菜"}`, usable: true, ai: true, source: "ai", fromJob: `${job.id}/${asset.name}` });
+    res.json(view(save(s)));
+  });
   app.delete("/api/suites/:id", async (req, res) => {
     read(req.params.id);
     store.db.prepare("DELETE FROM suites WHERE id=?").run(req.params.id);
     await fsp.rm(dirOf(req.params.id), { recursive: true, force: true });
     res.json({ ok: true });
   });
-  void jobsDir;
 }

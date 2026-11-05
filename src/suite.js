@@ -105,7 +105,7 @@ export function initSuite(ctx) {
     const s = await api("/suites/" + id);
     current = s;
     render(s);
-    if (anyBusy(s) || ["queued", "running"].includes(s.jobs?.shots?.status) || ["queued", "running"].includes(s.jobs?.detail?.status)) {
+    if (anyBusy(s) || ["shots", "detail", "dish"].some((k) => ["queued", "running"].includes(s.jobs?.[k]?.status))) {
       const t = setTimeout(async () => {
         if (location.hash.startsWith("#/suite/" + id)) suitePage(id);
       }, 3000);
@@ -209,13 +209,14 @@ export function initSuite(ctx) {
       <section class="card"><h2>实拍图 <small class="muted">AI 已经认出每张是什么，认错了就改一下</small></h2>
         <div class="photo-grid">${s.photos
           .map(
-            (ph) => `<figure class="${ph.usable ? "" : "dim"}"><img src="${photoUrl(s, ph.file)}" alt="" loading="lazy">
+            (ph) => `<figure class="${ph.usable ? "" : "dim"}">${ph.ai ? `<i class="ai-badge">AI 示意</i>` : ""}<img src="${photoUrl(s, ph.file)}" alt="" loading="lazy">
               <select data-role="${esc(ph.file)}">${Object.entries(meta.roles).map(([k, v]) => `<option value="${k}" ${ph.role === k ? "selected" : ""}>${v}</option>`).join("")}</select>
               <label class="mini"><input type="checkbox" data-usable="${esc(ph.file)}" ${ph.usable ? "checked" : ""}>用于出图</label></figure>`,
           )
           .join("")}</div>
         <label class="btn small"><input type="file" id="more-photos" accept="image/*" multiple hidden>＋ 补充图片</label>
       </section>
+      ${dishCard(s)}
       <section class="card"><h2>基本信息</h2><div class="fields">${FIELDS.map(([k, label]) => `<label>${label}<input data-f="${k}" value="${esc(p[k] || "")}"></label>`).join("")}</div>
         <label>产品介绍<textarea data-f="intro" rows="3">${esc(p.intro)}</textarea></label></section>
       <section class="card"><h2>卖点</h2>${p.sellingPoints.map((x, i) => `<div class="pair"><input data-sp="${i}" data-k="title" value="${esc(x.title)}"><input data-sp="${i}" data-k="detail" value="${esc(x.detail)}"></div>`).join("")}</section>
@@ -257,6 +258,7 @@ export function initSuite(ctx) {
       return { profile: next, photos };
     };
     bindGaps(box);
+    bindDish(box, s);
     $("#add-row").onclick = () => {
       current.profile.compare.rows.push({ aspect: "", ours: "", others: "" });
       profileTab(box, current);
@@ -314,7 +316,14 @@ export function initSuite(ctx) {
   function checklist(s) {
     const c = meta.cases.find((x) => x.id === s.caseId);
     const have = new Set(s.photos.filter((p) => p.usable).map((p) => p.role));
-    return `<ul class="checklist">${c.photoChecklist.map((x) => `<li class="${have.has(x.role) ? "ok" : ""}">${have.has(x.role) ? "✓" : "○"} ${esc(x.need)}</li>`).join("")}</ul>`;
+    const any = new Set(s.photos.map((p) => p.role));
+    const ai = new Set(s.photos.filter((p) => p.usable && p.ai).map((p) => p.role));
+    return `<ul class="checklist">${c.photoChecklist
+      .map((x) => {
+        const note = have.has(x.role) ? (ai.has(x.role) && !s.photos.some((p) => p.usable && !p.ai && p.role === x.role) ? "（AI 示意图）" : "") : any.has(x.role) ? "（有，但图上带字，只放在详情页对比里）" : x.role === "cooked" ? "（没有？在“商品档案”里让 AI 做一盘）" : "";
+        return `<li class="${have.has(x.role) ? "ok" : ""}">${have.has(x.role) ? "✓" : "○"} ${esc(x.need)}<small class="muted">${note}</small></li>`;
+      })
+      .join("")}</ul>`;
   }
   function jobResults(job, framesById) {
     if (!job) return "";
@@ -356,6 +365,7 @@ export function initSuite(ctx) {
     box.innerHTML = `
       ${busyTask(s, "shots") ? spinner("AI 正在规划商品图", "给每张图挑实拍图、写标题和画面（约 1 分钟）") : ""}${failed(s, "shots")}
       <section class="card"><h2>需要的实拍图</h2>${checklist(s)}<p class="muted">缺的那几张图会自动跳过；补拍后在“商品档案”里上传。</p></section>
+      ${lookCard(s)}
       ${
         !shots
           ? `<div class="row"><button class="btn primary" id="plan-shots" ${busyTask(s, "shots") ? "disabled" : ""}>AI 规划商品图 →</button><span class="muted">不扣积分</span></div>`
@@ -392,6 +402,93 @@ export function initSuite(ctx) {
     );
     $("#to-detail")?.addEventListener("click", () => ((tab = "detail"), render(current)));
     bindRedo(box);
+    bindLooks(box, s);
+  }
+
+  // Visual direction: 3 suggestions from the style library, or plain retouch of the real photos.
+  function lookCard(s) {
+    const looks = s.looks || [];
+    if (busyTask(s, "looks")) return spinner("AI 正在挑风格", "从风格库里找 3 个适合这件商品的方向");
+    if (!looks.length) return `<section class="card look-card"><h2>风格</h2><p class="muted">点“AI 规划商品图”时，AI 会先从风格库挑 3 个适合这件商品的方向，挑好后可以换。</p></section>`;
+    const on = (l) => s.look && s.look.styleId === l.styleId && s.look.conceptName === l.conceptName;
+    return `<section class="card look-card"><div class="row spread"><h2>风格 <small class="muted">商品图和详情页用同一套</small></h2><button class="link" id="more-looks">换一批</button></div>
+      <div class="looks">${looks
+        .map(
+          (l, i) => `<button class="look ${on(l) ? "on" : ""}" data-look="${i}"><img src="/api/styles/${encodeURIComponent(l.styleId)}/cover" alt="" loading="lazy">
+            <b>${esc(l.conceptName)}</b><span class="swatches">${(l.palette || []).map((c) => `<i data-c="${esc(c)}"></i>`).join("")}</span><small>${esc(l.why || l.story)}</small></button>`,
+        )
+        .join("")}
+        <button class="look plain ${s.look ? "" : "on"}" data-look="plain"><span class="plain-ico">📷</span><b>实拍精修</b><small>不套风格，在实拍基础上重新布光排版</small></button></div>
+      ${s.shots && s.lookChanged ? `<p class="hint">换了风格，点下面“重新规划”让标题和画面跟着变（免费）</p>` : ""}</section>`;
+  }
+  function bindLooks(box, s) {
+    $$(".swatches i", box).forEach((i) => (i.style.background = i.dataset.c));
+    $$("[data-look]", box).forEach(
+      (b) =>
+        (b.onclick = () =>
+          busy(b, async () => {
+            current = await api(`/suites/${s.id}/look`, json({ index: b.dataset.look === "plain" ? null : Number(b.dataset.look) }));
+            current.lookChanged = true;
+            render(current);
+          })),
+    );
+    $("#more-looks", box)?.addEventListener("click", (e) => busy(e.currentTarget, async () => (await api(`/suites/${s.id}/looks`, json({})), suitePage(s.id))));
+  }
+
+  // AI dish pictures: for stock that hasn't been cooked and photographed yet.
+  const DISH_METHODS = ["清蒸", "红烧", "香煎", "干炸", "椒盐", "糖醋", "炖汤", "凉拌", "烧烤", "蒜蓉"];
+  function dishCard(s) {
+    if (!["生鲜水产", "食品零食"].includes(s.profile.category) && !s.photos.some((p) => p.role === "cooked")) return "";
+    const job = s.jobs?.dish;
+    const hasReal = s.photos.some((p) => p.role === "cooked" && !p.ai);
+    const fromTips = (s.profile.usage?.tips || []).join(" ");
+    const methods = [...new Set([...DISH_METHODS.filter((m) => fromTips.includes(m)), ...DISH_METHODS])].slice(0, 8);
+    const adopted = new Set(s.photos.filter((p) => p.fromJob).map((p) => p.fromJob));
+    let results = "";
+    if (job && ["queued", "running"].includes(job.status)) results = `<p class="hint">正在做菜…（${esc(job.phase || "排队中")}，约 1–2 分钟）</p>`;
+    else if (job?.status === "failed") results = `<p class="warn-text">${esc(job.error || "没有成功")}</p>`;
+    else if (job?.status === "succeeded")
+      results = `<div class="dish-results">${job.manifest.assets
+        .filter((a) => a.role === "image")
+        .map((a) => {
+          const used = adopted.has(`${job.id}/${a.name}`);
+          return `<figure><img src="/api/jobs/${job.id}/files/${encodeURIComponent(a.name)}" alt=""><button class="btn small ${used ? "" : "primary-soft"}" data-adopt="${esc(a.name)}" data-job="${job.id}" ${used ? "disabled" : ""}>${used ? "✓ 已加入" : "用这张"}</button></figure>`;
+        })
+        .join("")}</div><p class="muted">点“用这张”加入实拍图库，商品图和详情页的“吃法”会用它。</p>`;
+    return `<section class="card dish-card"><h2>${hasReal ? "再做几盘菜" : "还没做成菜？让 AI 做一盘"} <small class="muted">照着你的生鲜实拍图做，食材样子不变</small></h2>
+      <div class="pills" id="dish-methods">${methods.map((m, i) => `<button class="pill ${i === 0 ? "on" : ""}" data-m="${esc(m)}">${esc(m)}</button>`).join("")}</div>
+      <div class="row wrap"><input id="dish-custom" maxlength="20" placeholder="或者自己写，例如：雪菜蒸"><button class="btn" id="make-dish">做 2 盘 · ${2 * getWorkspace().skills.product.cost} 积分</button></div>
+      <label class="mini"><input type="checkbox" id="ai-label" ${s.aiLabel === false ? "" : "checked"}>用到 AI 菜品图的商品图，角落标“烹饪示意 图片仅供参考”</label>
+      ${results}</section>`;
+  }
+  function bindDish(box, s) {
+    let method = $("#dish-methods .pill.on", box)?.dataset.m || "";
+    $$("#dish-methods .pill", box).forEach(
+      (b) =>
+        (b.onclick = () => {
+          $$("#dish-methods .pill", box).forEach((x) => x.classList.toggle("on", x === b));
+          method = b.dataset.m;
+          $("#dish-custom", box).value = "";
+        }),
+    );
+    $("#make-dish", box)?.addEventListener("click", (e) =>
+      busy(e.currentTarget, async () => {
+        const m = $("#dish-custom", box).value.trim() || method;
+        await api(`/suites/${s.id}/dish`, json({ method: m, count: 2 }, { "Idempotency-Key": key() }));
+        await refresh();
+        suitePage(s.id);
+      }),
+    );
+    $("#ai-label", box)?.addEventListener("change", (e) => saveSuite({ aiLabel: e.target.checked }));
+    $$("[data-adopt]", box).forEach(
+      (b) =>
+        (b.onclick = () =>
+          busy(b, async () => {
+            current = await api(`/suites/${s.id}/photos/adopt`, json({ jobId: b.dataset.job, asset: b.dataset.adopt }));
+            toast("已加入实拍图库（标为 AI 示意）");
+            render(current);
+          })),
+    );
   }
 
   /* ---- tab 4: detail page ---- */
@@ -454,11 +551,12 @@ export function initSuite(ctx) {
   function detailTab(box, s) {
     const ws = getWorkspace();
     const cost = ws.skills.detail.cost;
-    const pal = s.profile.palette?.length ? s.profile.palette : ["#1d3557", "#e8541e", "#f6efe6"];
+    const pal = s.palette?.length ? s.palette : ["#1d3557", "#e8541e", "#f6efe6"];
     const ai = s.sections.filter((x) => x.mode === "ai");
     const planned = ai.length && ai.every((x) => x.scene);
     const job = s.jobs?.detail;
     box.innerHTML = `
+      ${s.look !== undefined ? `<p class="muted look-line">风格：<b>${esc(s.look?.conceptName || "实拍精修")}</b>（在“3 商品图”里换，换完点“重新规划 AI 画面”）</p>` : ""}
       ${busyTask(s, "detail") ? spinner("AI 正在规划详情页画面", "约 1 分钟") : ""}${failed(s, "detail")}
       <div class="detail-builder">
         <section class="card sections">

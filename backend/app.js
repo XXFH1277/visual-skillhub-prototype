@@ -103,16 +103,20 @@ export async function createWorkspace({
     const targets = p.frames.map((f, i) => [i, textsForImage(p.skillId, f)]).filter(([, t]) => t.length);
     if (!targets.length) return;
     phase("核对图中文字");
-    const results = [];
-    for (const [i, expected] of targets) {
-      try {
-        const seen = await textAI.readTexts(path.join(dir, `result-${i + 1}.png`), { signal });
-        results.push({ frame: i, ...compareTexts(expected, seen) });
-      } catch (error) {
-        if (signal.aborted) throw error;
-        results.push({ frame: i, ok: null, error: "文字校对暂不可用" });
+    // A few reads at a time, one retry each: a flaky call shouldn't leave a picture unchecked.
+    const check = async ([i, expected]) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const seen = await textAI.readTexts(path.join(dir, `result-${i + 1}.png`), { signal });
+          return { frame: i, ...compareTexts(expected, seen) };
+        } catch (error) {
+          if (signal.aborted) throw error;
+          if (attempt >= 1) return { frame: i, ok: null, error: "文字校对暂不可用" };
+        }
       }
-    }
+    };
+    const results = [];
+    for (let k = 0; k < targets.length; k += 3) results.push(...(await Promise.all(targets.slice(k, k + 3).map(check))));
     await fsp.writeFile(path.join(dir, "text-check.json"), JSON.stringify(results));
   };
   let styles;
@@ -707,7 +711,7 @@ export async function createWorkspace({
     req.body = { providerMode: source.params.providerMode, resolution: source.params.resolution, ...req.body };
     await createJob(req, res, params, null, source.id, { "tweak-base.png": base });
   });
-  registerSuites({ app, store, users, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir });
+  registerSuites({ app, store, users, styles, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir });
   app.post("/api/jobs/:id/upscale", admission, async (req, res) => {
     const source = store.get(req.params.id);
     if (!source || source.status !== "succeeded")

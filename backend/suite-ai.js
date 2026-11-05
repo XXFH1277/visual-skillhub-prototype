@@ -132,12 +132,54 @@ ${FACTS}
 }
 
 // One call writes the texts and scene for every planned image (product shots or AI detail screens).
-export async function planFrames(ai, profile, items, { kind }) {
+// Different products should not all come out in one house style: Kimi picks 3 visual
+// directions from the style library and adapts each to this product.
+export async function proposeLooks(ai, profile, styles, images = []) {
+  const catalog = styles.map((x) => `${x.id}｜${x.name}｜${x.categories.join("/")}｜${x.tone}｜${x.tagline}`).join("\n");
+  const answer = await ai.complete({
+    system: `你是资深电商视觉美术指导。根据商品档案和实拍图，从风格库里挑 3 个差别明显、都适合这件商品的视觉方向，并把每个方向改造成专属这件商品的方案。
+第 1 个是你最推荐的。三个方向在色调、光线、版式上要明显不同（例如一个写实温暖、一个干净高级、一个有冲击力）。
+风格库（id｜名称｜适合品类｜调性｜概念）：
+${catalog}
+只输出 JSON：{"looks":[{"styleId":"风格库 id","conceptName":"方案名（4-8字）","story":"一句话创意（20-40字）","palette":["#hex","#hex","#hex"],"props":"道具与材质（只用和这件商品相关、实拍里能对上的东西）","light":"光线","camera":"机位与构图","type":"中文字体与排版气质","why":"为什么适合（15-30字）"}]}`,
+    text: `商品档案（数据）：${JSON.stringify({ name: profile.name, category: profile.category, origin: profile.origin, intro: profile.intro, sellingPoints: profile.sellingPoints, packaging: profile.packaging })}`,
+    images: images.slice(0, 4),
+    json: true,
+  });
+  const d = parse(answer);
+  const ids = new Set(styles.map((x) => x.id));
+  const hex = (v) => (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim() : null);
+  const seen = new Set();
+  return arr(d.looks, 3)
+    .filter((l) => ids.has(l?.styleId) && !seen.has(l.styleId) && seen.add(l.styleId))
+    .map((l) => ({
+      styleId: l.styleId,
+      conceptName: clip(l.conceptName, 12) || styles.find((x) => x.id === l.styleId).name,
+      story: clip(l.story, 60),
+      palette: arr(l.palette, 4).map(hex).filter(Boolean),
+      props: clip(l.props, 120),
+      light: clip(l.light, 80),
+      camera: clip(l.camera, 80),
+      type: clip(l.type, 80),
+      why: clip(l.why, 40),
+    }));
+}
+
+// Layout variety so a set of images (and different products) don't share one template.
+const LAYOUTS = "大标题压在画面上方；左文右图；右文左图；底部通栏标题条；标题竖排在一侧；满版大图+角落小字；居中留白大标题；分格拼图（2-3 格）；斜切色块；卖点贴纸/圆标环绕商品";
+
+export async function planFrames(ai, profile, items, { kind, look }) {
+  const style = look
+    ? `整套视觉系统「${look.conceptName}」：${look.story} 色板 ${(look.palette || []).join(" ")}；道具 ${look.props}；光线 ${look.light}；机位 ${look.camera}；字体排版 ${look.type}。`
+    : `${profile.palette?.length ? `主色 ${profile.palette.join(" ")}，` : ""}真实商业摄影质感。`;
   const answer = await ai.complete({
     system: `你是电商美工兼文案。下面每一项是一张要用 GPT 生图做的${kind === "detail" ? "详情页竖版屏（3:4）" : "商品图"}，附了商家实拍图的类别。
 为每一项写：
 - texts：画面上的中文字。headline 4-12 字有力短句；可选 sub 一行副标题（≤18字）；可选 point 2-3 个关键词（各≤6字）。全部来自商品档案，不编造。
-- scene：80-200 字的具体画面描述：用哪张实拍图里的什么、怎么摆、背景与道具、光线、标题放哪里多大、底部信息条等。风格统一：${profile.palette?.length ? `主色 ${profile.palette.join(" ")}，` : ""}粗黑体中文大标题 + 细线装饰 + 小字说明，像高端电商详情页；真实商业摄影质感。
+- scene：80-200 字的具体画面描述：用哪张实拍图里的什么、怎么摆、背景与道具、光线、文字放哪里多大。
+${style}
+版式要有变化：每张从这些版式里选一个最合适的（${LAYOUTS}），相邻两张不要用同一种，整套里同一种最多用两次；不要每张都是“顶部大标题 + 底部信息条”。
+商品和包装只能画实拍图里有的样子：实拍里没有出现的包装形式（真空袋、保温箱、手提袋、内托等）不要画进画面，需要说明就放在文字里。
 ${FACTS}
 只输出 JSON：{"frames":[{"id":"同输入","texts":[{"role":"headline|sub|point","text":"..."}],"scene":"..."}]}`,
     text: `商品档案（数据）：${JSON.stringify(profile)}\n要做的图：${JSON.stringify(items)}`,
