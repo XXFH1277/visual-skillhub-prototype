@@ -120,7 +120,8 @@ test("merchant with a PDF note: import text + photos → profile → note/Word �
   assert.ok(s.ai.calls.find((c) => c.step.includes("资深电商运营")).text.includes("沈家门"), "PDF text reaches the profile step");
   assert.equal(suite.profile.name, "舟山雷达网带鱼");
   assert.equal(suite.caseId, "seafood-gift");
-  assert.ok(suite.sections.some((x) => x.type === "why" && x.mode === "tpl"));
+  assert.ok(suite.sections.some((x) => x.type === "why" && x.mode === "ai"));
+  assert.deepEqual(suite.sections.filter((x) => x.mode === "bg").map((x) => x.type), ["faq", "info", "notice"]);
   assert.ok(suite.risky.some((r) => r.word === "没有之一"));
   // note + Word
   suite = await (await s.post(`/api/suites/${id}/note`, {})).json();
@@ -149,13 +150,21 @@ test("merchant with a PDF note: import text + photos → profile → note/Word �
   assert.equal(suite.sections.find((x) => x.type === "usage").mode, "off");
   await s.post(`/api/suites/${id}/detail/plan`, {});
   suite = await s.waitTask(id, "detail");
-  const ai = suite.sections.filter((x) => x.mode === "ai");
+  const ai = suite.sections.filter((x) => x.mode === "ai" || x.mode === "bg");
+  // Background screens: no text drawn, a clean centre, one photo at most.
+  const bgs = suite.sections.filter((x) => x.mode === "bg");
+  assert.ok(bgs.every((x) => !x.texts.length && /中央约 70%/.test(x.scene) && x.photos.length <= 1));
   const dgen = await s.post(`/api/suites/${id}/detail/generate`, {}, { "Idempotency-Key": randomUUID() });
+  assert.equal(dgen.status, 202, await dgen.clone().text());
   const djob = await s.terminal((await dgen.json()).id);
   assert.equal(djob.status, "succeeded", djob.error);
   assert.equal(djob.params.count, ai.length);
   assert.equal(djob.params.size, "3:4");
   assert.deepEqual(djob.params.frames.map((f) => f.ref), ai.map((x) => x.id));
+  assert.ok(djob.params.frames.filter((f) => bgs.some((x) => x.id === f.ref)).every((f) => f.textMode === "overlay" && f.layout === "center" && !f.texts.length));
+  // AI screens get the facts for that screen.
+  const detailCall = s.ai.calls.findLast((c) => c.system.includes("电商美工") && c.text.includes('"content"'));
+  assert.ok(detailCall, "detail planning sends each screen's content");
 });
 
 test("merchant without a note: Word import, quick answers, photo role edits, validation", async (t) => {

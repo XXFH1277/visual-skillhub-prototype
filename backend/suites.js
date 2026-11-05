@@ -163,8 +163,15 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       const items = ai.map((x) => {
         const photos = pickPhotos(s, SECTION_TYPES[x.type].photo.length ? SECTION_TYPES[x.type].photo : ["product"], 2, used);
         x.photos = photos.map((p) => p.file);
-        return { id: x.id, title: SECTION_TYPES[x.type].name, brief: sectionBrief(x.type, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`) };
+        return { id: x.id, title: SECTION_TYPES[x.type].name, brief: sectionBrief(x.type, s.profile), content: sectionContent(x.type, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`) };
       });
+      // Background screens: the text is typeset on top, so the picture only sets the mood.
+      for (const x of s.sections.filter((y) => y.mode === "bg")) {
+        const photo = pickPhotos(s, ["product", "detail", "package"], 1, used);
+        x.photos = photo.map((p) => p.file);
+        x.texts = [];
+        x.scene = bgScene(x.type, s);
+      }
       const planned = items.length ? await planFrames(textAI, s.profile, items, { kind: "detail", look: s.look }) : [];
       for (const x of ai) {
         const f = planned.find((p) => p.id === x.id);
@@ -173,13 +180,32 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       }
     },
   };
+  function sectionContent(type, p) {
+    return {
+      hero: { name: p.name, points: p.sellingPoints.slice(0, 3).map((x) => x.title) },
+      why: p.why && { kicker: p.why.kicker, headline: p.why.headline, cards: p.why.cards, highlight: p.why.highlight },
+      compare: p.compare && { ours: p.compare.ours, others: p.compare.others, rows: p.compare.rows.slice(0, 4) },
+      pick: p.pick,
+      material: p.sellingPoints,
+      usage: p.usage,
+      pack: { packaging: p.packaging, storage: p.storage, courier: p.courier, dispatch: p.dispatch },
+      faq: p.faq && { headline: p.faq.headline, cards: p.faq.cards },
+      info: { name: p.name, origin: p.origin, spec: p.spec, storage: p.storage, courier: p.courier, dispatch: p.dispatch },
+      notice: p.notice.slice(0, 4),
+    }[type] || null;
+  }
+  function bgScene(type, s) {
+    const l = s.look;
+    const mood = l ? `${l.conceptName}：${l.props}；${l.light}；色板 ${(l.palette || []).join(" ")}` : `色板 ${(s.profile.palette || []).join(" ")}，干净的商业质感`;
+    return `详情页里一屏“${SECTION_TYPES[type].name}”的背景画面，和整套风格一致（${mood}）。画面中央约 70% 的大块区域保持干净、明亮、平整（浅色纸面、柔和渐变或虚化的台面），之后要在上面放一大段文字；只在四周边缘点缀少量道具，商品（图1）最多在角落露出一小部分。不要任何文字、数字、图标和边框。`;
+  }
   function sectionBrief(type, p) {
     return {
       hero: `首屏：${p.name}，包装和实物同框，大标题写品名，副标题一句概念`,
-      why: `为什么是${p.origin || "这里"}：产地实景配大标题`,
+      why: `为什么是${p.origin || "这里"}：大标题 + 3 个关键数字/关键词（来自 content.cards），配产地或商品实拍`,
       origin: `产地/货源实景：${p.shipFrom || p.origin}`,
-      compare: "对比：左右对比两种，标注差异",
-      pick: "怎么挑：特写关键部位并标注",
+      compare: "对比：左右或上下分屏，我们 vs 对方，2-3 个差异点用短词标注（来自 content.rows）",
+      pick: "怎么挑：商品特写，用引线标注 2-3 个看点（来自 content.points）",
       material: "选材与细节：近距离质感特写",
       usage: `吃法/用法：${p.usage?.headline || "成品展示"}`,
       pack: "包装与收货：独立包装 + 礼盒/保温箱，标注包装方式",
@@ -190,10 +216,12 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     const p = s.profile || {};
     const empty = { why: !p.why?.headline, compare: !p.compare?.rows?.length, pick: !p.pick?.points?.length, faq: !p.faq?.headline, notice: !p.notice?.length };
     return c.sections.map((x, i) => {
+      const modes = SECTION_TYPES[x.type].modes;
       const hasPhoto = SECTION_TYPES[x.type].photo.length === 0 || pickPhotos(s, SECTION_TYPES[x.type].photo, 1).length > 0;
       let mode = x.mode;
-      if (mode === "tpl" && empty[x.type]) mode = "off";
-      if ((mode === "ai" || mode === "photo") && !hasPhoto) mode = SECTION_TYPES[x.type].modes.includes("tpl") ? "tpl" : "off";
+      if (empty[x.type]) mode = "off";
+      // No matching photo: never let the image model invent it — typeset over an AI background instead.
+      if ((mode === "ai" || mode === "photo") && !hasPhoto) mode = modes.includes("bg") ? "bg" : modes.includes("tpl") ? "tpl" : "off";
       return { id: `${x.type}-${i}`, type: x.type, mode, photos: [], texts: [], scene: "" };
     });
   }
@@ -382,7 +410,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
   async function generate(req, res, s, kind) {
     const frames = kind === "shots"
       ? (s.shots || []).filter((x) => x.enabled)
-      : s.sections.filter((x) => x.mode === "ai");
+      : s.sections.filter((x) => x.mode === "ai" || x.mode === "bg");
     if (!frames.length) throw new AppError(kind === "shots" ? "请先规划商品图" : "详情页没有需要 AI 出图的屏");
     if (frames.some((f) => !f.scene)) throw new AppError("请先让 AI 规划画面");
     const params = {
@@ -393,12 +421,13 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       count: frames.length,
       frames: frames.map((f) => {
         // Pictures that use an AI-made dish say so on the image.
+        const bg = f.mode === "bg";
         const usesAI = f.photos.some((file) => s.photos.find((p) => p.file === file)?.ai);
-        const texts = usesAI && s.aiLabel !== false ? [...f.texts, { role: "tag", text: AI_LABEL }] : f.texts;
+        const texts = bg ? [] : usesAI && s.aiLabel !== false ? [...f.texts, { role: "tag", text: AI_LABEL }] : f.texts;
         return {
         title: f.title || SECTION_TYPES[f.type]?.name || "",
-        textMode: texts.length ? "ai" : "none",
-        layout: texts.length ? "free" : "none",
+        textMode: bg ? "overlay" : texts.length ? "ai" : "none",
+        layout: bg ? "center" : texts.length ? "free" : "none",
         texts,
         scene: f.scene,
         photos: f.photos,

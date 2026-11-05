@@ -23,20 +23,22 @@ export const QUICK = {
 
 // Detail-page sections. Every merchant gets these "环节"; each can be an AI image,
 // a typeset (exact-text) screen, a real photo with caption, or hidden.
+// Most screens are drawn whole by the image model (it looks like a real detail page);
+// text-heavy ones that must be letter-perfect get an AI background with typeset text ("bg").
 export const SECTION_TYPES = {
   hero: { name: "首屏主视觉", modes: ["ai"], photo: ["package", "product"] },
-  why: { name: "为什么是这个产地", modes: ["tpl", "ai"], photo: ["origin"] },
+  why: { name: "为什么是这个产地", modes: ["ai", "bg", "tpl"], photo: ["origin", "product"] },
   origin: { name: "产地实景", modes: ["ai", "photo"], photo: ["origin"] },
-  compare: { name: "对比", modes: ["tpl", "photo", "ai"], photo: ["compare", "detail"] },
-  pick: { name: "怎么挑 / 怎么辨别", modes: ["tpl", "ai"], photo: ["detail", "product"] },
-  material: { name: "选材与细节", modes: ["ai", "tpl"], photo: ["detail", "product"] },
+  compare: { name: "对比", modes: ["ai", "bg", "tpl", "photo"], photo: ["compare", "detail", "product"] },
+  pick: { name: "怎么挑 / 怎么辨别", modes: ["ai", "bg", "tpl"], photo: ["detail", "product"] },
+  material: { name: "选材与细节", modes: ["ai", "bg", "tpl"], photo: ["detail", "product"] },
   usage: { name: "吃法 / 用法", modes: ["ai", "photo"], photo: ["cooked", "usage"] },
-  faq: { name: "提前说清楚（答疑）", modes: ["tpl"], photo: [] },
-  pack: { name: "包装与收货", modes: ["ai", "tpl"], photo: ["package"] },
-  info: { name: "商品信息", modes: ["tpl"], photo: [] },
-  notice: { name: "购物须知", modes: ["tpl"], photo: [] },
+  faq: { name: "提前说清楚（答疑）", modes: ["bg", "ai", "tpl"], photo: [] },
+  pack: { name: "包装与收货", modes: ["ai", "bg", "tpl"], photo: ["package"] },
+  info: { name: "商品信息", modes: ["bg", "tpl", "ai"], photo: [] },
+  notice: { name: "购物须知", modes: ["bg", "tpl", "ai"], photo: [] },
 };
-export const SECTION_MODES = { ai: "AI 出图", tpl: "文字排版", photo: "实拍+说明", off: "不要这屏" };
+export const SECTION_MODES = { ai: "AI 出图", bg: "AI 底图+排字", tpl: "文字排版", photo: "实拍+说明", off: "不要这屏" };
 
 // Ad-law "极限词" that are fine in a private WeChat group but get listings punished on Taobao.
 export const RISKY_WORDS = [

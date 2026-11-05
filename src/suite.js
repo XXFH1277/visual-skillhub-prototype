@@ -555,7 +555,7 @@ export function initSuite(ctx) {
     const ws = getWorkspace();
     const cost = ws.skills.detail.cost;
     const pal = s.palette?.length ? s.palette : ["#1d3557", "#e8541e", "#f6efe6"];
-    const ai = s.sections.filter((x) => x.mode === "ai");
+    const ai = s.sections.filter((x) => x.mode === "ai" || x.mode === "bg");
     const planned = ai.length && ai.every((x) => x.scene);
     const job = s.jobs?.detail;
     box.innerHTML = `
@@ -563,7 +563,8 @@ export function initSuite(ctx) {
       ${busyTask(s, "detail") ? spinner("AI 正在规划详情页画面", "约 1 分钟") : ""}${failed(s, "detail")}
       <div class="detail-builder">
         <section class="card sections">
-          <h2>详情页结构</h2><p class="muted">每一屏都能选“AI 出图 / 文字排版 / 实拍+说明 / 不要”，用箭头调顺序。文字排版那几屏的内容来自“商品档案”，改字免费。</p>
+          <h2>详情页结构</h2><p class="muted">大部分屏由 AI 整屏出图；字多、要一字不错的屏（答疑、商品信息、须知）用“AI 底图+排字”：AI 画背景，字由程序排，改字免费。用箭头调顺序。</p>
+          <button class="link" id="all-ai">全部改成 AI 整屏出图</button>
           ${s.sections
             .map(
               (x, i) => `<div class="sec-row ${x.mode === "off" ? "dim" : ""}" data-sec="${x.id}">
@@ -586,13 +587,18 @@ export function initSuite(ctx) {
         </section>
         <section class="preview-col"><div class="dp" id="dp">${s.sections
           .filter((x) => x.mode !== "off")
-          .map((x) => `<div class="dp-sec ${x.mode === "tpl" ? "tpl" : ""}" data-pv="${x.id}">${sectionHtml(s, x, safeMode)}<button class="dp-dl" data-dl="${x.id}" title="导出这一屏">↓</button></div>`)
+          .map((x) => `<div class="dp-sec ${x.mode === "tpl" ? "tpl" : x.mode === "bg" ? "bg" : ""}" data-pv="${x.id}">${x.mode === "bg" ? `<div class="bg-panel">${sectionHtml(s, x, safeMode)}</div>` : sectionHtml(s, x, safeMode)}<button class="dp-dl" data-dl="${x.id}" title="导出这一屏">↓</button></div>`)
           .join("")}</div></section>
       </div>`;
     const dp = $("#dp");
     dp.style.setProperty("--c1", pal[0]);
     dp.style.setProperty("--c2", pal[1] || pal[0]);
     dp.style.setProperty("--c3", pal[2] || "#f6efe6");
+    // AI backgrounds behind the typeset screens (CSP: set through CSSOM, not inline styles).
+    for (const x of s.sections.filter((y) => y.mode === "bg")) {
+      const url = aiImage(s, x);
+      if (url) $(`[data-pv="${x.id}"]`, dp)?.style.setProperty("background-image", `url("${url}")`);
+    }
     const collect = () =>
       s.sections.map((x) => {
         const row = $(`[data-sec="${x.id}"]`, box);
@@ -614,6 +620,11 @@ export function initSuite(ctx) {
     };
     $$("[data-up]", box).forEach((b) => (b.onclick = () => move(+b.dataset.up, -1)));
     $$("[data-down]", box).forEach((b) => (b.onclick = () => move(+b.dataset.down, 1)));
+    $("#all-ai").onclick = () =>
+      persist(collect().map((x) => {
+        const sec = s.sections.find((y) => y.id === x.id);
+        return x.mode !== "off" && meta.sections[sec.type].modes.includes("ai") ? { ...x, mode: "ai" } : x;
+      }));
     $("#safe").onchange = (e) => ((safeMode = e.target.checked), detailTab(box, current));
     $("#plan-detail").onclick = (e) =>
       busy(e.currentTarget, async () => {
