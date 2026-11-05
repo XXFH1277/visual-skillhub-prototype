@@ -21,6 +21,26 @@ fi
 npm run build || { read -r -p "构建失败，按回车关闭" _; exit 1; }
 [ -f .env ] || cp .env.example .env
 
+# 第一次用：在这里粘贴中转站 key，自动写进 .env（只存在这台电脑上）
+if ! grep -qE '^IMAGE_API_KEY=.+' .env; then
+  echo
+  echo "还没有填中转站的 key。"
+  read -r -s -p "请粘贴中转站 key（粘贴后看不到字是正常的），然后按回车：" KEY; echo
+  if [ -n "$KEY" ]; then
+    KEY="$KEY" node -e '
+      const fs = require("fs");
+      const key = process.env.KEY.trim();
+      let t = fs.readFileSync(".env", "utf8");
+      for (const name of ["IMAGE_API_KEY", "KIMI_API_KEY"]) {
+        const re = new RegExp("^" + name + "=.*$", "m");
+        t = re.test(t) && !new RegExp("^" + name + "=.+$", "m").test(t) ? t.replace(re, name + "=" + key) : re.test(t) ? t : name + "=" + key + "\n" + t;
+      }
+      fs.writeFileSync(".env", t);'
+    unset KEY
+    echo "已保存。"
+  fi
+fi
+
 echo
 echo "正在启动，浏览器会自动打开 http://localhost:8787 （关掉这个窗口就停止）"
 echo
