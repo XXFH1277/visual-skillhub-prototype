@@ -68,6 +68,32 @@ function splitRead(want, items, pieces = 0) {
   return false;
 }
 
+// The reader is asked for {"lines":[...]}, but models also answer with a bare array,
+// another key, one string with line breaks, or plain text. Take whatever lines are there.
+export function readLines(answer) {
+  const text = String(answer || "").trim();
+  const strings = (v) =>
+    Array.isArray(v)
+      ? v.flatMap((x) => (typeof x === "string" ? [x] : typeof x?.text === "string" ? [x.text] : []))
+      : typeof v === "string"
+        ? v.split(/\n+/)
+        : [];
+  try {
+    const d = parseJsonObject(text);
+    const v = d.lines ?? d.texts ?? d.text ?? Object.values(d).find((x) => Array.isArray(x));
+    const out = strings(v).map((x) => x.trim()).filter(Boolean);
+    if (out.length || Array.isArray(v)) return out;
+  } catch {}
+  const bracket = text.match(/\[[\s\S]*\]/);
+  if (bracket)
+    try {
+      return strings(JSON.parse(bracket[0])).map((x) => x.trim()).filter(Boolean);
+    } catch {}
+  const plain = text.replace(/```\w*/g, "").split(/\n+/).map((x) => x.replace(/^[-*\d.、\s"]+|[",\s]+$/g, "").trim()).filter(Boolean);
+  if (plain.length) return plain;
+  throw new Error("校对结果无法解析");
+}
+
 // Compare confirmed text with what the vision model read off the image.
 export function compareTexts(expected, seen) {
   const haystack = normalize(seen.join(""));
@@ -291,9 +317,7 @@ export function createTextAI({
         },
         signal,
       );
-      const lines = parseJsonObject(answer).lines;
-      if (!Array.isArray(lines)) throw new Error("校对结果无法解析");
-      return lines.filter((l) => typeof l === "string");
+      return readLines(answer);
     },
   };
 }

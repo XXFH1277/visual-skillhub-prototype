@@ -111,7 +111,10 @@ export async function createWorkspace({
           return { frame: i, ...compareTexts(expected, seen) };
         } catch (error) {
           if (signal.aborted) throw error;
-          if (attempt >= 1) return { frame: i, ok: null, error: "文字校对暂不可用" };
+          if (attempt >= 1) {
+            console.warn(`文字校对失败（第 ${i + 1} 张）：${error.message}`);
+            return { frame: i, ok: null, error: "文字校对暂不可用" };
+          }
         }
       }
     };

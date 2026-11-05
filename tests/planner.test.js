@@ -120,3 +120,12 @@ test("relay model check switches to an available Kimi model", async () => {
   assert.equal(state.model, "kimi-k2.6");
   assert.deepEqual(state.models, ["kimi-k2.6", "kimi-k2.5"]);
 });
+
+test("proofreading accepts the shapes models actually answer in", async () => {
+  const { readLines } = await import("../backend/text-ai.js");
+  assert.deepEqual(readLines('{"lines":["舟山樱花虾","250g/包"]}'), ["舟山樱花虾", "250g/包"]);
+  assert.deepEqual(readLines('["舟山樱花虾"]'), ["舟山樱花虾"]);
+  assert.deepEqual(readLines('```json\n{"texts":[{"text":"白灼"}]}\n```'), ["白灼"]);
+  assert.deepEqual(readLines('{"lines":"清蒸\\n白灼"}'), ["清蒸", "白灼"]);
+  assert.deepEqual(readLines("清蒸\n白灼"), ["清蒸", "白灼"]);
+});
