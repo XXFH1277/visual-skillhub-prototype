@@ -301,3 +301,22 @@ test("template palettes always get a readable text color, an accent and a light 
   }
   assert.equal(paletteRoles(["#BFDCE8", "#EAF4F8", "#D94F3D"])[1], "#d94f3d");
 });
+
+test("a timed-out planning call only re-asks its own pictures", async () => {
+  const { planFrames } = await import("../backend/suite-ai.js");
+  let calls = 0;
+  const ai = {
+    complete: async (req) => {
+      calls++;
+      const items = JSON.parse(req.text.split("要做的图：")[1]);
+      if (items.length > 1 && items[0].id === "a") throw new Error("The operation was aborted due to timeout");
+      return JSON.stringify({ frames: items.map((it) => ({ id: it.id, texts: [{ role: "headline", text: "标题" + it.id }], scene: "画面" + it.id })) });
+    },
+  };
+  const items = ["a", "b", "c"].map((id) => ({ id, title: id, brief: "brief" + id, photos: [] }));
+  const out = await planFrames(ai, { name: "樱花虾" }, items, { kind: "detail" });
+  assert.deepEqual(out.map((f) => f.scene), ["画面a", "画面b", "画面c"]);
+  assert.equal(calls, 4);
+  const dead = { complete: async () => { throw new Error("down"); } };
+  await assert.rejects(planFrames(dead, { name: "x" }, items, { kind: "detail" }), /down/);
+});

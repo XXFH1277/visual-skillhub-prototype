@@ -240,7 +240,12 @@ ${FACTS}
       return usable(f) ? { ...f, id: it.id } : null;
     });
   };
-  const planned = (await Promise.all(chunks.map(planChunk))).flat();
+  // A slow or failed call (the relay sometimes times out under load) doesn't sink
+  // the whole plan: its pictures are simply asked again one by one below.
+  let firstError = null;
+  const planned = (
+    await Promise.all(chunks.map((c) => planChunk(c).catch((e) => ((firstError ||= e), c.map(() => null)))))
+  ).flat();
   // Anything that came back empty gets one more try on its own.
   await Promise.all(
     withLayout.map(async (it, k) => {
@@ -248,6 +253,7 @@ ${FACTS}
       planned[k] = (await planChunk([it]).catch(() => [null]))[0];
     }),
   );
+  if (firstError && !planned.some(Boolean)) throw firstError;
   return items.map((it, k) => {
     const f = planned[k] || {};
     const texts = arr(f.texts, 6)
