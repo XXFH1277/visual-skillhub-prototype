@@ -2,7 +2,7 @@ import { toPng } from "html-to-image";
 
 // 商品全套：资料 → 档案 → 笔记 → 商品图 → 详情页
 export function initSuite(ctx) {
-  const { app, api, json, toast, busy, esc, $, $$, key, refresh, getWorkspace, setCleanup } = ctx;
+  const { app, api, json, toast, busy, esc, $, $$, key, refresh, getWorkspace, setCleanup, tweak } = ctx;
   let meta = null;
   const loadMeta = async () => (meta ||= await api("/suite-meta"));
   const photoUrl = (s, file) => `/api/suites/${s.id}/photo/${encodeURIComponent(file)}`;
@@ -315,13 +315,20 @@ export function initSuite(ctx) {
     return `<div class="results">${imgs
       .map((a, i) => {
         const check = job.manifest.textCheck?.find((c) => c.frame === i);
-        return `<article class="card result"><a href="${fileUrl(job, a.name)}" target="_blank" rel="noopener"><img src="${fileUrl(job, a.name)}" alt=""></a>
-          <div class="result-bar"><b>${esc(job.frames?.[i]?.title || framesById?.[i] || "")}</b>${check ? (check.ok ? `<span class="badge ok">✓ 文字已校对</span>` : check.ok === false ? `<span class="badge bad">⚠ 文字可能有误</span>` : "") : ""}</div>
-          <div class="row"><a class="btn small" href="${fileUrl(job, a.name, true)}">下载</a><button class="btn small" data-redo="${job.id}:${i}">重出这张</button></div></article>`;
+        // The newest finished fine-tune of this picture stands in for it.
+        const latest = job.tweaks?.find((t) => t.frame === i && t.status === "succeeded" && t.asset);
+        const pending = job.tweaks?.find((t) => t.frame === i && ["queued", "running"].includes(t.status));
+        const src = latest ? `/api/jobs/${latest.id}/files/${encodeURIComponent(latest.asset)}` : fileUrl(job, a.name);
+        const count = job.tweaks?.filter((t) => t.frame === i && t.status === "succeeded").length || 0;
+        return `<article class="card result"><a href="${src}" target="_blank" rel="noopener"><img src="${src}" alt=""></a>
+          <div class="result-bar"><b>${esc(job.frames?.[i]?.title || framesById?.[i] || "")}</b>${latest ? `<a class="badge" href="#/job/${latest.id}">已微调 ${count} 次</a>` : check ? (check.ok ? `<span class="badge ok">✓ 文字已校对</span>` : check.ok === false ? `<span class="badge bad">⚠ 文字可能有误</span>` : "") : ""}</div>
+          ${pending ? `<p class="hint"><a href="#/job/${pending.id}">正在微调…</a></p>` : ""}
+          <div class="row"><a class="btn small" href="${latest ? src + "?download=1" : fileUrl(job, a.name, true)}">下载</a><button class="btn small primary-soft" data-tweak="${latest ? `${latest.id}:0` : `${job.id}:${i}`}">微调</button><button class="btn small" data-redo="${job.id}:${i}">重出这张</button></div></article>`;
       })
       .join("")}</div>`;
   }
   function bindRedo(box) {
+    $$("[data-tweak]", box).forEach((b) => (b.onclick = () => busy(b, () => tweak(...b.dataset.tweak.split(":").map((x, j) => (j ? Number(x) : x))))));
     $$("[data-redo]", box).forEach(
       (b) =>
         (b.onclick = () =>
@@ -383,6 +390,8 @@ export function initSuite(ctx) {
     const job = s.jobs?.detail;
     if (job?.status !== "succeeded") return null;
     const i = job.frames?.findIndex((f) => f.ref === sec.id);
+    const latest = job.tweaks?.find((t) => t.frame === i && t.status === "succeeded" && t.asset);
+    if (latest) return `/api/jobs/${latest.id}/files/${encodeURIComponent(latest.asset)}`;
     const asset = job.manifest.assets.filter((a) => a.role === "module")[i];
     return asset ? fileUrl(job, asset.name) : null;
   }

@@ -307,7 +307,7 @@ export async function createWorkspace({
     next();
   });
   app.get("/api/jobs", (req, res) => res.json({ jobs: store.list(req.user.id) }));
-  app.get("/api/jobs/:id", (req, res) => res.json(store.get(req.params.id)));
+  app.get("/api/jobs/:id", (req, res) => res.json({ ...store.get(req.params.id), tweaks: store.tweaksOf(req.params.id) }));
   let uploading = 0;
   const admission = (req, res, next) => {
     const key = req.get("Idempotency-Key");
@@ -576,9 +576,9 @@ export async function createWorkspace({
     res.sendFile(await regularFile(d.dir, name), { dotfiles: "allow" });
   });
 
-  async function prepareJob(dir, params, sourceDir) {
+  async function prepareJob(dir, params, sourceDir, extra = {}) {
     for (const name of params.inputs)
-      await fsp.copyFile(await regularFile(sourceDir, name), path.join(dir, name));
+      await fsp.copyFile(Object.hasOwn(extra, name) ? extra[name] : await regularFile(sourceDir, name), path.join(dir, name));
     if (params.styleRef && sourceDir) await fsp.copyFile(await regularFile(sourceDir, params.styleRef), path.join(dir, params.styleRef));
     else if (params.styleId && params.operation !== "cover") {
       const cover = styles.coverFile(params.styleId);
@@ -588,7 +588,7 @@ export async function createWorkspace({
       } else params.styleRef = null;
     }
   }
-  async function createJob(req, res, params, sourceDir, sourceId = null) {
+  async function createJob(req, res, params, sourceDir, sourceId = null, extra = {}) {
     Object.assign(
       params,
       params.operation === "cover"
@@ -604,7 +604,7 @@ export async function createWorkspace({
       dir = path.join(jobsDir, id);
     await fsp.mkdir(dir);
     try {
-      await prepareJob(dir, params, sourceDir);
+      await prepareJob(dir, params, sourceDir, extra);
       const job = store.create(params, req.get("Idempotency-Key"), { id, sourceId, userId: req.user.id });
       if (job.id !== id) await fsp.rm(dir, { recursive: true, force: true });
       res.status(202).json(job);
@@ -664,6 +664,48 @@ export async function createWorkspace({
     if (index != null) params.productName = `${source.params.productName.slice(0, 30)} · 第${index + 1}张重出`;
     req.body = { providerMode: source.params.providerMode, resolution: source.params.resolution, ...req.body };
     await createJob(req, res, params, path.join(jobsDir, source.id), source.id);
+  });
+  // Fine-tune one finished image: it becomes the base, the merchant says what to change.
+  app.post("/api/jobs/:id/tweak", admission, async (req, res) => {
+    const source = store.get(req.params.id);
+    if (source.status !== "succeeded") throw new AppError("请等这张图生成完成后再微调");
+    if (["upscale", "cover"].includes(source.params.operation) || !source.params.frames) throw new AppError("这张图不支持微调");
+    const index = req.body?.frame;
+    if (!Number.isInteger(index) || !source.params.frames[index]) throw new AppError("图片序号无效");
+    const instruction = text(req.body?.instruction, 300, "修改要求");
+    let frame = { ...source.params.frames[index] };
+    delete frame.photos;
+    delete frame.photoNotes;
+    let textsChanged = false;
+    if (Array.isArray(req.body?.texts)) {
+      const next = sanitizeFrames([{ ...frame, texts: req.body.texts }], source.params.skillId, 1, { strict: true })[0];
+      textsChanged = JSON.stringify(next.texts) !== JSON.stringify(frame.texts);
+      frame = { ...frame, ...next };
+    }
+    if (!instruction && !textsChanged) throw new AppError("说一下想怎么改，或者改一下图上的字");
+    const base = await regularFile(path.join(jobsDir, source.id), `result-${index + 1}.png`);
+    // Chained tweaks all point back at the original picture.
+    const root = source.params.tweakOf || { jobId: source.id, frame: index };
+    const rootName = source.params.tweakOf ? source.params.rootName : source.params.productName;
+    const params = {
+      ...source.params,
+      operation: "tweak",
+      instruction: instruction || "只把画面中的文字改成下面【文字】里的内容，其他一切不变。",
+      frames: [frame],
+      count: 1,
+      inputs: ["tweak-base.png"],
+      hasMainImage: false,
+      refCount: 0,
+      styleRef: null,
+      styleId: null,
+      tweakOf: root,
+      tweakFrom: { jobId: source.id, frame: index },
+      rootName,
+      productName: `${String(rootName).slice(0, 26)} · 第${root.frame + 1}张微调`,
+    };
+    for (const k of ["imageModel", "resolution", "requestedSize"]) delete params[k];
+    req.body = { providerMode: source.params.providerMode, resolution: source.params.resolution, ...req.body };
+    await createJob(req, res, params, null, source.id, { "tweak-base.png": base });
   });
   registerSuites({ app, store, users, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir });
   app.post("/api/jobs/:id/upscale", admission, async (req, res) => {

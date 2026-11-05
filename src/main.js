@@ -547,6 +547,51 @@ function modal(html) {
   paint(wrap);
   return { wrap, close };
 }
+// "Keep this picture, change one thing": the finished image becomes the base.
+const TWEAK_IDEAS = ["背景再亮一点", "换成干净的浅色背景", "商品再放大一些", "去掉多余的道具", "整体颜色更暖一些", "光线更有质感", "字再大一点"];
+function tweakModal(job, i) {
+  const p = job.params;
+  const frame = p.frames[i];
+  const asset = job.manifest.assets.filter((a) => ["image", "module"].includes(a.role))[i];
+  const cost = workspace.skills[p.skillId]?.cost || 10;
+  const aiTexts = frame.textMode === "ai" ? frame.texts : [];
+  const { wrap, close } = modal(`
+    <div class="tweak">
+      <div class="tweak-img"><img src="${fileUrl(job, asset.name)}" alt="要微调的图"></div>
+      <form class="tweak-form">
+        <h2>微调这张图</h2>
+        <p class="muted">以这张图为底，只改你说的地方，其他尽量不动。原图会一直保留。</p>
+        <label>想怎么改？<textarea name="instruction" rows="3" maxlength="300" placeholder="例如：背景再亮一点，去掉左边的柠檬"></textarea></label>
+        <div class="chips">${TWEAK_IDEAS.map((t) => `<button type="button" class="chip" data-idea="${esc(t)}">${esc(t)}</button>`).join("")}</div>
+        ${aiTexts.length ? `<details class="tweak-texts"><summary>顺便改图上的字</summary>${aiTexts.map((t, j) => `<label class="text-row two"><span class="muted">${TEXT_ROLES[t.role]?.name || "文字"}</span><input data-tt="${j}" maxlength="${TEXT_ROLES[t.role]?.max || 40}" value="${esc(t.text)}"></label>`).join("")}</details>` : ""}
+        <p class="hint">一次只改一两处，效果最好。改完会自动核对图上的字，并和原图并排给你看。</p>
+        <p class="err" role="alert"></p>
+        <button class="btn primary wide">开始微调 · ${cost} 积分</button>
+      </form>
+    </div>`);
+  const form = $(".tweak-form", wrap);
+  const area = form.instruction;
+  $$("[data-idea]", wrap).forEach((b) => (b.onclick = () => {
+    area.value = area.value.trim() ? `${area.value.trim().replace(/[，。；,;]$/, "")}，${b.dataset.idea}` : b.dataset.idea;
+    area.focus();
+  }));
+  area.focus();
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const body = { frame: i, instruction: area.value.trim() };
+    if (aiTexts.length) body.texts = aiTexts.map((t, j) => ({ role: t.role, text: $(`[data-tt="${j}"]`, form).value.trim() })).filter((t) => t.text);
+    busy(form.querySelector("button.primary"), async () => {
+      try {
+        const next = await api(`/jobs/${job.id}/tweak`, json(body, { "Idempotency-Key": key() }));
+        close();
+        await refresh();
+        location.hash = "#/job/" + next.id;
+      } catch (error) {
+        $(".err", form).textContent = error.message;
+      }
+    });
+  };
+}
 function styleModal(id) {
   const s = styleOf(id);
   if (!s) return;
@@ -692,7 +737,7 @@ function jobPage(job) {
       ${textEditor(job, i)}
       <div class="row wrap">
         <a class="btn small" href="${fileUrl(job, a.name, true)}">下载</a>
-        ${legacy || special ? "" : `<button class="btn small" data-redo="${i}">重出这张 · ${cost(1)}</button>`}
+        ${legacy || special ? "" : `<button class="btn small primary-soft" data-tweak="${i}">微调 · ${cost(1)}</button><button class="btn small" data-redo="${i}">重出这张 · ${cost(1)}</button>`}
         ${!legacy && !special && p.frames?.[i]?.textMode === "ai" ? `<button class="btn small" data-overlay="${i}" title="重新出一张留白的图，由程序把字排上去">改用精确排字 · ${cost(1)}</button>` : ""}
         ${canUpscale(a) ? `<button class="link" data-upscale="${esc(a.name)}">提升到 4K · ${workspace.skills.upscale.cost}</button>` : ""}
       </div>
@@ -703,19 +748,26 @@ function jobPage(job) {
   ${active(job) ? `<section class="card progress"><div class="spinner"></div><div><b>${esc(job.phase)}</b><p class="muted">一张图通常 1–3 分钟，${p.count > 1 ? `这次共 ${p.count} 张，` : ""}可以先离开，稍后在“我的作品”里看。</p><div class="bar"></div></div><button class="btn" id="cancel">取消并退积分</button></section>` : ""}
   ${job.status === "failed" || job.status === "cancelled" ? `<section class="card warn"><b>${STATUS[job.status]}</b><p>${esc(job.error || "")}</p></section>` : ""}
   ${m?.warnings?.length ? `<p class="warn-text">${m.warnings.map(esc).join("<br>")}</p>` : ""}
+  ${p.operation === "tweak" ? `<section class="card tweak-info"><b>修改要求</b><p>${esc(p.instruction)}</p>
+      ${m ? `<div class="compare"><figure><img src="/api/jobs/${p.tweakFrom.jobId}/files/${p.skillId === "detail" ? "module" : "image"}-${p.tweakFrom.frame + 1}.png" alt="微调前"><figcaption>微调前</figcaption></figure><figure><img src="${fileUrl(job, images[0].name)}" alt="微调后"><figcaption>微调后</figcaption></figure></div>` : ""}
+      ${m ? `${checkBadge(job, 0)}<div class="row wrap"><a class="btn small primary" href="${fileUrl(job, images[0].name, true)}">下载这张</a><button class="btn small primary-soft" data-tweak="0">继续微调 · ${cost(1)}</button><button class="btn small" data-redo="0">按同样要求再来一张 · ${cost(1)}</button></div>` : ""}
+      <p class="muted">不满意可以在新图上继续微调，或回到<a href="#/job/${p.tweakFrom.jobId}">上一版</a>。</p></section>` : ""}
+  ${job.tweaks?.length ? `<section class="card versions"><b>微调过的版本</b><div class="version-list">${job.tweaks
+    .map((t) => `<a href="#/job/${t.id}" class="version">${t.asset ? `<img src="/api/jobs/${t.id}/files/${encodeURIComponent(t.asset)}" alt="">` : `<span class="status ${t.status}">${STATUS[t.status]}</span>`}<small>第 ${t.frame + 1} 张 · ${esc(t.instruction.slice(0, 18))}</small></a>`)
+    .join("")}</div></section>` : ""}
   ${
-    m && p.skillId === "detail" && long
+    m && p.skillId === "detail" && long && p.operation !== "tweak"
       ? `<div class="detail-result">
           <div class="long-view card"><img src="${fileUrl(job, long.name)}" alt="详情页长图"></div>
           <div class="side">
             <section class="card"><h2>下载</h2><a class="btn primary wide" href="${fileUrl(job, long.name, true)}">下载整张长图</a></section>
             ${images.map((a, i) => card(a, i)).join("")}
           </div></div>`
-      : m
+      : m && p.operation !== "tweak"
         ? `<div class="results">${images.map(card).join("")}</div>`
         : ""
   }
-  ${!active(job) && !legacy && !special ? `<div class="row wrap"><button class="btn" id="retry">${job.status === "succeeded" ? "整组再来一次" : "重新生成"} · ${job.cost} 积分</button><a class="btn" href="#/new/${p.skillId}">新建</a>${job.sourceId ? `<a class="link" href="#/job/${job.sourceId}">查看来源</a>` : ""}</div>` : ""}
+  ${!active(job) && !legacy && !special && p.operation !== "tweak" ? `<div class="row wrap"><button class="btn" id="retry">${job.status === "succeeded" ? "整组再来一次" : "重新生成"} · ${job.cost} 积分</button><a class="btn" href="#/new/${p.skillId}">新建</a>${job.sourceId ? `<a class="link" href="#/job/${job.sourceId}">查看来源</a>` : ""}</div>` : ""}
   ${
     !legacy && d
       ? `<details class="card plan-detail"><summary>查看方案与分镜</summary>
@@ -742,6 +794,7 @@ function bindJob(job) {
   );
   $("#retry")?.addEventListener("click", () => busy($("#retry"), () => go(`/jobs/${job.id}/retry`, {})));
   $$("[data-redo]").forEach((b) => (b.onclick = () => busy(b, () => go(`/jobs/${job.id}/retry`, { frame: Number(b.dataset.redo) }))));
+  $$("[data-tweak]").forEach((b) => (b.onclick = () => tweakModal(job, Number(b.dataset.tweak))));
   $$("[data-overlay]").forEach((b) => (b.onclick = () => busy(b, () => go(`/jobs/${job.id}/retry`, { frame: Number(b.dataset.overlay), textMode: "overlay" }))));
   $$("[data-upscale]").forEach((b) => (b.onclick = () => busy(b, () => go(`/jobs/${job.id}/upscale`, { asset: b.dataset.upscale }))));
   $$("[data-save]").forEach(
@@ -920,6 +973,7 @@ const suite = initSuite({
   key,
   refresh,
   getWorkspace: () => workspace,
+  tweak: async (jobId, i) => tweakModal(await api("/jobs/" + jobId), i),
   setCleanup: (fn) => (cleanup = fn),
 });
 addEventListener("hashchange", () => {

@@ -82,6 +82,23 @@ export class Store {
       this.db.prepare("SELECT * FROM jobs WHERE request_key=?").get(key),
     );
   }
+  // Fine-tuned versions made from a job's pictures (any depth), newest first.
+  tweaksOf(jobId) {
+    return this.db
+      .prepare("SELECT * FROM jobs WHERE json_extract(params,'$.tweakOf.jobId')=? ORDER BY created_at DESC LIMIT 50")
+      .all(jobId)
+      .map((r) => this.decode(r))
+      .map((j) => ({
+        id: j.id,
+        status: j.status,
+        phase: j.phase,
+        error: j.error,
+        frame: j.params.tweakOf.frame,
+        instruction: j.params.instruction,
+        asset: j.manifest?.assets?.find((a) => ["image", "module"].includes(a.role))?.name || null,
+        createdAt: j.createdAt,
+      }));
+  }
   list(userId) {
     return this.db
       .prepare("SELECT * FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT 100")

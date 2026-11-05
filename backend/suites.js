@@ -53,7 +53,7 @@ export function registerSuites({ app, store, users, dataDir, textAI, normalizeUp
     risky: scanRisky([s.note?.text, s.profile?.copy, JSON.stringify(s.profile || {})].join("\n")),
     jobs: Object.fromEntries(Object.entries(s.jobs || {}).map(([k, id]) => [k, id && store.get(id) ? summary(store.get(id)) : null])),
   });
-  const summary = (j) => ({ id: j.id, status: j.status, phase: j.phase, error: j.error, cost: j.cost, manifest: j.manifest, updatedAt: j.updatedAt, frames: j.params.frames });
+  const summary = (j) => ({ id: j.id, status: j.status, phase: j.phase, error: j.error, cost: j.cost, manifest: j.manifest, updatedAt: j.updatedAt, frames: j.params.frames, tweaks: store.tweaksOf(j.id) });
 
   // Run one AI step in the background and record its state on the suite.
   let running = 0;

@@ -13,13 +13,34 @@ const OPENERS = {
 const AREA = { top: "画面上方约四分之一", bottom: "画面下方约四分之一", left: "画面左侧约四成", right: "画面右侧约四成", center: "画面中央" };
 
 export function frameInputs(params, index) {
+  if (params.operation === "tweak") return [...params.inputs];
   const frame = params.frames[index];
   const files = frame?.photos?.length ? [...frame.photos] : [...params.inputs];
   if (params.styleRef && params.frames[index]?.textMode !== "overlay") files.push(params.styleRef);
   return files;
 }
 
+// Edit a finished image: keep everything, change only what the merchant asked for.
+function tweakPrompt(params) {
+  const frame = params.frames[0];
+  const texts = textsForImage(params.skillId, frame);
+  const lines = [
+    `图1 是一张已经完成、客户基本满意的${{ product: "电商商品图", detail: "详情页设计稿", poster: "海报", interior: "装修效果图" }[params.skillId] || "图片"}。请在图1 的基础上做局部修改，输出同样画幅（${SIZE_NAMES[params.size] || params.size}）的一张图片。`,
+    `【只改这一处】${params.instruction}`,
+    "【保持不变】除上面要求的修改外，构图、机位、商品的形状颜色与包装细节、Logo、光线方向、配色、背景与道具都与图1 保持一致；不要重新设计，不要增加或删除其他元素，不要改变画面比例。",
+  ];
+  if (texts.length)
+    lines.push(
+      `【文字】画面中的文字最终必须是下面这些，每条逐字照抄（EXACT, verbatim），位置和字体沿用图1 的设计，不增不减；图1 里已有的同样文字保持原样：\n${texts.map((t, i) => `${i + 1}. ${TEXT_ROLES[t.role]?.name || "文字"}："${t.text}"`).join("\n")}`,
+    );
+  else if (frame.textMode === "overlay" && frame.layout !== "none")
+    lines.push(`【留白】${AREA[frame.layout]}继续保持干净，不要出现任何新增文字、水印或 Logo。`);
+  else lines.push("【文字】不要新增任何文字、水印或 Logo（商品本身原有的标签保留）。");
+  return lines.join("\n\n");
+}
+
 export function framePrompt(params, index) {
+  if (params.operation === "tweak") return tweakPrompt(params);
   const frame = params.frames[index];
   const d = params.direction || {};
   const texts = textsForImage(params.skillId, frame);
