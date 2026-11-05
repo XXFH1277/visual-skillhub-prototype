@@ -91,7 +91,7 @@ export function readLines(answer) {
     } catch {}
   const plain = text.replace(/```\w*/g, "").split(/\n+/).map((x) => x.replace(/^[-*\d.、\s"]+|[",\s]+$/g, "").trim()).filter(Boolean);
   if (plain.length) return plain;
-  throw new Error("校对结果无法解析");
+  throw new Error("校对结果无法解析：" + text.slice(0, 120));
 }
 
 // Compare confirmed text with what the vision model read off the image.

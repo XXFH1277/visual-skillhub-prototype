@@ -768,6 +768,25 @@ export async function createWorkspace({
     queue.cancel(req.params.id);
     res.json({ ok: true });
   });
+  // Proofreading again for free (the vision model is sometimes unavailable right after generation).
+  const rechecking = new Set();
+  app.post("/api/jobs/:id/recheck", async (req, res) => {
+    const job = store.get(req.params.id);
+    if (!job || job.status !== "succeeded" || !job.params.frames) throw new AppError("该任务不能核对文字");
+    if (rechecking.has(job.id)) throw new AppError("正在核对，请稍候", 409);
+    rechecking.add(job.id);
+    try {
+      await proofread(job, path.join(jobsDir, job.id), AbortSignal.timeout(600000), () => {});
+      const textCheck = JSON.parse(await fsp.readFile(path.join(jobsDir, job.id, "text-check.json"), "utf8").catch(() => "[]"));
+      const fresh = store.get(job.id);
+      store.db
+        .prepare("UPDATE jobs SET manifest=?,updated_at=? WHERE id=?")
+        .run(JSON.stringify({ ...fresh.manifest, textCheck }), new Date().toISOString(), job.id);
+      res.json(store.get(job.id));
+    } finally {
+      rechecking.delete(job.id);
+    }
+  });
   // Free edits for text the program typesets (detail captions, overlay frames).
   const exportLocks = new Set();
   app.post("/api/jobs/:id/texts", async (req, res) => {

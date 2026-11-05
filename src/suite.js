@@ -132,6 +132,15 @@ export function initSuite(ctx) {
         location.hash = "#/";
       });
     const box = $("#tab");
+    box.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-recheck]");
+      if (b)
+        busy(b, async () => {
+          await api(`/jobs/${b.dataset.recheck}/recheck`, json({}));
+          toast("文字已重新核对");
+          suitePage(s.id);
+        });
+    });
     if (!p) return profileWaiting(box, s);
     ({ profile: profileTab, note: noteTab, shots: shotsTab, detail: detailTab })[tab](box, s);
   }
@@ -328,12 +337,24 @@ export function initSuite(ctx) {
       })
       .join("")}</ul>`;
   }
+  // Pictures the vision model couldn't read back yet: offer a free second look.
+  function detailCheck(job) {
+    const bad = (job.manifest?.textCheck || []).filter((c) => c.ok === false);
+    if (!bad.length) return "";
+    return `<details class="badge-detail"><summary class="badge bad">⚠ ${bad.length} 屏文字可能不一致</summary><ul>${bad
+      .map((c) => `<li>${esc(job.frames?.[c.frame]?.title || `第 ${c.frame + 1} 屏`)}：应为${c.problems.map((p) => `“${esc(p.text)}”`).join("、")}</li>`)
+      .join("")}</ul><p class="muted">不对的屏可以点“✕”去掉，或在“我的作品”里一句话微调。</p></details>`;
+  }
+  function recheckLink(job) {
+    const n = job?.manifest?.textCheck?.filter((c) => c.ok === null).length;
+    return n ? `<p class="muted">有 ${n} 张图的文字还没核对上（校对 AI 当时没响应）。<button class="link" data-recheck="${job.id}">重新核对文字（免费）</button></p>` : "";
+  }
   function jobResults(job, framesById) {
     if (!job) return "";
     if (["queued", "running"].includes(job.status)) return spinner(job.phase || "生成中", "一张图 1–3 分钟，可以先离开，稍后回来看");
     if (job.status !== "succeeded") return `<section class="card warn"><b>没有成功</b><p>${esc(job.error || "")}</p></section>`;
     const imgs = job.manifest.assets.filter((a) => ["image", "module"].includes(a.role));
-    return `<div class="results">${imgs
+    return `${recheckLink(job)}<div class="results">${imgs
       .map((a, i) => {
         const check = job.manifest.textCheck?.find((c) => c.frame === i);
         // The newest finished fine-tune of this picture stands in for it.
@@ -588,6 +609,7 @@ export function initSuite(ctx) {
           ${job && ["queued", "running"].includes(job.status) ? spinner(job.phase || "生成中", `共 ${job.frames?.length || ai.length} 屏，约 ${ai.length * 2} 分钟`) : ""}
           ${job?.status === "failed" ? `<p class="warn-text">${esc(job.error)}</p>` : ""}
           ${done ? `<p class="ok-text">AI 图都已生成，删掉或调整顺序后直接导出就行，不用重新生成。</p>` : ""}
+          ${job?.status === "succeeded" ? recheckLink(job) + detailCheck(job) : ""}
           <button class="btn primary wide" id="export">导出详情长图（750 宽）</button>
           <p class="muted">哪屏不满意，点预览里那一屏右上角的“✕”（或在上面选“不要这屏”），长图里就不拼它，不扣积分；想要回来，把选项改回去就行。单独导出某一屏点“↓”。</p>
         </section>
