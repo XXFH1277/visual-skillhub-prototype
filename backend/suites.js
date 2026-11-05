@@ -201,13 +201,12 @@ export function registerSuites({ app, store, users, dataDir, textAI, normalizeUp
       throw new AppError("问答格式错误");
     }
     const name = String(answers.name || "").slice(0, 40);
-    if (!noteFile && !pasted.trim() && !name) throw new AppError("请上传笔记、粘贴文字，或至少填写商品名");
     if (!photos.length && !noteFile) throw new AppError("请至少上传一张实拍图");
     const caseId = CASES.some((c) => c.id === req.body?.caseId) ? req.body.caseId : "";
     const id = randomUUID();
     await fsp.mkdir(dirOf(id), { recursive: true });
     const now = new Date().toISOString();
-    const s = { id, name, caseId, hasNote: !!(noteFile || pasted.trim()), answers, text: pasted, photos: [], tasks: {}, jobs: {}, profile: null, note: null, shots: null, sections: [] };
+    const s = { id, name, caseId, hasNote: !!noteFile, answers, text: pasted, photos: [], tasks: {}, jobs: {}, profile: null, note: null, shots: null, sections: [] };
     try {
       if (noteFile) {
         const imported = await importNote(noteFile);

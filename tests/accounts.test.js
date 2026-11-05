@@ -168,6 +168,15 @@ test("merchants only see their own jobs, products, drafts and uploaded styles", 
   assert.ok(suite.id);
   assert.equal((await a.json("/api/suites")).suites.length, 1);
   assert.equal((await b.json("/api/suites")).suites.length, 0);
+  // Just talking about it is enough (no name, no note) as long as there are photos.
+  const casual = new FormData();
+  casual.append("text", "舟山带鱼 沈家门码头直接发 肉厚 清蒸出油 冷冻顺丰");
+  casual.append("photos", new Blob([image], { type: "image/png" }), "p.png");
+  assert.equal((await a.request("/api/suites", { method: "POST", body: casual })).status, 202);
+  const noPhotos = new FormData();
+  noPhotos.append("text", "舟山带鱼");
+  assert.equal((await a.request("/api/suites", { method: "POST", body: noPhotos })).status, 400);
+  assert.equal((await a.json("/api/suites")).suites.length, 2);
   assert.equal((await b.request("/api/suites/" + suite.id)).status, 404);
   assert.equal((await b.request(`/api/suites/${suite.id}/photo/${suite.photos[0].file}`)).status, 404);
   assert.equal((await b.request("/api/suites/" + suite.id, { method: "DELETE" })).status, 404);

@@ -33,103 +33,66 @@ export function initSuite(ctx) {
   }
 
   /* ---------------- new product ---------------- */
-  const draft = { hasNote: null, note: null, text: "", photos: [], urls: [], answers: {}, caseId: "" };
+  // New product: one box to say/paste anything, plus photos and an optional note file.
+  const draft = { text: "", note: null, photos: [], urls: [], caseId: "" };
+  const NOTE_TYPES = /\.(pdf|docx|txt)$/i;
   async function newPage() {
     await loadMeta();
-    const q = meta.quick;
+    const ready = draft.text.trim() || draft.note || draft.photos.length;
     app.innerHTML = `
       <a class="back" href="#/">← 我的商品</a>
       <div class="create">
-        <section class="card step">
-          <h2><span class="n">1</span>你有现成的商品笔记吗？</h2>
-          <p class="muted">就是平时发群里的那份介绍：品名、产地、卖点、发货售后、配图……</p>
-          <div class="choice">
-            <button class="choice-btn ${draft.hasNote === true ? "on" : ""}" data-has="1"><b>有，我直接上传</b><small>PDF / Word / 粘贴文字，图片会自动提取</small></button>
-            <button class="choice-btn ${draft.hasNote === false ? "on" : ""}" data-has="0"><b>没有，帮我写</b><small>传几张实拍图，回答几个问题</small></button>
-          </div>
+        <section class="card step tell">
+          <h2>说说你的商品</h2>
+          <p class="muted">想到什么写什么，不用整理。AI 会帮你理成商品档案，缺什么再问你。</p>
+          <textarea id="tell" rows="8" maxlength="20000" placeholder="例如：舟山的雷达网带鱼，沈家门码头直接发，肉厚、清蒸出油，一盒两条独立真空包装，冷冻发顺丰，江浙沪包邮……\n\n以前写过的文案、跟客户的聊天记录，也可以直接粘贴进来">${esc(draft.text)}</textarea>
+          <p class="voice-tip">🎤 手机上点输入法键盘上的<b>话筒</b>，直接说就行，说完会变成文字</p>
         </section>
-        ${
-          draft.hasNote === true
-            ? `<section class="card step"><h2><span class="n">2</span>上传笔记</h2>
-                <label class="drop small ${draft.note ? "has" : ""}"><input type="file" id="note-file" accept=".pdf,.docx,.txt" hidden><span class="plus">＋</span><span>${draft.note ? esc(draft.note.name) : "选择 PDF / Word（.docx）/ txt"}</span></label>
-                <label>或直接粘贴文字<textarea id="note-text" rows="6" maxlength="20000" placeholder="把笔记内容粘贴到这里">${esc(draft.text)}</textarea></label>
-                <p class="muted">笔记里的图片会自动提取。还有别的实拍图，可以在下面补充。</p></section>`
-            : draft.hasNote === false
-              ? `<section class="card step"><h2><span class="n">2</span>回答几个问题</h2>
-                  <div class="two-col">
-                    <label>商品叫什么 <em class="req">必填</em><input id="q-name" maxlength="40" value="${esc(draft.answers.name || "")}" placeholder="例如：舟山雷达网带鱼 整条礼盒装"></label>
-                    <label>产地<input id="q-origin" maxlength="40" value="${esc(draft.answers.origin || "")}" placeholder="例如：浙江舟山"></label>
-                  </div>
-                  <label>它最好的地方是什么？（一句话，可不写）<input id="q-point" maxlength="100" value="${esc(draft.answers.point || "")}" placeholder="例如：深海雷达网捕捞，肉厚油润，清蒸出油"></label>
-                  ${Object.entries(q)
-                    .map(
-                      ([k, v]) => `<div class="quick"><span>${v.label}</span>${v.options
-                        .map((o) => `<button class="chip ${[].concat(draft.answers[k] || []).includes(o) ? "on" : ""}" data-q="${k}" data-multi="${v.multi ? 1 : 0}" data-v="${esc(o)}">${esc(o)}</button>`)
-                        .join("")}</div>`,
-                    )
-                    .join("")}
-                </section>`
-              : ""
-        }
-        ${
-          draft.hasNote !== null
-            ? `<section class="card step"><h2><span class="n">3</span>${draft.hasNote ? "补充实拍图（可选）" : "上传实拍图"}</h2>
-                <p class="muted">越全越好：包装正面、实物、做好的成品、产地/码头/工厂、细节或切面。手机拍的就行。</p>
-                <div class="ref-row">${draft.urls.map((u, i) => `<div class="ref"><img src="${u}" alt=""><button class="x" data-rm="${i}" aria-label="移除">×</button></div>`).join("")}
-                  <label class="ref add"><input type="file" id="photo-files" accept="image/png,image/jpeg,image/webp" multiple hidden>＋</label></div>
-                <details class="advanced"><summary>参考案例（默认自动选）</summary><div class="pills">
-                  <button class="pill ${!draft.caseId ? "on" : ""}" data-case="">自动</button>
-                  ${meta.cases.map((c) => `<button class="pill ${draft.caseId === c.id ? "on" : ""}" data-case="${c.id}">${esc(c.name)}</button>`).join("")}</div></details>
-              </section>`
-            : ""
-        }
-        <div class="actionbar"><div class="actionbar-in"><span class="muted">提交后 AI 先整理成“商品档案”，你核对后再出笔记和图，这一步不扣积分</span><button class="btn primary" id="go" ${draft.hasNote === null ? "disabled" : ""}>开始整理 →</button></div></div>
+        <section class="card step">
+          <h2>放几张实拍图 <small class="muted">越全越好，手机拍的就行</small></h2>
+          <p class="muted">包装正面、实物、做好的成品、产地/码头/工厂、细节或切面。有现成的笔记（PDF / Word）也可以放这里，里面的图会自动提取。</p>
+          <div class="ref-row">${draft.urls.map((u, i) => `<div class="ref"><img src="${u}" alt=""><button class="x" data-rm="${i}" aria-label="移除">×</button></div>`).join("")}
+            ${draft.note ? `<div class="ref note-file"><span>📄</span><small>${esc(draft.note.name)}</small><button class="x" id="rm-note" aria-label="移除">×</button></div>` : ""}
+            <label class="ref add"><input type="file" id="add-files" accept="image/png,image/jpeg,image/webp,.pdf,.docx,.txt" multiple hidden>＋</label></div>
+          <details class="advanced"><summary>参考案例（默认自动选）</summary><div class="pills">
+            <button class="pill ${!draft.caseId ? "on" : ""}" data-case="">自动</button>
+            ${meta.cases.map((c) => `<button class="pill ${draft.caseId === c.id ? "on" : ""}" data-case="${c.id}">${esc(c.name)}</button>`).join("")}</div></details>
+        </section>
+        <div class="actionbar"><div class="actionbar-in"><span class="muted">AI 先整理成“商品档案”给你看，不扣积分</span><button class="btn primary" id="go" ${ready ? "" : "disabled"}>帮我整理 →</button></div></div>
       </div>`;
-    $$("[data-has]").forEach((b) => (b.onclick = () => ((draft.hasNote = b.dataset.has === "1"), newPage())));
-    $("#note-file")?.addEventListener("change", (e) => ((draft.note = e.target.files[0] || null), newPage()));
-    $("#note-text")?.addEventListener("input", (e) => (draft.text = e.target.value));
-    for (const [id, k] of [["q-name", "name"], ["q-origin", "origin"], ["q-point", "point"]]) $("#" + id)?.addEventListener("input", (e) => (draft.answers[k] = e.target.value));
-    $$("[data-q]").forEach(
-      (b) =>
-        (b.onclick = () => {
-          const k = b.dataset.q;
-          const v = b.dataset.v;
-          if (b.dataset.multi === "1") {
-            const cur = new Set([].concat(draft.answers[k] || []));
-            cur.has(v) ? cur.delete(v) : cur.add(v);
-            draft.answers[k] = [...cur];
-          } else draft.answers[k] = draft.answers[k] === v ? "" : v;
-          newPage();
-        }),
-    );
-    $("#photo-files")?.addEventListener("change", (e) => {
-      for (const f of [...e.target.files].slice(0, 30 - draft.photos.length)) {
-        draft.photos.push(f);
-        draft.urls.push(URL.createObjectURL(f));
+    const tell = $("#tell");
+    tell.addEventListener("input", () => {
+      draft.text = tell.value;
+      $("#go").disabled = !(draft.text.trim() || draft.note || draft.photos.length);
+    });
+    $("#add-files").addEventListener("change", (e) => {
+      for (const f of e.target.files) {
+        if (NOTE_TYPES.test(f.name)) draft.note = f;
+        else if (f.type.startsWith("image/") && draft.photos.length < 30) {
+          draft.photos.push(f);
+          draft.urls.push(URL.createObjectURL(f));
+        }
       }
       newPage();
     });
+    $("#rm-note")?.addEventListener("click", () => ((draft.note = null), newPage()));
     $$("[data-rm]").forEach((b) => (b.onclick = () => (draft.photos.splice(+b.dataset.rm, 1), draft.urls.splice(+b.dataset.rm, 1), newPage())));
     $$("[data-case]").forEach((b) => (b.onclick = () => ((draft.caseId = b.dataset.case), newPage())));
     $("#go").onclick = (e) =>
       busy(e.currentTarget, async () => {
+        if (!draft.photos.length && !draft.note) throw new Error("再放几张实拍图吧，出图要用到");
         const form = new FormData();
-        if (draft.hasNote) {
-          if (!draft.note && !draft.text.trim()) throw new Error("请上传笔记文件或粘贴文字");
-          if (draft.note) form.append("note", draft.note);
-          form.set("text", draft.text);
-        } else {
-          if (!draft.answers.name?.trim()) throw new Error("请填写商品名");
-          if (!draft.photos.length) throw new Error("请至少上传一张实拍图");
-        }
-        form.set("answers", JSON.stringify(draft.answers));
+        if (draft.note) form.append("note", draft.note);
+        form.set("text", draft.text);
+        form.set("answers", "{}");
         form.set("caseId", draft.caseId);
         for (const p of draft.photos) form.append("photos", p);
         toast("上传中，图片多的话需要几十秒…");
         const s = await api("/suites", { method: "POST", body: form });
-        Object.assign(draft, { hasNote: null, note: null, text: "", photos: [], urls: [], answers: {}, caseId: "" });
+        Object.assign(draft, { text: "", note: null, photos: [], urls: [], caseId: "" });
         location.hash = "#/suite/" + s.id;
       });
+    if (!draft.text) tell.focus();
   }
 
   /* ---------------- one product ---------------- */
@@ -192,11 +155,56 @@ export function initSuite(ctx) {
     ["name", "品名"], ["origin", "产地"], ["shipFrom", "发货地"], ["spec", "规格"], ["storage", "储存方式"], ["courier", "快递"],
     ["freeShipping", "包邮"], ["dispatch", "发货时效"], ["excludedAreas", "不发/加价地区"], ["packaging", "包装方式"], ["afterSales", "售后"],
   ];
+  // "AI filled these, still missing these": one tap per answer, written straight into the fields below.
+  const GAPS = ["name", "origin", "spec", "storage", "courier", "freeShipping", "dispatch", "afterSales"];
+  const GAP_HINTS = { name: "例如：舟山雷达网带鱼 整条礼盒装", origin: "例如：浙江舟山", spec: "例如：2 条装，每条约 500g" };
+  function gapsCard(p) {
+    const filled = FIELDS.filter(([k]) => p[k]?.trim()).length;
+    const gaps = GAPS.filter((k) => !p[k]?.trim());
+    if (!gaps.length && !p.missing?.length) return `<section class="card ok-card"><b>✓ AI 已经帮你整理好了</b><p class="muted">下面每一项都可以改；没问题就点最下面的“保存”。</p></section>`;
+    const label = Object.fromEntries(FIELDS);
+    return `<section class="card gaps-card">
+      <h2>AI 帮你填好了 ${filled} 项，还差这几项</h2>
+      <p class="muted">点一下就填上，没有的可以跳过</p>
+      ${gaps
+        .map((k) => {
+          const q = meta.quick[k];
+          return `<div class="gap"><span>${label[k]}</span>${
+            q
+              ? q.options.map((o) => `<button class="chip" data-gap="${k}" data-multi="${q.multi ? 1 : 0}" data-v="${esc(o)}">${esc(o)}</button>`).join("")
+              : `<input data-gap-input="${k}" placeholder="${esc(GAP_HINTS[k] || "")}">`
+          }</div>`;
+        })
+        .join("")}
+      ${p.missing?.length ? `<p class="hint">AI 还建议补充：${p.missing.map(esc).join("；")}</p>` : ""}
+    </section>`;
+  }
+  function bindGaps(box) {
+    const field = (k) => $(`[data-f="${k}"]`, box);
+    $$("[data-gap]", box).forEach(
+      (b) =>
+        (b.onclick = () => {
+          const k = b.dataset.gap;
+          const el = field(k);
+          if (b.dataset.multi === "1") {
+            const cur = new Set(el.value.split(/[、,，\s]+/).filter(Boolean));
+            cur.has(b.dataset.v) ? cur.delete(b.dataset.v) : cur.add(b.dataset.v);
+            el.value = [...cur].join("、");
+            b.classList.toggle("on", cur.has(b.dataset.v));
+          } else {
+            const on = el.value !== b.dataset.v;
+            el.value = on ? b.dataset.v : "";
+            $$(`[data-gap="${k}"]`, box).forEach((x) => x.classList.toggle("on", on && x === b));
+          }
+        }),
+    );
+    $$("[data-gap-input]", box).forEach((el) => el.addEventListener("input", () => (field(el.dataset.gapInput).value = el.value)));
+  }
   function profileTab(box, s) {
     const p = s.profile;
     box.innerHTML = `
       ${busyTask(s, "profile") ? spinner("AI 正在重新整理", "完成后自动刷新") : ""}
-      ${p.missing?.length ? `<section class="card hint-card"><b>建议补充</b><p>${p.missing.map(esc).join("；")}</p></section>` : ""}
+      ${gapsCard(p)}
       ${s.risky?.length ? `<section class="card warn"><b>淘宝要注意的词</b><p>${s.risky.map((r) => `“${esc(r.word)}”→ ${esc(r.fix)}`).join("；")}</p><p class="muted">私域群发可以保留；放淘宝详情页会被判违规，出详情页时会自动换成右边的说法。</p></section>` : ""}
       <section class="card"><h2>实拍图 <small class="muted">AI 已经认出每张是什么，认错了就改一下</small></h2>
         <div class="photo-grid">${s.photos
@@ -248,6 +256,7 @@ export function initSuite(ctx) {
       const photos = s.photos.map((ph) => ({ file: ph.file, role: $(`[data-role="${CSS.escape(ph.file)}"]`, box).value, usable: $(`[data-usable="${CSS.escape(ph.file)}"]`, box).checked }));
       return { profile: next, photos };
     };
+    bindGaps(box);
     $("#add-row").onclick = () => {
       current.profile.compare.rows.push({ aspect: "", ours: "", others: "" });
       profileTab(box, current);
