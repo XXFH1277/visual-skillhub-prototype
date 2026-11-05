@@ -1,3 +1,4 @@
+import { parseJsonObject } from "./json.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -248,9 +249,7 @@ export function createTextAI({
         },
         signal,
       );
-      const match = answer.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("风格拆解结果无法解析");
-      return JSON.parse(match[0]);
+      return parseJsonObject(answer);
     },
     // Proofread: list every visible line of text in a generated image.
     async readTexts(image, { signal } = {}) {
@@ -263,8 +262,7 @@ export function createTextAI({
         },
         signal,
       );
-      const match = answer.match(/\{[\s\S]*\}/);
-      const lines = match ? JSON.parse(match[0]).lines : null;
+      const lines = parseJsonObject(answer).lines;
       if (!Array.isArray(lines)) throw new Error("校对结果无法解析");
       return lines.filter((l) => typeof l === "string");
     },

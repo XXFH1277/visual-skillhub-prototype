@@ -1,3 +1,4 @@
+import { parseJsonObject } from "./json.js";
 import fs from "node:fs";
 import { SCENES, LAYOUTS, TEXT_MODES, TEXT_ROLES, MAX_TEXTS, SIZE_NAMES } from "../shared/scenes.js";
 import { CATEGORIES, styleFits } from "../shared/styles.js";
@@ -47,10 +48,8 @@ export function sceneGuide(skillId) {
 const clip = (v, n) => (typeof v === "string" ? Array.from(v.replace(/[ \t]+/g, " ").trim()).slice(0, n).join("") : "");
 function parseJson(raw) {
   if (raw && typeof raw === "object") return raw;
-  const match = String(raw || "").match(/\{[\s\S]*\}/);
-  if (!match) return null;
   try {
-    return JSON.parse(match[0]);
+    return parseJsonObject(raw);
   } catch {
     return null;
   }
