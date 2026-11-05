@@ -367,6 +367,8 @@ test("API mode: brief carries the visual system and exact text; covers feed the 
   });
   const done = await s.terminal((await res.json()).id);
   assert.equal(done.status, "succeeded", done.error);
+  // Frames run concurrently; order the requests by frame.
+  sent.sort((a, b) => Number(/后期会在这里排字/.test(a.prompt)) - Number(/后期会在这里排字/.test(b.prompt)));
   assert.deepEqual(sent[0].images, ["input-0.png", "style-ref.png"]);
   assert.deepEqual(sent[1].images, ["input-0.png"]);
   assert.match(sent[0].prompt, /"一键开盖"/);

@@ -26,6 +26,7 @@ export function imageConfig(env = process.env) {
     model2k: env.IMAGE_API_MODEL_2K || "gpt-image-2.5",
     model4k: env.IMAGE_API_MODEL_4K || "gpt-image-2-4K",
     timeoutMs: Number(env.GENERATION_TIMEOUT_MS) || 900000,
+    concurrency: Math.min(Math.max(Number(env.IMAGE_API_CONCURRENCY) || 3, 1), 6),
   };
 }
 
@@ -108,8 +109,8 @@ export function createImageRunner(config, fetchImpl = fetch) {
     const results = [];
     const started = Date.now();
     let phase = "prepare";
-    try {
-      for (let i = 0; i < p.count; i++) {
+    // Frames are independent: run a few at once (the relay takes ~1 min per image).
+    const runFrame = async (i) => {
         combined.throwIfAborted();
         const form = new FormData();
         form.set("model", p.imageModel);
@@ -212,7 +213,23 @@ export function createImageRunner(config, fetchImpl = fetch) {
           actualSize: `${meta.width}x${meta.height}`,
           sizeMatched: requestedSize === `${meta.width}x${meta.height}`,
         });
-      }
+    };
+    try {
+      let next = 0;
+      let failed = null;
+      const worker = async () => {
+        while (!failed && next < p.count) {
+          const i = next++;
+          try {
+            await runFrame(i);
+          } catch (error) {
+            failed ||= error;
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(config.concurrency || 1, p.count) }, worker));
+      if (failed) throw failed;
+      results.sort((a, b) => a.index - b.index);
       phase = "save-report";
       await fs.writeFile(
         path.join(dir, "api-report.json"),
