@@ -34,6 +34,7 @@ export const SECTION_TYPES = {
   material: { name: "选材与细节", modes: ["ai", "bg", "tpl"], photo: ["detail", "product"] },
   usage: { name: "吃法 / 用法", modes: ["ai", "photo"], photo: ["cooked", "usage"] },
   faq: { name: "提前说清楚（答疑）", modes: ["bg", "ai", "tpl"], photo: [] },
+  normal: { name: "正常现象说明", modes: ["bg", "ai", "tpl"], photo: ["product", "detail"] },
   pack: { name: "包装与收货", modes: ["ai", "bg", "tpl"], photo: ["package"] },
   info: { name: "商品信息", modes: ["bg", "tpl", "ai"], photo: [] },
   notice: { name: "购物须知", modes: ["bg", "tpl", "ai"], photo: [] },

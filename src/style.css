@@ -517,3 +517,14 @@ dd { margin: 0; line-height: 1.5; }
 .dp-sec.bg { padding: 90px 46px; min-height: 1000px; display: flex; align-items: center; background: var(--c3) center / cover no-repeat; }
 .bg-panel { width: 100%; background: rgba(255, 255, 255, 0.93); border-radius: 22px; padding: 52px 44px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.12); }
 .ok-text { color: #2e7d4f; font-size: 14px; margin: 8px 0 0; }
+
+/* packaging */
+.pack-ask p { max-width: 640px; }
+.dims input { width: 84px; }
+.dims span { color: var(--muted, #888); }
+.lbl { display: block; font-size: 14px; margin: 14px 0 6px; color: #444; }
+.pack-arts { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin: 10px 0; }
+.pack-arts figure { margin: 0; border: 2px solid transparent; border-radius: 10px; padding: 6px; display: grid; gap: 8px; }
+.pack-arts figure.on { border-color: var(--accent, #e8541e); }
+.pack-arts img, .pack-mock, .dieline { width: 100%; border-radius: 8px; display: block; background: #f3f3f3; }
+.pack-mock { max-width: 520px; }

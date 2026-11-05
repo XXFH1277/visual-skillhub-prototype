@@ -55,7 +55,11 @@ export function framePrompt(params, index) {
       roles.push(
         frame.photoUse === "ingredient"
           ? `图${n}：生鲜实拍${note}——只用来看食材本身（品种、大小、颜色、纹理），成品里的食材要和它一致；不要照搬它的背景、容器和构图。`
-          : `图${n}：商家实拍${note}——画面以它为基础重新布光、构图和排版；商品/包装的形状、颜色、图案、Logo 和文字保持真实，不重新设计。`,
+          : frame.photoUse === "print"
+            ? `图${n}：商品实拍${note}——包装上的商品图案以它为准（品种、颜色、形状一致），可以做成干净的摄影抠图或精致插画；不要照搬它的背景和容器。`
+            : frame.photoUse === "artwork"
+              ? `图${n}：包装平面设计稿${note}——效果图里包装上的图案、文字、颜色、版式必须和它完全一致，只是贴到立体盒子上，不要重新设计。`
+              : `图${n}：商家实拍${note}——画面以它为基础重新布光、构图和排版；商品/包装的形状、颜色、图案、Logo 和文字保持真实，不重新设计。`,
       );
       n++;
     });
@@ -78,7 +82,7 @@ export function framePrompt(params, index) {
 
   if (d.conceptName)
     lines.push(
-      `【视觉系统 · ${d.conceptName}】${d.story || ""}\n色板：${(d.palette || []).join(" ")}\n道具与材质：${d.props}\n光线：${d.light}\n机位构图：${d.camera}\n字体排版：${d.type}${d.avoid ? `\n避免：${d.avoid}` : ""}${d.core ? `\nStyle: ${d.core}` : ""}`,
+      `【视觉系统 · ${d.conceptName}】${d.story || ""}\n色板：${(d.palette || []).join(" ")}\n道具与材质：${d.props}\n光线：${d.light}\n机位构图：${d.camera}\n字体排版：${d.type}${d.layout ? `\n版式元素：${d.layout}` : ""}${d.avoid ? `\n避免：${d.avoid}` : ""}${d.core ? `\nStyle: ${d.core}` : ""}`,
     );
   lines.push("【这一张】" + frame.title + "\n" + frame.scene);
 

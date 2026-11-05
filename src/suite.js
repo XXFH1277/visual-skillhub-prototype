@@ -99,7 +99,7 @@ export function initSuite(ctx) {
   }
 
   /* ---------------- one product ---------------- */
-  const tabs = { profile: "1 商品档案", note: "2 笔记", shots: "3 商品图", detail: "4 详情页" };
+  const tabs = { profile: "1 商品档案", note: "2 笔记", pack: "3 包装", shots: "4 商品图", detail: "5 详情页" };
   let tab = "profile";
   let current = null;
   async function suitePage(id, sub) {
@@ -108,7 +108,7 @@ export function initSuite(ctx) {
     const s = await api("/suites/" + id);
     current = s;
     render(s);
-    if (anyBusy(s) || ["shots", "detail", "dish"].some((k) => ["queued", "running"].includes(s.jobs?.[k]?.status))) {
+    if (anyBusy(s) || ["shots", "detail", "dish", "packArt", "packMock"].some((k) => ["queued", "running"].includes(s.jobs?.[k]?.status))) {
       const t = setTimeout(async () => {
         if (location.hash.startsWith("#/suite/" + id)) suitePage(id);
       }, 3000);
@@ -142,7 +142,7 @@ export function initSuite(ctx) {
         });
     });
     if (!p) return profileWaiting(box, s);
-    ({ profile: profileTab, note: noteTab, shots: shotsTab, detail: detailTab })[tab](box, s);
+    ({ profile: profileTab, note: noteTab, pack: packTab, shots: shotsTab, detail: detailTab })[tab](box, s);
   }
   let delArmed = 0;
   const confirmDelete = () => {
@@ -306,7 +306,7 @@ export function initSuite(ctx) {
           <div class="row wrap"><button class="btn primary" data-copy="note">一键复制（发微信）</button><button class="btn" id="save-note">保存修改</button></div>` : `<p class="muted">私域版口语化、带表情，适合发群/朋友圈；淘宝合规版自动避开“最、第一、没有之一”这类词。</p>`}
       </section>
       <section class="card row spread"><div><b>Word 版本</b><p class="muted">按“【品名】【产地】…配图…文案…购物须知”排好，图文都能复制</p></div><a class="btn" href="/api/suites/${s.id}/note.docx">下载 Word</a></section>
-      <div class="row"><button class="btn primary" id="to-shots">下一步：商品图 →</button></div>`;
+      <div class="row"><button class="btn primary" id="to-shots">下一步：包装 →</button></div>`;
     $$("[data-gen]").forEach((b) => (b.onclick = () => busy(b, async () => (await api(`/suites/${s.id}/note`, json({ style: b.dataset.gen })), suitePage(s.id)))));
     $$("[data-copy]").forEach(
       (b) =>
@@ -321,7 +321,7 @@ export function initSuite(ctx) {
         }),
     );
     $("#save-note")?.addEventListener("click", (e) => busy(e.currentTarget, async () => (await saveSuite({ note: { title: $("#note-title").value, text: $("#note-body").value } }), toast("已保存"))));
-    $("#to-shots").onclick = () => ((tab = "shots"), render(current));
+    $("#to-shots").onclick = () => ((tab = "pack"), render(current));
   }
 
   /* ---- tab 3: product images ---- */
@@ -429,6 +429,104 @@ export function initSuite(ctx) {
     bindLooks(box, s);
   }
 
+  /* ---------------- packaging ---------------- */
+  // Asked right after the note: merchants with fixed foam boxes print an outer carton or a gift box,
+  // and the new box then shows up in every product shot and detail screen.
+  function packTab(box, s) {
+    const ws = getWorkspace();
+    const cost = ws.skills.product.cost;
+    const pk = s.packaging || {};
+    const art = s.jobs?.packArt;
+    const mock = s.jobs?.packMock;
+    const going = (j) => j && ["queued", "running"].includes(j.status);
+    const toShots = `<button class="btn primary" id="pack-next">下一步：商品图 →</button>`;
+    if (pk.need !== true) {
+      box.innerHTML = `<section class="card pack-ask"><h2>需要设计包装吗？</h2>
+        <p class="muted">有固定泡沫箱、想在外面套一个印好的纸箱或做礼盒的，选“需要”。先把包装定下来，后面的商品图和详情页都会用新包装。</p>
+        <div class="row wrap"><button class="btn primary" id="pack-yes">需要设计包装</button><button class="btn" id="pack-no">${pk.need === false ? "不需要（已选）" : "不需要，用现有包装"}</button></div></section>
+        ${pk.need === false ? `<div class="row">${toShots}</div>` : ""}`;
+      $("#pack-yes").onclick = (e) => busy(e.currentTarget, async () => ((current = await api(`/suites/${s.id}/packaging`, json({ need: true }))), render(current)));
+      $("#pack-no").onclick = (e) =>
+        busy(e.currentTarget, async () => {
+          current = await api(`/suites/${s.id}/packaging`, json({ need: false }));
+          tab = "shots";
+          render(current);
+        });
+      $("#pack-next")?.addEventListener("click", () => ((tab = "shots"), render(current)));
+      return;
+    }
+    const box3 = pk.box || {};
+    const extra = (pk.extra || []).map(([k, v]) => `${k}：${v}`).join("\n");
+    const arts = art?.status === "succeeded" ? art.manifest.assets.filter((a) => a.role === "image") : [];
+    const chosen = pk.front;
+    const adopted = pk.adopted;
+    box.innerHTML = `
+      <section class="card"><div class="row spread"><h2>包装信息</h2><button class="link" id="pack-no">不做包装了</button></div>
+        <div class="pills" role="group">${[["carton", "外箱纸箱（套在泡沫箱外）"], ["gift", "礼盒（天地盖）"]].map(([k, v]) => `<button class="pill ${pk.kind === k ? "on" : ""}" data-kind="${k}">${v}</button>`).join("")}</div>
+        <label class="lbl">泡沫箱外尺寸（厘米）</label>
+        <div class="row dims"><input id="pk-l" inputmode="decimal" placeholder="长" value="${esc(box3.l ?? "")}"><span>×</span><input id="pk-w" inputmode="decimal" placeholder="宽" value="${esc(box3.w ?? "")}"><span>×</span><input id="pk-h" inputmode="decimal" placeholder="高" value="${esc(box3.h ?? "")}"></div>
+        ${pk.size ? `<p class="muted">${pk.kind === "gift" ? "礼盒" : "外箱"}内尺寸约 <b>${pk.size.l} × ${pk.size.w} × ${pk.size.h} cm</b>（泡沫箱外再留一点余量），主画面：${esc(pk.face.name)} ${pk.face.w} × ${pk.face.h} cm</p>` : ""}
+        <label class="lbl">品牌 / 店名（印在包装上，可不填）</label><input id="pk-brand" maxlength="16" value="${esc(pk.brand || "")}">
+        <label class="lbl">侧面还要印的信息（每行一条“名称：内容”，如 生产商：××水产 / 电话：××）</label>
+        <textarea id="pk-extra" rows="3">${esc(extra)}</textarea>
+        <p class="muted">品名、规格、贮存、产地、发货地会从商品档案自动印上，字由程序排，不会错字。</p>
+        <button class="btn" id="pk-save">保存</button></section>
+      ${lookCard(s)}
+      ${!s.looks?.length && !busyTask(s, "looks") ? `<div class="row"><button class="btn" id="pk-looks">AI 挑 3 个风格（免费）</button><span class="muted">包装、商品图、详情页用同一套</span></div>` : ""}
+      <section class="card"><h2>包装正面</h2>
+        ${going(art) ? spinner(art.phase || "生成中", "两个方案，约 2–3 分钟") : ""}
+        ${art?.status === "failed" ? `<p class="warn-text">${esc(art.error || "没有成功")}</p>` : ""}
+        ${arts.length ? `<div class="pack-arts">${arts.map((a) => `<figure class="${chosen === `${art.id}/${a.name}` ? "on" : ""}"><img src="${fileUrl(art, a.name)}" alt=""><button class="btn small ${chosen === `${art.id}/${a.name}` ? "" : "primary"}" data-pick="${a.name}">${chosen === `${art.id}/${a.name}` ? "已选这个" : "用这个"}</button></figure>`).join("")}</div>` : ""}
+        <div class="row"><button class="btn ${arts.length ? "" : "primary"}" id="pk-art" ${pk.size && !going(art) ? "" : "disabled"}>${arts.length ? "再出 2 个方案" : "出 2 个包装正面方案"} · ${2 * cost} 积分</button>${pk.size ? "" : `<span class="muted">先填尺寸并保存</span>`}</div>
+      </section>
+      ${
+        pk.dieline
+          ? `<section class="card"><h2>给印刷厂的文件</h2>
+              <img class="dieline" src="/api/suites/${s.id}/packaging/dieline.png?v=${encodeURIComponent(chosen || "")}" alt="展开图">
+              <div class="row wrap"><a class="btn small" href="/api/suites/${s.id}/packaging/dieline.png" download>下载展开图（带尺寸）</a><a class="btn small" href="/api/suites/${s.id}/packaging/front.png" download>下载正面设计稿</a></div>
+              <p class="muted">展开图按真实尺寸排好了正面、侧面信息和摇盖，标了裁切线和压痕线，给印刷厂做刀版参考；最终刀版、纸张和出血以印刷厂为准。</p></section>
+            <section class="card"><h2>立体效果图</h2>
+              ${going(mock) ? spinner(mock.phase || "生成中", "约 1–2 分钟") : ""}
+              ${mock?.status === "failed" ? `<p class="warn-text">${esc(mock.error || "没有成功")}</p>` : ""}
+              ${mock?.status === "succeeded" ? `<img class="pack-mock" src="${fileUrl(mock, mock.manifest.assets.find((a) => a.role === "image").name)}" alt="">
+                <div class="row wrap">${adopted ? `<span class="ok-text">已用这个包装，后面的商品图和详情页会照它出。</span>${toShots}` : `<button class="btn primary" id="pk-adopt">用这个包装做后面的商品图和详情页</button>`}</div>` : ""}
+            </section>`
+          : ""
+      }`;
+    const dims = () => ({ l: $("#pk-l").value, w: $("#pk-w").value, h: $("#pk-h").value });
+    const save = (extraBody = {}) =>
+      api(`/suites/${s.id}/packaging`, json({
+        box: dims(),
+        brand: $("#pk-brand").value,
+        extra: $("#pk-extra").value.split("\n").map((l) => l.split(/[:：]/)).filter((r) => r.length >= 2).map(([k, ...v]) => [k, v.join("：")]),
+        ...extraBody,
+      }));
+    $$("[data-kind]", box).forEach((b) => (b.onclick = () => busy(b, async () => ((current = await api(`/suites/${s.id}/packaging`, json({ kind: b.dataset.kind }))), render(current)))));
+    $("#pk-save").onclick = (e) => busy(e.currentTarget, async () => ((current = await save()), toast("已保存"), render(current)));
+    $("#pack-no").onclick = (e) => busy(e.currentTarget, async () => ((current = await api(`/suites/${s.id}/packaging`, json({ need: false }))), render(current)));
+    $("#pk-looks")?.addEventListener("click", (e) => busy(e.currentTarget, async () => (await api(`/suites/${s.id}/looks`, json({})), suitePage(s.id))));
+    $("#pk-art")?.addEventListener("click", (e) =>
+      busy(e.currentTarget, async () => {
+        await save();
+        await api(`/suites/${s.id}/packaging/art`, json({}, { "Idempotency-Key": key() }));
+        await refresh();
+        suitePage(s.id);
+      }),
+    );
+    $$("[data-pick]", box).forEach(
+      (b) =>
+        (b.onclick = () =>
+          busy(b, async () => {
+            await api(`/suites/${s.id}/packaging/choose`, json({ asset: b.dataset.pick }, { "Idempotency-Key": key() }));
+            await refresh();
+            suitePage(s.id);
+          })),
+    );
+    $("#pk-adopt")?.addEventListener("click", (e) => busy(e.currentTarget, async () => ((current = await api(`/suites/${s.id}/packaging/adopt`, json({}))), toast("后面的商品图和详情页会重新规划，用上新包装"), render(current))));
+    $("#pack-next")?.addEventListener("click", () => ((tab = "shots"), render(current)));
+    bindLooks(box, s);
+  }
+
   // Visual direction: 3 suggestions from the style library, or plain retouch of the real photos.
   function lookCard(s) {
     const looks = s.looks || [];
@@ -462,7 +560,7 @@ export function initSuite(ctx) {
   // AI dish pictures: for stock that hasn't been cooked and photographed yet.
   const DISH_METHODS = ["清蒸", "红烧", "香煎", "干炸", "椒盐", "糖醋", "炖汤", "凉拌", "烧烤", "蒜蓉"];
   function dishCard(s) {
-    if (!["生鲜水产", "食品零食"].includes(s.profile.category) && !s.photos.some((p) => p.role === "cooked")) return "";
+    if (!["生鲜水产", "农副产品", "食品零食"].includes(s.profile.category) && !s.photos.some((p) => p.role === "cooked")) return "";
     const job = s.jobs?.dish;
     const hasReal = s.photos.some((p) => p.role === "cooked" && !p.ai);
     const fromTips = (s.profile.usage?.tips || []).join(" ");
@@ -563,6 +661,8 @@ export function initSuite(ctx) {
       pick: () => `<div class="tp-kicker">买之前看一眼</div><h3 class="tp-head">${esc(t(p.pick.headline) || "怎么挑")}</h3>
         <ol class="tp-points">${p.pick.points.map((x, i) => `<li><span>${String(i + 1).padStart(2, "0")}</span><div><b>${esc(t(x.title))}</b><p>${esc(t(x.detail))}</p></div></li>`).join("")}</ol>`,
       material: () => `<h3 class="tp-head">${esc(p.sellingPoints[0]?.title || "选材")}</h3><ol class="tp-points">${p.sellingPoints.map((x, i) => `<li><span>${String(i + 1).padStart(2, "0")}</span><div><b>${esc(t(x.title))}</b><p>${esc(t(x.detail))}</p></div></li>`).join("")}</ol>`,
+      normal: () => `<div class="tp-kicker">收到别担心</div><h3 class="tp-head">${esc(t(p.normal?.headline) || "这些是正常现象")}</h3>
+        <ol class="tp-points">${(p.normal?.items || []).map((x, i) => `<li><span>${String(i + 1).padStart(2, "0")}</span><div><b>${esc(t(x.title))}</b><p>${esc(t(x.detail))}</p></div></li>`).join("")}</ol>`,
       pack: () => `<h3 class="tp-head">从包装，到收货</h3><p class="tp-body">${esc(p.packaging)}</p>`,
       info: () => `<h3 class="tp-head">商品信息</h3><table class="tp-info">${[["品名", p.name], ["产地", p.origin], ["发货地", p.shipFrom], ["规格", p.spec], ["储存", p.storage], ["包装", p.packaging], ["快递", p.courier], ["发货时效", p.dispatch]]
         .filter(([, v]) => v)

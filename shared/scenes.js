@@ -59,7 +59,7 @@ export const SCENES = {
   },
 };
 
-export const SIZE_NAMES = { "1:1": "方形 1:1", "3:4": "竖版 3:4", "16:9": "横版 16:9" };
+export const SIZE_NAMES = { "1:1": "方形 1:1", "3:4": "竖版 3:4", "4:3": "横版 4:3", "16:9": "横版 16:9" };
 
 // Where text sits in the frame. Boxes are fractions of the canvas: [x, y, w, h].
 export const LAYOUTS = {
@@ -116,7 +116,7 @@ export function layoutBoxes(layout, width, height) {
 }
 
 export function canvasSize(size) {
-  return { "1:1": [1024, 1024], "3:4": [768, 1024], "16:9": [1344, 756] }[size] || [1024, 1024];
+  return { "1:1": [1024, 1024], "3:4": [768, 1024], "4:3": [1024, 768], "16:9": [1344, 756] }[size] || [1024, 1024];
 }
 
 // Text the image model must draw (and Kimi must proofread).

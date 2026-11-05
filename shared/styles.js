@@ -522,11 +522,159 @@ STYLES.push(
   },
 );
 
-export const CATEGORIES = ["美妆护肤", "香氛香薰", "食品饮料", "酒水茶饮", "数码3C", "家居家电", "服饰配饰", "母婴", "文创礼品", "室内空间"];
+export const CATEGORIES = ["生鲜水产", "农副产品", "美妆护肤", "香氛香薰", "食品饮料", "酒水茶饮", "数码3C", "家居家电", "服饰配饰", "母婴", "文创礼品", "室内空间"];
 export const IMAGE_TYPES = { main: "主图", scene: "场景图", selling: "卖点图", detail: "详情页", poster: "海报", interior: "装修效果" };
-export const TONES = ["自然", "东方", "高级", "清新", "科技", "活力", "杂志", "极简"];
+export const TONES = ["自然", "东方", "高级", "清新", "科技", "活力", "杂志", "极简", "冲击", "写实", "喜庆", "亲切", "清晰"];
 
 // Which creation scene a style can be used in.
 export const sceneTypes = { product: ["main", "scene", "selling"], detail: ["detail"], poster: ["poster"], interior: ["interior"] };
 export const styleFits = (style, scene) => style.types?.some((t) => sceneTypes[scene]?.includes(t));
 export const styleById = (id) => STYLES.find((s) => s.id === id);
+
+// ---- 详情页版式（农副产品 / 生鲜水产） ----
+// These describe how a listing is laid out and typeset, not just how it's lit: for
+// farm produce and seafood the selling page's graphic system matters more than mood.
+// Distilled from top-selling Taobao/Tmall listings (e.g. a Tmall frozen-hairtail
+// best-seller's 10 main images + 21-screen detail page).
+export const LAYOUT_STYLES = [
+  {
+    id: "promo-bold",
+    name: "爆款大字报",
+    tagline: "粗黑大字、品牌色块、胶囊标签，一眼看懂卖什么",
+    categories: ["生鲜水产", "农副产品", "食品零食"],
+    types: ["main", "selling", "detail"],
+    tone: "冲击",
+    sample: { product: "舟山冷冻带鱼礼盒", headline: "肉厚油多" },
+    palette: ["#1a3e8c", "#e8571e", "#f2f5f7"],
+    props: "实物占画面一半以上，冰粒、水珠、案板等少量真实道具；包装与实物同框",
+    light: "明亮商业光，主体清晰锐利，颜色饱满不发灰",
+    camera: "实物大、近、满，正面或 45°，标题区和信息条位置固定",
+    type: "超粗黑体/综艺体中文大标题（占画面宽 70% 以上），白字压深色块或深色字压浅底；副标题用强调色细条托底",
+    layout: "顶部大标题 + 强调色副标题条；中部实物；底部深色通栏信息条写 2–3 个卖点；胶囊/圆角标签排卖点；角标贴纸（顺丰、包邮、坏单包赔等，只写商家真有的服务）；细线或波浪线分隔",
+    avoid: "大面积留白、文艺小字、低饱和、看不清商品",
+    core: "high-impact Chinese e-commerce listing design, bold heavy sans-serif headlines on solid brand-color blocks, pill-shaped tags, info bars, product large and sharp, saturated commercial lighting",
+  },
+  {
+    id: "ink-navy",
+    name: "深色国风大字",
+    tagline: "藏青/墨黑底、白色书法宋体、红印章竖排标签",
+    categories: ["生鲜水产", "农副产品", "食品零食"],
+    types: ["main", "selling", "detail"],
+    tone: "东方",
+    sample: { product: "东海野生大黄鱼", headline: "刺少肉厚 油脂丰富" },
+    palette: ["#14233f", "#c8352b", "#e9e4d8"],
+    props: "深色海浪/渔船/石板背景，实物带水珠冰粒，偶尔一枝绿叶或柠檬点缀",
+    light: "暗调侧光，主体高光突出，背景压暗",
+    camera: "实物斜放或手持，占画面中下部，上方留给标题",
+    type: "白色粗书法体/粗宋体大标题，用「」直角引号框住卖点短句；小字宋体说明；竖排红色印章式小标签（如“鲜甜”“当季”）",
+    layout: "深色满版底；标题左上或居中两行；一侧竖排 2–3 个红色方印章标签；底部细线 + 一行小字；对比/做法用深色卡片网格，卡片白底红色小标题",
+    avoid: "浅色背景、卡通元素、杂乱贴纸",
+    core: "premium dark navy Chinese seafood listing, white calligraphic serif headlines in corner brackets, vertical red seal-stamp tags, moody side light on glistening product, wave texture",
+  },
+  {
+    id: "origin-doc",
+    name: "产地纪实",
+    tagline: "真实产地照片做底，手写批注、地图、产地直发印章",
+    categories: ["生鲜水产", "农副产品"],
+    types: ["main", "scene", "detail"],
+    tone: "写实",
+    sample: { product: "赣南脐橙", headline: "从果园到你家" },
+    palette: ["#2f4a2a", "#d9822b", "#f3eee2"],
+    props: "果园、码头、渔船、田地、晒场、农户的手（只用实拍里有的场景）",
+    light: "户外自然光，真实不修饰",
+    camera: "纪实抓拍感，人物和劳作场景，可拼贴 2–3 张",
+    type: "手写体批注 + 粗黑体标题；日期、批次、经纬度等小字用等宽数字",
+    layout: "满版产地实拍；左上标题；圆形“产地直发”印章；手写箭头圈出看点；底部一条地图/路线示意（产地 → 发货地）；拍立得白边小图拼贴",
+    avoid: "影棚感、过度修图、虚构的人物与场景",
+    core: "documentary farm-to-table photography, real origin scenes, handwritten annotations, round origin stamp, polaroid collage, honest natural light",
+  },
+  {
+    id: "jp-standard",
+    name: "日系极简标准",
+    tagline: "大留白、单一品牌色、大数字讲标准（黄天鹅式）",
+    categories: ["农副产品", "生鲜水产", "食品零食"],
+    types: ["main", "selling", "detail"],
+    tone: "高级",
+    sample: { product: "可生食鲜鸡蛋", headline: "每一颗 都按标准" },
+    palette: ["#f6c315", "#2b2b2b", "#fbfaf6"],
+    props: "极少道具：白瓷勺、木托盘、一块亚麻布；微距特写（蛋黄、米粒、虾肉纹理）",
+    light: "柔和顶光，干净通透，阴影很浅",
+    camera: "居中对称或大留白偏置，微距特写和整体交替",
+    type: "细黑体中文 + 极大的阿拉伯数字（数据、天数、温度），小号英文点缀；一种品牌主色贯穿",
+    layout: "白/米白底占 60% 以上；一个超大数字配一行说明；细线分隔的参数表；圆形小图标；每屏只讲一件事",
+    avoid: "堆满卖点、大红大绿、贴纸角标、杂乱背景",
+    core: "minimal Japanese-style food branding, generous white space, single brand color accent, oversized numerals, macro close-ups, clean soft light",
+  },
+  {
+    id: "guochao-gift",
+    name: "国潮年货礼盒",
+    tagline: "红金配色、祥云回纹、烫金书法，过年送礼",
+    categories: ["农副产品", "生鲜水产", "食品零食", "文创礼品"],
+    types: ["main", "scene", "detail", "poster"],
+    tone: "喜庆",
+    sample: { product: "海鲜大礼包", headline: "鲜味团圆" },
+    palette: ["#b3162b", "#d9a441", "#f7ead2"],
+    props: "礼盒、红色绸布、灯笼/福字/梅枝点缀（克制），实物摆盘",
+    light: "暖光，金色高光",
+    camera: "礼盒正面 + 实物在前，节庆桌面",
+    type: "烫金书法大字 + 宋体小字；红底金字或米底红字",
+    layout: "回纹/祥云边框；中心礼盒；顶部书法标题；两侧对称装饰；底部金色细线信息条",
+    avoid: "廉价塑料感、过多装饰挡住商品",
+    core: "Chinese guochao new-year gift design, red and gold, auspicious cloud patterns, gold-foil calligraphy, festive but restrained",
+  },
+  {
+    id: "kraft-notes",
+    name: "手账牛皮纸",
+    tagline: "牛皮纸、胶带、手写字、便签，老板自己吃的好货",
+    categories: ["农副产品", "生鲜水产", "食品零食"],
+    types: ["main", "scene", "detail"],
+    tone: "亲切",
+    sample: { product: "农家土鸡蛋", headline: "自家鸡下的蛋" },
+    palette: ["#c9a46b", "#3d3226", "#f4ecdc"],
+    props: "牛皮纸、麻绳、纸胶带、便签纸、铅笔、竹篮、粗布",
+    light: "暖色自然窗光",
+    camera: "俯拍平铺或 45°，物件像贴在本子上",
+    type: "手写体标题 + 打字机/宋体小字；圈画、下划线、箭头手绘",
+    layout: "牛皮纸底；照片用胶带贴住、带白边；便签纸写卖点；手绘箭头标注；角落小印章",
+    avoid: "冷色科技感、过度精致",
+    core: "handmade scrapbook food layout, kraft paper, washi tape, handwritten notes, taped photos, warm window light",
+  },
+  {
+    id: "info-science",
+    name: "科普信息图",
+    tagline: "大图标、步骤编号、对比表、放大镜圈出细节",
+    categories: ["农副产品", "生鲜水产", "食品零食"],
+    types: ["selling", "detail"],
+    tone: "清晰",
+    sample: { product: "五常大米", headline: "好米看这 3 点" },
+    palette: ["#1f6f50", "#f2a33a", "#f7f7f2"],
+    props: "实物 + 放大镜圆圈特写 + 简洁线性图标",
+    light: "均匀明亮",
+    camera: "实物居中或在一侧，信息围绕排布",
+    type: "粗黑体标题 + 数字编号 01/02/03；表格用细线和浅色底",
+    layout: "白/浅底；编号步骤或 3 栏要点；放大镜圆形特写引线指向实物；对比表左右两列（对方只写中性事实）；图标统一线性风格",
+    avoid: "花哨背景、大段文字、夸张特效",
+    core: "clean infographic food listing, numbered steps, magnifier callouts, simple line icons, comparison table, bright even light",
+  },
+  {
+    id: "fresh-dark",
+    name: "鲜活暗调大片",
+    tagline: "黑底硬光、水花冰晶、金属质感大字，高价海鲜",
+    categories: ["生鲜水产"],
+    types: ["main", "selling", "detail", "poster"],
+    tone: "高级",
+    sample: { product: "阿根廷红虾", headline: "船冻 锁住鲜甜" },
+    palette: ["#0b0f14", "#d8442e", "#e9eef2"],
+    props: "黑色石板、碎冰、水花、冷雾（生鲜不加热气）",
+    light: "顶部硬光 + 轮廓光，强反差，水珠高光",
+    camera: "低角度特写，主体占满，背景纯黑",
+    type: "银色/白色粗黑体大字，细字间距英文点缀",
+    layout: "黑底满版；大字在上；实物居中偏下；一条细金属线 + 3 个参数；极少元素",
+    avoid: "背景杂乱、色彩发灰、热气（未烹饪时）",
+    core: "luxury dark seafood photography, black slate, crushed ice, hard top light with rim light, water droplets, bold metallic Chinese type",
+  },
+];
+STYLES.push(...LAYOUT_STYLES);
+// Farm produce and seafood: the listing's graphic system, with the proven best-seller layout as the safe default.
+export const FARM_CATEGORIES = ["生鲜水产", "农副产品"];
+export const SAFE_LAYOUT = "promo-bold";

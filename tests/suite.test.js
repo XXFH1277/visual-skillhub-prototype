@@ -23,9 +23,9 @@ function fakeAI() {
       if (system.includes("美术指导")) {
         return JSON.stringify({
           looks: [
-            { styleId: "wabi", conceptName: "渔港晨光", story: "清晨码头的冷暖对比", palette: ["#112233", "#c8572b", "#f4ede2"], props: "冰粒、麻绳", light: "清晨侧光", camera: "低机位", type: "粗宋体竖排", why: "有产地感" },
+            { styleId: "ink-navy", conceptName: "渔港晨光", story: "清晨码头的冷暖对比", palette: ["#112233", "#c8572b", "#f4ede2"], props: "冰粒、麻绳", light: "清晨侧光", camera: "低机位", type: "粗宋体竖排", why: "有产地感" },
             { styleId: "not-a-style", conceptName: "编造的", palette: [] },
-            { styleId: "oriental", conceptName: "年货礼盒", story: "红金喜庆", palette: ["#7d1f1a", "#c47a3d", "#e8dcc4"], props: "红绸", light: "暖光", camera: "居中", type: "书法标题", why: "适合送礼" },
+            { styleId: "guochao-gift", conceptName: "年货礼盒", story: "红金喜庆", palette: ["#7d1f1a", "#c47a3d", "#e8dcc4"], props: "红绸", light: "暖光", camera: "居中", type: "书法标题", why: "适合送礼" },
           ],
         });
       }
@@ -133,7 +133,11 @@ test("merchant with a PDF note: import text + photos → profile → note/Word �
   // shots
   await s.post(`/api/suites/${id}/shots/plan`, {});
   suite = await s.waitTask(id, "shots");
-  assert.equal(suite.shots.length, 6);
+  // A seafood main-image set: 10 pictures, including after-sales and "this is normal" ones.
+  assert.equal(suite.shots.length, 10);
+  assert.ok(["spec", "service", "normal"].every((id) => suite.shots.some((x) => x.id === id)));
+  const shotAsk = s.ai.calls.filter((c) => c.system.includes("电商美工")).flatMap((c) => JSON.parse(c.text.split("要做的图：")[1]));
+  assert.ok(shotAsk.find((x) => x.id === "service")?.content, "service shot gets the after-sales facts");
   const enabled = suite.shots.filter((x) => x.enabled);
   assert.ok(enabled.length >= 4);
   assert.ok(enabled.every((x) => x.photos.length && x.scene.startsWith("画面")), JSON.stringify(enabled.map((x) => [x.id, x.photos.length, x.scene.slice(0, 20)])));
@@ -214,11 +218,16 @@ test("style directions vary the look; AI dish pictures join the photo library an
   // Planning first picks 3 directions from the style library (unknown ids dropped).
   await s.post(`/api/suites/${id}/shots/plan`, {});
   suite = await s.waitTask(id, "shots");
-  assert.deepEqual(suite.looks.map((l) => l.styleId), ["wabi", "oriental"]);
-  assert.equal(suite.look.conceptName, "渔港晨光");
-  assert.deepEqual(suite.palette, ["#112233", "#c8572b", "#f4ede2"]);
+  // Seafood picks among listing layouts; the proven best-seller layout always comes first.
+  assert.deepEqual(suite.looks.map((l) => l.styleId), ["promo-bold", "ink-navy", "guochao-gift"]);
+  assert.equal(suite.look.conceptName, "爆款大字报");
+  assert.match(suite.looks[1].layout, /印章/);
+  const lookAsk = s.ai.calls.findLast((c) => c.system.includes("美术指导")).system;
+  assert.match(lookAsk, /第 1 个必须用「promo-bold/);
+  assert.doesNotMatch(lookAsk, /wabi｜/);
   const plan = s.ai.calls.findLast((c) => c.system.includes("电商美工")).system;
-  assert.match(plan, /渔港晨光/);
+  assert.match(plan, /爆款大字报/);
+  assert.match(plan, /版式元素 .*胶囊/);
   assert.match(plan, /每项已经指定了版式/);
   // Every planned picture got its own layout, none repeated, sent in parallel chunks of two.
   const sentItems = s.ai.calls.filter((c) => c.system.includes("电商美工")).flatMap((c) => JSON.parse(c.text.split("要做的图：")[1]));
@@ -235,14 +244,15 @@ test("style directions vary the look; AI dish pictures join the photo library an
   assert.equal(suite.aiLabel, false);
   await s.post(`/api/suites/${id}`, { aiLabel: true });
   // Switch to the second direction; the image job carries it.
-  suite = await (await s.post(`/api/suites/${id}/look`, { index: 1 })).json();
+  suite = await (await s.post(`/api/suites/${id}/look`, { index: 2 })).json();
   assert.equal(suite.look.conceptName, "年货礼盒");
   assert.equal((await s.post(`/api/suites/${id}/look`, { index: 7 })).status, 400);
   const gen = await s.post(`/api/suites/${id}/shots/generate`, {}, { "Idempotency-Key": randomUUID() });
   assert.equal(gen.status, 202, await gen.clone().text());
   const job = await s.terminal((await gen.json()).id);
   assert.equal(job.params.direction.conceptName, "年货礼盒");
-  assert.match(job.params.direction.core, /Chinese aesthetic/);
+  assert.match(job.params.direction.core, /guochao/);
+  assert.match(job.params.direction.layout, /回纹|祥云/);
   // "实拍精修" = no library style.
   suite = await (await s.post(`/api/suites/${id}/look`, { index: null })).json();
   assert.equal(suite.look, null);
@@ -319,4 +329,60 @@ test("a timed-out planning call only re-asks its own pictures", async () => {
   assert.equal(calls, 4);
   const dead = { complete: async () => { throw new Error("down"); } };
   await assert.rejects(planFrames(dead, { name: "x" }, items, { kind: "detail" }), /down/);
+});
+
+test("packaging: foam-box size → two front designs → flat at real size + mock-up → used by later shots", async (t) => {
+  const s = await setup(t);
+  const form = new FormData();
+  form.append("text", "舟山带鱼 泡沫箱发货");
+  for (const c of ["#aa3311", "#3355aa"]) form.append("photos", new Blob([await photo(c)], { type: "image/jpeg" }), "p.jpg");
+  const id = (await (await s.request("/api/suites", { method: "POST", body: form })).json()).id;
+  let suite = await s.waitTask(id, "profile");
+  // Not asked yet; saying no is remembered.
+  assert.equal(suite.packaging, null);
+  suite = await (await s.post(`/api/suites/${id}/packaging`, { need: false })).json();
+  assert.equal(suite.packaging.need, false);
+  // Bad size refused; a carton is sized a little over the foam box.
+  suite = await (await s.post(`/api/suites/${id}/packaging`, { need: true })).json();
+  assert.equal(suite.packaging.kind, "carton");
+  assert.equal((await s.post(`/api/suites/${id}/packaging`, { box: { l: 40, w: 0, h: 25 } })).status, 400);
+  suite = await (await s.post(`/api/suites/${id}/packaging`, { box: { l: 30, w: 40, h: 25 }, brand: "鲜海记", extra: [["电话", "0580-1234567"], ["", "x"]] })).json();
+  assert.deepEqual(suite.packaging.size, { l: 40.5, w: 30.5, h: 25.5 });
+  assert.equal(suite.packaging.face.name, "长侧面（正面）");
+  assert.deepEqual(suite.packaging.extra, [["电话", "0580-1234567"]]);
+
+  const art = await s.post(`/api/suites/${id}/packaging/art`, {}, { "Idempotency-Key": randomUUID() });
+  assert.equal(art.status, 202, await art.clone().text());
+  const artJob = await s.terminal((await art.json()).id);
+  assert.equal(artJob.status, "succeeded", artJob.error);
+  const artParams = s.generated.at(-1);
+  assert.equal(artParams.count, 2);
+  assert.equal(artParams.size, "16:9");
+  assert.equal(artParams.frames[0].photoUse, "print");
+  assert.match(artParams.frames[0].scene, /40.5×25.5 cm/);
+  assert.ok(artParams.frames[0].texts.some((x) => x.text === "鲜海记"));
+
+  suite = await (await s.post(`/api/suites/${id}/packaging/choose`, { asset: "image-1.png" }, { "Idempotency-Key": randomUUID() })).json();
+  assert.equal(suite.packaging.dieline, true);
+  const dl = await s.request(`/api/suites/${id}/packaging/dieline.png`);
+  assert.equal(dl.status, 200);
+  const meta = await sharp(Buffer.from(await dl.arrayBuffer())).metadata();
+  // 30 px/cm: two long + two short panels + glue flap + margins.
+  assert.ok(meta.width > (40.5 * 2 + 30.5 * 2) * 30, String(meta.width));
+  const mock = await s.terminal(suite.jobs.packMock.id);
+  assert.equal(mock.status, "succeeded", mock.error);
+  assert.equal(s.generated.at(-1).frames[0].photoUse, "artwork");
+  assert.deepEqual(s.generated.at(-1).inputs, ["pack-front.png"]);
+
+  // Adopting the mock-up makes it the package photo every later picture uses.
+  suite = await (await s.post(`/api/suites/${id}/packaging/adopt`, {})).json();
+  const designed = suite.photos.find((p) => p.packDesign);
+  assert.equal(designed.role, "package");
+  assert.equal(suite.packaging.adopted, true);
+  await s.post(`/api/suites/${id}/shots/plan`, {});
+  suite = await s.waitTask(id, "shots");
+  const hero = suite.shots.find((x) => x.id === "hero");
+  assert.ok(hero.photos.includes(designed.file), JSON.stringify(hero.photos));
+  const pkgPhotos = suite.shots.flatMap((x) => x.photos).filter((f) => suite.photos.find((p) => p.file === f)?.role === "package");
+  assert.ok(pkgPhotos.every((f) => f === designed.file));
 });

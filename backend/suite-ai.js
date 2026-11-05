@@ -1,7 +1,7 @@
 import { PHOTO_ROLES } from "../shared/suite.js";
 
 // All suite steps are single multimodal calls with JSON output: no agent loop.
-const CATS = ["生鲜水产", "食品零食", "酒水茶饮", "美妆护肤", "家居日用", "数码家电", "服饰配饰", "母婴", "其他"];
+const CATS = ["生鲜水产", "农副产品", "食品零食", "酒水茶饮", "美妆护肤", "家居日用", "数码家电", "服饰配饰", "母婴", "其他"];
 const FACTS = `事实规则：只能使用商家资料、问答和照片里能看到的信息。不编造数字、认证、奖项、销量、功效、价格、日期、地址。
 商家原话里的数字、品牌名、产地照抄。资料里没有的字段留空字符串，不要猜。
 要上架淘宝，按广告法写：不说“无污染、不受污染、远离污染”（改成具体的海域、深度、产地），不说美容、保健、治疗作用，不针对孕产妇、儿童、老人宣传功效；资料里有这类话就换成中性的事实描述或不写。字段值里不要加“（据实拍图）”“（资料未提及）”这类来源备注。
@@ -80,7 +80,9 @@ const STORY_SCHEMA = `{
   "why": {"kicker":"为什么是××（产地或品牌）","headline":"一句有力的标题，可用\\n分两行","cards":[{"big":"2-4字的大数字或关键词","label":"4-8字","sub":"4-12字"}],"body":"60-120字说明","highlight":"body里要高亮的一小段原文"},
   "compare": {"headline":"对比标题","ours":"我们的叫法","others":"对比对象（如 其它海域带鱼）","rows":[{"aspect":"对比项","ours":"我们","others":"对方"}],"note":"一句补充"},
   "pick": {"headline":"怎么挑/怎么辨别","points":[{"title":"4-8字","detail":"10-30字"}]},
-  "faq": {"kicker":"提前打个招呼","headline":"标题，可用\\n分两行","cards":[{"big":"2-4字","label":"4-8字","sub":"4-12字"}],"body":"60-140字，把容易被误会的地方说清楚","highlight":"body里要高亮的原文"}
+  "faq": {"kicker":"提前打个招呼","headline":"标题，可用\\n分两行","cards":[{"big":"2-4字","label":"4-8字","sub":"4-12字"}],"body":"60-140字，把容易被误会的地方说清楚","highlight":"body里要高亮的原文"},
+  "normal": {"headline":"收到别担心，这些是正常的（10-16字）","items":[{"title":"现象 4-10字","detail":"为什么、影响不影响吃 15-40字"}]},
+  "service": [{"title":"保障 4-6字（如 坏单包赔）","detail":"条件 6-20字（如 签收6小时内拍照）"}]
 }`;
 
 export async function buildProfile(ai, { text, answers, photos, images }) {
@@ -105,6 +107,8 @@ export async function buildProfile(ai, { text, answers, photos, images }) {
 why（为什么是这个产地/品牌）、compare（对比）、pick（怎么挑）、faq（容易误会的地方）是详情页最打动人的部分，资料里有线索就要提炼出来；完全没有线索就留空。
 compare 里“对方”那一列不要替别人编缺点：只写资料里提到的，或者行业公认的常识；拿不准的格子写“—”。
 cards 正好 3 个；compare.rows 3-5 行。
+normal：这类商品收货后常见、但不影响品质的现象（例如冻虾虾头易断或发黑、带鱼破肚掉鳞、冰衣化水后变轻、梭子蟹掉腿、水果表皮有斑点大小不一、土鸡蛋壳颜色深浅不一带点鸡毛）。资料里有就照资料；没有就按这类商品公认的常识写 2-4 条，只写真实常见的现象，不承诺资料里没有的售后。
+service：售后保障，只从资料里提取（坏单包赔、少称补发、超时赔付等），资料没写就留空数组。
 只输出 JSON：
 ${STORY_SCHEMA}`,
       text: input,
@@ -112,7 +116,7 @@ ${STORY_SCHEMA}`,
       json: true,
     }),
   ]);
-  return normalizeProfile({ ...basic, why: story.why, compare: story.compare, pick: story.pick, faq: story.faq });
+  return normalizeProfile({ ...basic, why: story.why, compare: story.compare, pick: story.pick, faq: story.faq, normal: story.normal, service: story.service });
 }
 
 const cards = (v) => arr(v, 3).map((c) => ({ big: clip(c?.big, 6), label: clip(c?.label, 10), sub: clip(c?.sub, 16) }));
@@ -143,6 +147,8 @@ export function normalizeProfile(d = {}) {
     },
     pick: { headline: clip(d.pick?.headline, 20), points: arr(d.pick?.points, 4).map((p) => ({ title: clip(p?.title, 10), detail: clip(p?.detail, 40) })).filter((p) => p.title) },
     faq: { kicker: clip(d.faq?.kicker, 14), headline: clip(d.faq?.headline, 30), cards: cards(d.faq?.cards), body: clip(d.faq?.body, 220), highlight: clip(d.faq?.highlight, 30) },
+    normal: { headline: clip(d.normal?.headline, 20), items: arr(d.normal?.items, 5).map((p) => ({ title: clip(p?.title, 12), detail: clip(p?.detail, 50) })).filter((p) => p.title) },
+    service: arr(d.service, 4).map((p) => ({ title: clip(p?.title, 8), detail: clip(p?.detail, 24) })).filter((p) => p.title),
     usage: { headline: clip(d.usage?.headline, 20), tips: arr(d.usage?.tips, 4).map((t) => clip(t, 40)).filter(Boolean) },
     notice: arr(d.notice, 6).map((t) => clip(t, 80)).filter(Boolean),
     copy: s("copy", 1500),
@@ -168,15 +174,16 @@ ${FACTS}
 // One call writes the texts and scene for every planned image (product shots or AI detail screens).
 // Different products should not all come out in one house style: Kimi picks 3 visual
 // directions from the style library and adapts each to this product.
-export async function proposeLooks(ai, profile, styles, images = []) {
-  const catalog = styles.map((x) => `${x.id}｜${x.name}｜${x.categories.join("/")}｜${x.tone}｜${x.tagline}`).join("\n");
+export async function proposeLooks(ai, profile, styles, images = [], { must } = {}) {
+  const catalog = styles.map((x) => `${x.id}｜${x.name}｜${x.categories.join("/")}｜${x.tone}｜${x.tagline}${x.layout ? `｜版式：${x.layout}` : ""}`).join("\n");
+  const first = must && styles.find((x) => x.id === must);
   const answer = await ask(ai, {
     system: `你是资深电商视觉美术指导。根据商品档案和实拍图，从风格库里挑 3 个差别明显、都适合这件商品的视觉方向，并把每个方向改造成专属这件商品的方案。
-第 1 个是你最推荐的。三个方向在色调、光线、版式上要明显不同（例如一个写实温暖、一个干净高级、一个有冲击力）。
-风格库（id｜名称｜适合品类｜调性｜概念）：
+${first ? `第 1 个必须用「${first.id}｜${first.name}」（客户验证过、卖得最好的版式），另外 2 个从其余风格里挑，和它明显不同。` : "第 1 个是你最推荐的。"}三个方向在色调、版式、字体上要明显不同。
+风格库（id｜名称｜适合品类｜调性｜概念｜版式）：
 ${catalog}
-只输出 JSON：{"looks":[{"styleId":"风格库 id","conceptName":"方案名（4-8字）","story":"一句话创意（20-40字）","palette":["#hex","#hex","#hex"],"props":"道具与材质（只用和这件商品相关、实拍里能对上的东西）","light":"光线","camera":"机位与构图","type":"中文字体与排版气质","why":"为什么适合（15-30字）"}]}`,
-    text: `商品档案（数据）：${JSON.stringify({ name: profile.name, category: profile.category, origin: profile.origin, intro: profile.intro, sellingPoints: profile.sellingPoints, packaging: profile.packaging })}`,
+只输出 JSON：{"looks":[{"styleId":"风格库 id","conceptName":"方案名（4-8字）","story":"一句话创意（20-40字）","palette":["#hex","#hex","#hex"],"props":"道具与材质（只用和这件商品相关、实拍里能对上的东西）","light":"光线","camera":"机位与构图","type":"中文字体与排版气质","layout":"版式元素：标题、色块、标签、分隔线、装饰怎么排（照风格库的版式改成这件商品的）","why":"为什么适合（15-30字）"}]}`,
+    text: `商品档案（数据）：${JSON.stringify({ name: profile.name, category: profile.category, origin: profile.origin, intro: profile.intro, sellingPoints: profile.sellingPoints, packaging: profile.packaging, palette: profile.palette })}`,
     images: images.slice(0, 4),
     json: true,
   });
@@ -184,19 +191,44 @@ ${catalog}
   const ids = new Set(styles.map((x) => x.id));
   const hex = (v) => (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim() : null);
   const seen = new Set();
-  return arr(d.looks, 3)
+  const looks = arr(d.looks, 4)
     .filter((l) => ids.has(l?.styleId) && !seen.has(l.styleId) && seen.add(l.styleId))
-    .map((l) => ({
-      styleId: l.styleId,
-      conceptName: clip(l.conceptName, 12) || styles.find((x) => x.id === l.styleId).name,
-      story: clip(l.story, 60),
-      palette: arr(l.palette, 4).map(hex).filter(Boolean),
-      props: clip(l.props, 120),
-      light: clip(l.light, 80),
-      camera: clip(l.camera, 80),
-      type: clip(l.type, 80),
-      why: clip(l.why, 40),
-    }));
+    .map((l) => {
+      const recipe = styles.find((x) => x.id === l.styleId);
+      return {
+        styleId: l.styleId,
+        conceptName: clip(l.conceptName, 12) || recipe.name,
+        story: clip(l.story, 60),
+        palette: arr(l.palette, 4).map(hex).filter(Boolean),
+        props: clip(l.props, 120),
+        light: clip(l.light, 80),
+        camera: clip(l.camera, 80),
+        type: clip(l.type, 80),
+        layout: clip(l.layout, 140) || recipe.layout || "",
+        why: clip(l.why, 40),
+      };
+    });
+  // The proven layout is always on offer, first, even if the model skipped it.
+  if (first) {
+    const i = looks.findIndex((l) => l.styleId === first.id);
+    const safe = i >= 0 ? looks.splice(i, 1)[0] : recipeLook(first, profile);
+    looks.unshift(safe);
+  }
+  return looks.slice(0, 3);
+}
+export function recipeLook(recipe, profile = {}) {
+  return {
+    styleId: recipe.id,
+    conceptName: recipe.name,
+    story: recipe.tagline,
+    palette: profile.palette?.length ? profile.palette : recipe.palette,
+    props: recipe.props,
+    light: recipe.light,
+    camera: recipe.camera,
+    type: recipe.type,
+    layout: recipe.layout || "",
+    why: "卖得最好的写法：大字、色块、标签，一眼看懂",
+  };
 }
 
 // Layout variety so a set of images (and different products) don't share one template.
@@ -214,7 +246,7 @@ export function assignLayouts(n, random = Math.random) {
 
 export async function planFrames(ai, profile, items, { kind, look }) {
   const style = look
-    ? `整套视觉系统「${look.conceptName}」：${look.story} 色板 ${(look.palette || []).join(" ")}；道具 ${look.props}；光线 ${look.light}；机位 ${look.camera}；字体排版 ${look.type}。`
+    ? `整套视觉系统「${look.conceptName}」：${look.story} 色板 ${(look.palette || []).join(" ")}；道具 ${look.props}；光线 ${look.light}；机位 ${look.camera}；字体排版 ${look.type}。${look.layout ? `版式元素 ${look.layout}。` : ""}`
     : `${profile.palette?.length ? `主色 ${profile.palette.join(" ")}，` : ""}真实商业摄影质感。`;
   const layouts = assignLayouts(items.length);
   const withLayout = items.map((it, k) => ({ ...it, layout: layouts[k] }));
@@ -223,7 +255,7 @@ export async function planFrames(ai, profile, items, { kind, look }) {
 - texts：画面上的中文字。headline 4-12 字有力短句；可选 sub 一行副标题（≤18字）；可选 point 2-3 个关键词（各≤6字）。全部来自商品档案，不编造。
 - scene：80-200 字的具体画面描述：用哪张实拍图里的什么、怎么摆、背景与道具、光线、文字放哪里多大。
 ${style}
-每项已经指定了版式（layout），按它来设计画面和文字位置。${kind === "detail" ? "\n详情页的每项带了 content（这一屏能用的要点）：文字从里面挑最有力的，整屏文字加起来不超过 50 字；数字、产地等事实照抄。" : ""}
+每项已经指定了版式（layout），按它来设计画面和文字位置。带 content 的项（规格、售后保障、正常现象等），文字只从 content 里取，事实照抄，content 里没有的保障和数字不要写。${kind === "detail" ? "\n详情页的每项带了 content（这一屏能用的要点）：文字从里面挑最有力的，整屏文字加起来不超过 50 字；数字、产地等事实照抄。" : ""}
 商品和包装只能画实拍图里有的样子：实拍里没有出现的包装形式（真空袋、保温箱、手提袋、内托等）不要画进画面，需要说明就放在文字里。生鲜没有被烹饪就不要加热气、蒸汽。对比屏里“对方”只做中性示意，不要把别人的商品画得发白、发灰、变质或难看，不出现别家品牌和包装。
 ${FACTS}
 只输出 JSON：{"frames":[{"id":"同输入","texts":[{"role":"headline|sub|point","text":"..."}],"scene":"..."}]}`;

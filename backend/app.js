@@ -418,7 +418,7 @@ export async function createWorkspace({
       refCount: 0,
       styleRef: null,
       brandColor: "#e8541e",
-      direction: { conceptName: s.name, styleName: s.name, story: s.tagline, palette: s.palette, props: s.props, light: s.light, camera: s.camera, type: s.type, avoid: s.avoid, core: s.core },
+      direction: { conceptName: s.name, styleName: s.name, story: s.tagline, palette: s.palette, props: s.props, light: s.light, camera: s.camera, type: s.type, layout: s.layout, avoid: s.avoid, core: s.core },
       frames: [
         {
           title: "风格样图",

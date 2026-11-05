@@ -9,7 +9,8 @@ export const SUITE_FILE_MB = 100;
 import { AppError } from "./errors.js";
 import { importNote } from "./importers.js";
 import { labelPhotos, buildProfile, normalizeProfile, writeNote, planFrames, proposeLooks } from "./suite-ai.js";
-import { STYLES } from "../shared/styles.js";
+import { STYLES, FARM_CATEGORIES, SAFE_LAYOUT } from "../shared/styles.js";
+import { PACK_KINDS, packSize, mainFace, aspectFor, renderDieline } from "./packaging.js";
 import { noteDocx } from "./docx-note.js";
 import { caseById, CASES } from "../shared/cases.js";
 import { SECTION_TYPES, SECTION_MODES, PHOTO_ROLES, QUICK, scanRisky, paletteRoles } from "../shared/suite.js";
@@ -56,6 +57,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     text: undefined,
     hasText: !!s.text,
     risky: scanRisky([s.note?.text, s.profile?.copy, JSON.stringify(s.profile || {})].join("\n")),
+    packaging: s.packaging ? packState(s) : null,
     jobs: Object.fromEntries(Object.entries(s.jobs || {}).map(([k, id]) => [k, id && store.get(id) ? summary(store.get(id)) : null])),
   });
   const summary = (j) => ({ id: j.id, status: j.status, phase: j.phase, error: j.error, cost: j.cost, manifest: j.manifest, updatedAt: j.updatedAt, frames: j.params.frames, tweaks: store.tweaksOf(j.id) });
@@ -98,8 +100,10 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
   const pickPhotos = (s, roles, n = 2, used = new Map()) => {
     const usable = s.photos.filter((p) => p.usable && p.role !== "design");
     const chosen = [];
+    // Once the merchant adopts a newly designed box, it stands in for the old package photos.
+    const designed = usable.some((p) => p.packDesign);
     for (const role of roles) {
-      const pool = usable.filter((p) => p.role === role && !chosen.includes(p));
+      const pool = usable.filter((p) => p.role === role && !chosen.includes(p) && !(role === "package" && designed && !p.packDesign));
       pool.sort((a, b) => (used.get(a.file) || 0) - (used.get(b.file) || 0));
       for (const p of pool) if (chosen.length < n) chosen.push(p);
     }
@@ -114,7 +118,10 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
   async function ensureLooks(s) {
     if (s.looks?.length) return;
     const rep = ["package", "product", "cooked", "origin"].map((r) => s.photos.find((p) => p.role === r && p.usable && !p.ai)).filter(Boolean);
-    s.looks = await proposeLooks(textAI, s.profile, styleCandidates(), imgPaths(s, rep));
+    // Farm produce and seafood choose among listing layouts, with the proven best-seller first.
+    const farm = FARM_CATEGORIES.includes(s.profile.category);
+    const pool = farm ? styleCandidates().filter((x) => x.layout && x.categories.includes(s.profile.category)) : styleCandidates();
+    s.looks = await proposeLooks(textAI, s.profile, pool.length >= 3 ? pool : styleCandidates(), imgPaths(s, rep), farm ? { must: SAFE_LAYOUT } : {});
     if (!s.look && s.looks.length) s.look = s.looks[0];
   }
   const steps = {
@@ -138,7 +145,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         .filter(Boolean)
         .slice(0, 6);
       s.profile = await buildProfile(textAI, { text: s.text, answers: s.answers, photos: s.photos, images: imgPaths(s, rep) });
-      if (!s.caseId) s.caseId = s.profile.category === "生鲜水产" ? "seafood-gift" : "general";
+      if (!s.caseId) s.caseId = { 生鲜水产: "seafood-gift", 农副产品: "farm-produce" }[s.profile.category] || "general";
       s.sections = defaultSections(s);
       s.shots = null;
     },
@@ -151,7 +158,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       const used = new Map();
       const items = c.shots.map((shot) => {
         const photos = pickPhotos(s, shot.photos, 2, used);
-        return { id: shot.id, title: shot.title, brief: shot.brief, photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), files: photos.map((p) => p.file) };
+        return { id: shot.id, title: shot.title, brief: shot.brief, content: shotContent(shot.id, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), files: photos.map((p) => p.file) };
       });
       const planned = await planFrames(textAI, s.profile, items.filter((i) => i.files.length).map(({ files, ...rest }) => rest), { kind: "product", look: s.look });
       s.shots = items.map((it) => {
@@ -187,6 +194,16 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       }
     },
   };
+  // Facts a product image may print (shots that answer buyers' doubts need them spelled out).
+  function shotContent(id, p) {
+    return {
+      spec: { spec: p.spec, packaging: p.packaging },
+      service: { service: p.service, courier: p.courier, dispatch: p.dispatch, freeShipping: p.freeShipping, afterSales: p.afterSales },
+      normal: p.normal,
+      pack: { packaging: p.packaging, storage: p.storage, courier: p.courier, dispatch: p.dispatch },
+      origin: { origin: p.origin, shipFrom: p.shipFrom },
+    }[id] || undefined;
+  }
   function sectionContent(type, p) {
     return {
       hero: { name: p.name, points: p.sellingPoints.slice(0, 3).map((x) => x.title) },
@@ -197,6 +214,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       usage: p.usage,
       pack: { packaging: p.packaging, storage: p.storage, courier: p.courier, dispatch: p.dispatch },
       faq: p.faq && { headline: p.faq.headline, cards: p.faq.cards },
+      normal: p.normal,
       info: { name: p.name, origin: p.origin, spec: p.spec, storage: p.storage, courier: p.courier, dispatch: p.dispatch },
       notice: p.notice.slice(0, 4),
     }[type] || null;
@@ -216,12 +234,13 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       material: "选材与细节：近距离质感特写",
       usage: `吃法/用法：${p.usage?.headline || "成品展示"}`,
       pack: "包装与收货：独立包装 + 礼盒/保温箱，标注包装方式",
+      normal: "正常现象说明：实物特写，圆圈和引线标出 content.items 里的现象，标题安抚（收到别担心）",
     }[type] || "";
   }
   function defaultSections(s) {
     const c = caseById(s.caseId);
     const p = s.profile || {};
-    const empty = { why: !p.why?.headline, compare: !p.compare?.rows?.length, pick: !p.pick?.points?.length, faq: !p.faq?.headline, notice: !p.notice?.length };
+    const empty = { why: !p.why?.headline, compare: !p.compare?.rows?.length, pick: !p.pick?.points?.length, faq: !p.faq?.headline, normal: !p.normal?.items?.length, notice: !p.notice?.length };
     return c.sections.map((x, i) => {
       const modes = SECTION_TYPES[x.type].modes;
       const hasPhoto = SECTION_TYPES[x.type].photo.length === 0 || pickPhotos(s, SECTION_TYPES[x.type].photo, 1).length > 0;
@@ -398,6 +417,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       light: look.light,
       camera: look.camera,
       type: look.type,
+      layout: look.layout || recipe.layout || "",
       avoid: [recipe.avoid, "商品外观被改变、乱码小字、虚构认证标志"].filter(Boolean).join("；"),
       core: recipe.core || "",
     };
@@ -567,6 +587,165 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     const file = `photo-${s.photos.length + 1}-${randomUUID().slice(0, 6)}.png`;
     await fsp.copyFile(await regularFile(path.join(jobsDir, job.id, job.manifest.exportId), asset.name), path.join(dirOf(s.id), file));
     s.photos.push({ file, role: "cooked", desc: `AI 示意：${job.params.dishMethod || "成品菜"}`, usable: true, ai: true, source: "ai", fromJob: `${job.id}/${asset.name}` });
+    res.json(view(save(s)));
+  });
+  // ---- Packaging: an outer carton / gift box printed around the merchant's foam box ----
+  // Designed before product shots and the detail page, which then show the new box.
+  const packInfo = (s) => {
+    const p = s.profile || {};
+    return [["品名", p.name], ["规格", p.spec], ["贮存", p.storage], ["产地", p.origin], ["发货地", p.shipFrom], ...(s.packaging?.extra || [])];
+  };
+  const packState = (s) => {
+    const pk = s.packaging || {};
+    const size = pk.need ? packSize(pk.kind, pk.box) : null;
+    return { ...pk, size, face: size ? mainFace(pk.kind, size) : null };
+  };
+  app.post("/api/suites/:id/packaging", (req, res) => {
+    const s = read(req.params.id);
+    needProfile(s);
+    const b = req.body || {};
+    const pk = { ...(s.packaging || {}) };
+    if (typeof b.need === "boolean") pk.need = b.need;
+    if (b.kind && PACK_KINDS[b.kind]) pk.kind = b.kind;
+    if (b.box) {
+      const box = { l: Number(b.box.l), w: Number(b.box.w), h: Number(b.box.h) };
+      if (!packSize(pk.kind || "carton", box)) throw new AppError("泡沫箱尺寸要填长、宽、高（厘米，5–150）");
+      pk.box = box;
+    }
+    if (typeof b.brand === "string") pk.brand = b.brand.trim().slice(0, 16);
+    if (Array.isArray(b.extra))
+      pk.extra = b.extra
+        .filter((r) => Array.isArray(r) && typeof r[0] === "string" && typeof r[1] === "string" && r[0].trim() && r[1].trim())
+        .slice(0, 4)
+        .map(([k, v]) => [k.trim().slice(0, 6), v.trim().slice(0, 40)]);
+    if (pk.need && !pk.kind) pk.kind = "carton";
+    s.packaging = pk;
+    res.json(view(save(s)));
+  });
+  app.post("/api/suites/:id/packaging/art", admission, async (req, res) => {
+    const s = read(req.params.id);
+    needProfile(s);
+    const pk = packState(s);
+    if (!pk.need || !pk.size) throw new AppError("先填好包装类型和泡沫箱尺寸");
+    const refs = ["product", "detail", "cooked"].flatMap((r) => s.photos.filter((p) => p.role === r && p.usable && !p.packDesign)).slice(0, 2);
+    if (!refs.length) throw new AppError("先上传一张商品实拍，包装上的商品图案要照着它画");
+    const p = s.profile;
+    const brand = pk.brand || p.name;
+    const d = direction(s);
+    const points = p.sellingPoints.slice(0, 3).map((x) => x.title).filter(Boolean);
+    const variants = [
+      "大字报式：品名超大字为视觉中心，品牌色大色块，商品图案在一侧，底部一条色带排 2–3 个卖点",
+      "图案主导：商品图案大而饱满占画面 50% 以上，品名和品牌压在图案上方留白处，卖点做成小圆标",
+    ];
+    const params = {
+      version: 3,
+      skillId: "product",
+      opener: "包装印刷设计：画一张纸箱/礼盒某一面的平面印刷稿（正视、无透视、满版铺色），不是商品摄影，也不是立体效果图。",
+      productName: `${p.name || "商品"} · 包装正面`,
+      size: aspectFor(pk.face.w, pk.face.h),
+      count: variants.length,
+      frames: variants.map((v, i) => ({
+        title: `${pk.face.name} · 方案 ${i + 1}`,
+        textMode: "ai",
+        layout: "free",
+        texts: [{ role: "headline", text: p.name.slice(0, 12) }, ...(pk.brand ? [{ role: "sub", text: pk.brand }] : []), ...points.map((t) => ({ role: "point", text: t }))],
+        scene: `${PACK_KINDS[pk.kind].name}的${pk.face.name}印刷平面稿，实际尺寸 ${pk.face.w}×${pk.face.h} cm。${v}。画面就是印刷面本身：铺满整个画幅、没有桌面背景、没有阴影和透视，不要画成盒子。四周留约 1 cm 安全边，文字不要贴边。商品图案照图1的真实样子画。`,
+        photos: refs.map((x) => x.file),
+        photoNotes: refs.map((x) => x.desc),
+        photoUse: "print",
+        ref: `pack-${i}`,
+      })),
+      direction: { ...d, props: "只有印刷面上的图形元素（色块、线条、纹样、商品图案），没有实物道具", light: "平面印刷稿，均匀无光影", camera: "正视平面，无透视" },
+      hasMainImage: false,
+      refCount: 0,
+      styleRef: null,
+      inputs: refs.map((x) => x.file),
+      suiteId: s.id,
+      packStep: "art",
+    };
+    const holder = { status: (code) => ({ json: (job) => (holder.result = { code, job }) }) };
+    await createJob(req, holder, params, dirOf(s.id));
+    const latest = read(s.id);
+    latest.jobs = { ...(latest.jobs || {}), packArt: holder.result.job.id, packMock: null };
+    latest.packaging = { ...(latest.packaging || {}), front: null, dieline: false };
+    save(latest);
+    res.status(holder.result.code).json(holder.result.job);
+  });
+  // Merchant picks one front: lay out the flat at real size and draw the 3D mock-up from it.
+  app.post("/api/suites/:id/packaging/choose", admission, async (req, res) => {
+    const s = read(req.params.id);
+    const pk = packState(s);
+    const job = s.jobs?.packArt && store.get(s.jobs.packArt);
+    if (!job || job.status !== "succeeded" || !pk.size) throw new AppError("包装正面还没生成好");
+    const asset = job.manifest.assets.find((a) => a.name === req.body?.asset && a.role === "image");
+    if (!asset) throw new AppError("没有这张图", 404);
+    const dir = dirOf(s.id);
+    const front = await fsp.readFile(await regularFile(path.join(jobsDir, job.id, job.manifest.exportId), asset.name));
+    await fsp.writeFile(path.join(dir, "pack-front.png"), front);
+    const p = s.profile;
+    const dieline = await renderDieline({ kind: pk.kind, size: pk.size, front, brand: pk.brand || p.name, name: p.name, info: packInfo(s), palette: direction(s).palette });
+    await fsp.writeFile(path.join(dir, "pack-dieline.png"), dieline);
+    const d = direction(s);
+    const params = {
+      version: 3,
+      skillId: "product",
+      productName: `${p.name || "商品"} · 包装效果图`,
+      size: "1:1",
+      count: 1,
+      frames: [
+        {
+          title: "包装立体效果图",
+          textMode: "none",
+          layout: "none",
+          texts: [],
+          scene: `一个做好的${PACK_KINDS[pk.kind].name}，外尺寸约 ${pk.size.l}×${pk.size.w}×${pk.size.h} cm（长×宽×高，比例要对）。45° 斜俯视，能看到${pk.kind === "gift" ? "盒盖正面和一侧盒壁" : "正面长侧面、一个短侧面和顶部"}；${pk.face.name}贴的就是图1 的设计，图案和文字与图1 完全一致；其余面用图1 的主色。纸箱放在干净明亮的${pk.kind === "gift" ? "居家桌面" : "仓库/发货台"}上，真实纸张质感和自然阴影，像实拍的成品样箱。不要出现图1 以外的新文字。`,
+          photos: ["pack-front.png"],
+          photoNotes: [pk.face.name],
+          photoUse: "artwork",
+          ref: "pack-mock",
+        },
+      ],
+      direction: { ...d, props: "纸箱/礼盒成品样箱，干净台面", camera: "45° 斜俯视，盒子居中占画面 60%" },
+      hasMainImage: false,
+      refCount: 0,
+      styleRef: null,
+      inputs: ["pack-front.png"],
+      suiteId: s.id,
+      packStep: "mock",
+    };
+    const holder = { status: (code) => ({ json: (job2) => (holder.result = { code, job: job2 }) }) };
+    await createJob(req, holder, params, dir);
+    const latest = read(s.id);
+    latest.jobs = { ...(latest.jobs || {}), packMock: holder.result.job.id };
+    latest.packaging = { ...(latest.packaging || {}), front: `${job.id}/${asset.name}`, dieline: true };
+    save(latest);
+    res.status(holder.result.code).json(view(read(s.id)));
+  });
+  app.get("/api/suites/:id/packaging/:file", async (req, res) => {
+    const s = read(req.params.id);
+    const name = { "dieline.png": "pack-dieline.png", "front.png": "pack-front.png" }[req.params.file];
+    if (!name || !s.packaging?.dieline) throw new AppError("还没有包装稿", 404);
+    res.attachment(`${s.profile?.name || "包装"}-${req.params.file === "dieline.png" ? "展开图" : "正面设计稿"}.png`);
+    res.sendFile(await regularFile(dirOf(s.id), name), { dotfiles: "allow" });
+  });
+  // The mock-up becomes the package photo every later picture uses.
+  app.post("/api/suites/:id/packaging/adopt", async (req, res) => {
+    const s = read(req.params.id);
+    const job = s.jobs?.packMock && store.get(s.jobs.packMock);
+    if (!job || job.status !== "succeeded") throw new AppError("效果图还没生成好");
+    const asset = job.manifest.assets.find((a) => a.role === "image");
+    const from = `${job.id}/${asset.name}`;
+    if (!s.photos.some((p) => p.fromJob === from)) {
+      if (s.photos.length >= 40) throw new AppError("照片最多 40 张");
+      const file = `photo-${s.photos.length + 1}-${randomUUID().slice(0, 6)}.png`;
+      await fsp.copyFile(await regularFile(path.join(jobsDir, job.id, job.manifest.exportId), asset.name), path.join(dirOf(s.id), file));
+      for (const p of s.photos) if (p.packDesign) p.usable = false;
+      s.photos.push({ file, role: "package", desc: "新设计的包装效果图", usable: true, packDesign: true, source: "ai", fromJob: from });
+    }
+    s.packaging = { ...(s.packaging || {}), adopted: true };
+    // Later pictures should be re-planned around the new box.
+    s.shots = null;
+    s.sections = (s.sections || []).map((x) => ({ ...x, scene: "", photos: [] }));
     res.json(view(save(s)));
   });
   app.delete("/api/suites/:id", async (req, res) => {
