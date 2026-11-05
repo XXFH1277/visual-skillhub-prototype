@@ -164,7 +164,11 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       const ai = s.sections.filter((x) => x.mode === "ai");
       const used = new Map();
       const items = ai.map((x) => {
-        const photos = pickPhotos(s, SECTION_TYPES[x.type].photo.length ? SECTION_TYPES[x.type].photo : ["product"], 2, used);
+        const roles = SECTION_TYPES[x.type].photo.length ? SECTION_TYPES[x.type].photo : ["product"];
+        // No photo of the right kind (e.g. no packaging shot): use the product itself
+        // rather than letting the image model invent it.
+        let photos = pickPhotos(s, roles, 2, used);
+        if (!photos.length) photos = pickPhotos(s, ["product", "detail"], 1, used);
         x.photos = photos.map((p) => p.file);
         return { id: x.id, title: SECTION_TYPES[x.type].name, brief: sectionBrief(x.type, s.profile), content: sectionContent(x.type, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`) };
       });
