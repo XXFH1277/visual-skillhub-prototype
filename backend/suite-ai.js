@@ -23,13 +23,20 @@ const clip = (v, n) => (typeof v === "string" ? Array.from(v.trim()).slice(0, n)
 const arr = (v, n) => (Array.isArray(v) ? v.slice(0, n) : []);
 
 export async function labelPhotos(ai, files) {
+  // Chunks of 6, all at once: 17 photos took 3+ minutes one chunk after another.
+  const chunks = [];
+  for (let i = 0; i < files.length; i += 6) chunks.push(files.slice(i, i + 6));
+  const parts = await Promise.all(chunks.map((chunk) => labelChunk(ai, chunk)));
+  return parts.flat();
+}
+async function labelChunk(ai, chunk) {
   const out = [];
-  for (let i = 0; i < files.length; i += 8) {
-    const chunk = files.slice(i, i + 8);
+  {
     const answer = await ask(ai, {
       system: `你在帮电商商家整理实拍图。按顺序看每张图，判断它属于哪一类，并用一句话描述画面。
 类别只能是：${Object.entries(PHOTO_ROLES).map(([k, v]) => `${k}=${v}`).join("；")}。
 已经排版过、带大量文字的宣传图、海报、旧详情页截图，一律归为 design。
+注意：有些海鲜生的时候就是红色（如深海红虾、红蟹），没有盘子、汤汁、热气等烹饪迹象就按生鲜实物描述，不要说成“熟”。
 usable：这张图能否作为生成新商品图的参考（清晰、主体完整为 true；模糊、过暗、全是文字为 false）。
 只输出 JSON：{"photos":[{"i":序号从1开始,"role":"类别","desc":"10-25字描述","usable":true}]}`,
       text: `共 ${chunk.length} 张图，请逐张输出。`,
@@ -73,6 +80,7 @@ export async function buildProfile(ai, { text, answers, photos, images }) {
     system: `你是资深电商运营，把商家的资料整理成一份“商品档案”，后面要用它写私域笔记、做商品图和淘宝详情页。
 ${FACTS}
 why（为什么是这个产地/品牌）、compare（对比）、pick（怎么挑）、faq（容易误会的地方）是详情页最打动人的部分，资料里有线索就要提炼出来；完全没有线索就留空。
+compare 里“对方”那一列不要替别人编缺点：只写资料里提到的，或者行业公认的常识；拿不准的格子写“—”。
 cards 正好 3 个；sellingPoints 3-6 个；compare.rows 3-5 行；notice 3-6 条。
 只输出 JSON：
 ${PROFILE_SCHEMA}`,
@@ -174,25 +182,40 @@ ${catalog}
 }
 
 // Layout variety so a set of images (and different products) don't share one template.
-const LAYOUTS = "大标题压在画面上方；左文右图；右文左图；底部通栏标题条；标题竖排在一侧；满版大图+角落小字；居中留白大标题；分格拼图（2-3 格）；斜切色块；卖点贴纸/圆标环绕商品";
+const LAYOUTS = ["大标题压在画面上方", "左文右图", "右文左图", "底部通栏标题条", "标题竖排在一侧", "满版大图+角落小字", "居中留白大标题", "分格拼图（2-3 格）", "斜切色块分区", "卖点贴纸/圆标环绕商品"];
+// Each picture gets its own layout up front (no repeats in a set), so variety doesn't
+// depend on the model and the pictures can be planned in parallel.
+export function assignLayouts(n, random = Math.random) {
+  const pool = [...LAYOUTS];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return Array.from({ length: n }, (_, i) => pool[i % pool.length]);
+}
 
 export async function planFrames(ai, profile, items, { kind, look }) {
   const style = look
     ? `整套视觉系统「${look.conceptName}」：${look.story} 色板 ${(look.palette || []).join(" ")}；道具 ${look.props}；光线 ${look.light}；机位 ${look.camera}；字体排版 ${look.type}。`
     : `${profile.palette?.length ? `主色 ${profile.palette.join(" ")}，` : ""}真实商业摄影质感。`;
-  const answer = await ask(ai, {
-    system: `你是电商美工兼文案。下面每一项是一张要用 GPT 生图做的${kind === "detail" ? "详情页竖版屏（3:4）" : "商品图"}，附了商家实拍图的类别。
+  const layouts = assignLayouts(items.length);
+  const withLayout = items.map((it, k) => ({ ...it, layout: layouts[k] }));
+  const system = `你是电商美工兼文案。下面每一项是一张要用 GPT 生图做的${kind === "detail" ? "详情页竖版屏（3:4）" : "商品图"}，附了商家实拍图的类别。
 为每一项写：
 - texts：画面上的中文字。headline 4-12 字有力短句；可选 sub 一行副标题（≤18字）；可选 point 2-3 个关键词（各≤6字）。全部来自商品档案，不编造。
 - scene：80-200 字的具体画面描述：用哪张实拍图里的什么、怎么摆、背景与道具、光线、文字放哪里多大。
 ${style}
-版式要有变化：每张从这些版式里选一个最合适的（${LAYOUTS}），相邻两张不要用同一种，整套里同一种最多用两次；不要每张都是“顶部大标题 + 底部信息条”。
-商品和包装只能画实拍图里有的样子：实拍里没有出现的包装形式（真空袋、保温箱、手提袋、内托等）不要画进画面，需要说明就放在文字里。
+每项已经指定了版式（layout），按它来设计画面和文字位置。
+商品和包装只能画实拍图里有的样子：实拍里没有出现的包装形式（真空袋、保温箱、手提袋、内托等）不要画进画面，需要说明就放在文字里。生鲜没有被烹饪就不要加热气、蒸汽。
 ${FACTS}
-只输出 JSON：{"frames":[{"id":"同输入","texts":[{"role":"headline|sub|point","text":"..."}],"scene":"..."}]}`,
-    text: `商品档案（数据）：${JSON.stringify(profile)}\n要做的图：${JSON.stringify(items)}`,
-    json: true,
-  });
+只输出 JSON：{"frames":[{"id":"同输入","texts":[{"role":"headline|sub|point","text":"..."}],"scene":"..."}]}`;
+  // Two pictures per call, all calls at once: one long call for 6 pictures timed out.
+  const chunks = [];
+  for (let i = 0; i < withLayout.length; i += 2) chunks.push(withLayout.slice(i, i + 2));
+  const parts = await Promise.all(
+    chunks.map((chunk) => ask(ai, { system, text: `商品档案（数据）：${JSON.stringify(profile)}\n要做的图：${JSON.stringify(chunk)}`, json: true })),
+  );
+  const answer = { frames: parts.flatMap((p) => arr(p.frames, 4)) };
   const d = answer;
   return items.map((it) => {
     const f = arr(d.frames, 20).find((x) => x?.id === it.id) || {};

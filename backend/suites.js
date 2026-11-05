@@ -85,10 +85,16 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
   }
 
   const AI_LABEL = "烹饪示意 图片仅供参考";
-  const pickPhotos = (s, roles, n = 2) => {
+  // Within a set, prefer photos used least so far: different pictures start from different shots.
+  const pickPhotos = (s, roles, n = 2, used = new Map()) => {
     const usable = s.photos.filter((p) => p.usable && p.role !== "design");
     const chosen = [];
-    for (const role of roles) for (const p of usable) if (p.role === role && chosen.length < n && !chosen.includes(p)) chosen.push(p);
+    for (const role of roles) {
+      const pool = usable.filter((p) => p.role === role && !chosen.includes(p));
+      pool.sort((a, b) => (used.get(a.file) || 0) - (used.get(b.file) || 0));
+      for (const p of pool) if (chosen.length < n) chosen.push(p);
+    }
+    for (const p of chosen) used.set(p.file, (used.get(p.file) || 0) + 1);
     return chosen;
   };
   // Builtin and admin-shared styles that fit product shots / detail pages.
@@ -128,8 +134,9 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     async shots(s) {
       await ensureLooks(s);
       const c = caseById(s.caseId);
+      const used = new Map();
       const items = c.shots.map((shot) => {
-        const photos = pickPhotos(s, shot.photos);
+        const photos = pickPhotos(s, shot.photos, 2, used);
         return { id: shot.id, title: shot.title, brief: shot.brief, photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), files: photos.map((p) => p.file) };
       });
       const planned = await planFrames(textAI, s.profile, items.filter((i) => i.files.length).map(({ files, ...rest }) => rest), { kind: "product", look: s.look });
@@ -141,8 +148,9 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     async detail(s) {
       await ensureLooks(s);
       const ai = s.sections.filter((x) => x.mode === "ai");
+      const used = new Map();
       const items = ai.map((x) => {
-        const photos = pickPhotos(s, SECTION_TYPES[x.type].photo.length ? SECTION_TYPES[x.type].photo : ["product"]);
+        const photos = pickPhotos(s, SECTION_TYPES[x.type].photo.length ? SECTION_TYPES[x.type].photo : ["product"], 2, used);
         x.photos = photos.map((p) => p.file);
         return { id: x.id, title: SECTION_TYPES[x.type].name, brief: sectionBrief(x.type, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`) };
       });

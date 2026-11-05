@@ -381,7 +381,7 @@ export function initSuite(ctx) {
               )
               .join("")}</div>
             <div class="actionbar"><div class="actionbar-in"><span class="muted">图上的字改好再出；出图后可单张重出</span>
-              <div class="row"><button class="link" id="replan-shots">重新规划</button><button class="btn primary" id="gen-shots">生成 ${shots.filter((x) => x.enabled).length} 张 · ${shots.filter((x) => x.enabled).length * cost} 积分</button></div></div></div>`
+              <div class="row"><button class="link" id="replan-shots">重新规划</button><button class="btn primary" id="gen-shots" ${busyTask(s, "shots") || busyTask(s, "looks") ? "disabled" : ""}>生成 ${shots.filter((x) => x.enabled).length} 张 · ${shots.filter((x) => x.enabled).length * cost} 积分</button></div></div></div>`
       }
       ${jobResults(s.jobs?.shots)}
       ${s.jobs?.shots?.status === "succeeded" ? `<div class="row"><button class="btn primary" id="to-detail">下一步：详情页 →</button></div>` : ""}`;
@@ -574,7 +574,7 @@ export function initSuite(ctx) {
           <label class="mini"><input type="checkbox" id="safe" ${safeMode ? "checked" : ""}>淘宝合规（自动替换“最、第一、没有之一”等）</label>
           <div class="row wrap">
             <button class="btn" id="plan-detail">${planned ? "重新规划 AI 画面" : "AI 规划画面"}（免费）</button>
-            ${planned ? `<button class="btn primary" id="gen-detail">生成 ${ai.length} 屏 AI 图 · ${ai.length * cost} 积分</button>` : ""}
+            ${planned ? `<button class="btn primary" id="gen-detail" ${busyTask(s, "detail") ? "disabled" : ""}>生成 ${ai.length} 屏 AI 图 · ${ai.length * cost} 积分</button>` : ""}
           </div>
           ${job && ["queued", "running"].includes(job.status) ? spinner(job.phase || "生成中", `共 ${job.frames?.length || ai.length} 屏，约 ${ai.length * 2} 分钟`) : ""}
           ${job?.status === "failed" ? `<p class="warn-text">${esc(job.error)}</p>` : ""}

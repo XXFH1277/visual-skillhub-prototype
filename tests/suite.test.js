@@ -209,7 +209,12 @@ test("style directions vary the look; AI dish pictures join the photo library an
   assert.deepEqual(suite.palette, ["#112233", "#c8572b", "#f4ede2"]);
   const plan = s.ai.calls.findLast((c) => c.system.includes("电商美工")).system;
   assert.match(plan, /渔港晨光/);
-  assert.match(plan, /相邻两张不要用同一种/);
+  assert.match(plan, /每项已经指定了版式/);
+  // Every planned picture got its own layout, none repeated, sent in parallel chunks of two.
+  const sentItems = s.ai.calls.filter((c) => c.system.includes("电商美工")).flatMap((c) => JSON.parse(c.text.split("要做的图：")[1]));
+  const layouts = sentItems.slice(-suite.shots.filter((x) => x.photos.length).length).map((it) => it.layout);
+  assert.equal(new Set(layouts).size, layouts.length, layouts.join());
+  assert.ok(s.ai.calls.filter((c) => c.system.includes("电商美工")).every((c) => JSON.parse(c.text.split("要做的图：")[1]).length <= 2));
   assert.match(plan, /实拍里没有出现的包装形式/);
   assert.doesNotMatch(plan, /粗黑体中文大标题 \+ 细线装饰/);
 

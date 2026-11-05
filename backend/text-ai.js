@@ -27,7 +27,7 @@ export function textConfig(env = process.env) {
   base.search = "";
   base.hash = "";
   base.pathname = base.pathname.replace(/\/+$/, "").replace(/\/v1$/, "") + "/v1/";
-  return { base: base.href, key, model, timeoutMs: Number(env.KIMI_TIMEOUT_MS) || 180000 };
+  return { base: base.href, key, model, timeoutMs: Number(env.KIMI_TIMEOUT_MS) || 240000 };
 }
 
 async function dataUrl(file) {
