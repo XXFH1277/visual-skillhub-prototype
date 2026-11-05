@@ -490,7 +490,8 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         texts: [],
         scene: `把实拍图里的${name}做成「${method}」，就是普通人家里做出来的样子。食材的品种、大小、形状、颜色必须和实拍一致（看得出是同一种食材），熟度、汤汁按${method}的家常做法如实呈现，不要美化成别的样子。${looks.plates[i % looks.plates.length]}。${looks.look}。只拍这道菜，不要包装、不要任何文字。`,
         photos: refs.map((p) => p.file),
-        photoNotes: refs.map((p) => `生鲜实拍（只用来看食材长什么样）：${p.desc}`),
+        photoNotes: refs.map((p) => p.desc),
+        photoUse: "ingredient",
         ref: `dish-${i}`,
       })),
       direction: {

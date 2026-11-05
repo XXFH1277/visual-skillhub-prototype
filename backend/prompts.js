@@ -51,7 +51,12 @@ export function framePrompt(params, index) {
   let n = 1;
   if (frame.photos?.length) {
     frame.photos.forEach((_, i) => {
-      roles.push(`图${n}：商家实拍${frame.photoNotes?.[i] ? `（${frame.photoNotes[i]}）` : ""}——画面以它为基础重新布光、构图和排版；商品/包装的形状、颜色、图案、Logo 和文字保持真实，不重新设计。`);
+      const note = frame.photoNotes?.[i] ? `（${frame.photoNotes[i]}）` : "";
+      roles.push(
+        frame.photoUse === "ingredient"
+          ? `图${n}：生鲜实拍${note}——只用来看食材本身（品种、大小、颜色、纹理），成品里的食材要和它一致；不要照搬它的背景、容器和构图。`
+          : `图${n}：商家实拍${note}——画面以它为基础重新布光、构图和排版；商品/包装的形状、颜色、图案、Logo 和文字保持真实，不重新设计。`,
+      );
       n++;
     });
   } else if (params.hasMainImage) {
