@@ -3,6 +3,9 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import multer from "multer";
+
+// Merchants' Word notes carry dozens of full-size phone photos; 40MB+ is normal.
+export const SUITE_FILE_MB = 100;
 import { AppError } from "./errors.js";
 import { importNote } from "./importers.js";
 import { labelPhotos, buildProfile, normalizeProfile, writeNote, planFrames, proposeLooks } from "./suite-ai.js";
@@ -228,7 +231,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
 
   const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 30 * 1024 * 1024, files: 31, fields: 10, fieldSize: 20000 },
+    limits: { fileSize: SUITE_FILE_MB * 1024 * 1024, files: 31, fields: 10, fieldSize: 20000 },
   }).fields([
     { name: "photos", maxCount: 30 },
     { name: "note", maxCount: 1 },

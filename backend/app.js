@@ -13,7 +13,7 @@ import { createTextAI, compareTexts } from "./text-ai.js";
 import { sanitizeFrames, candidatesFor } from "./planner.js";
 import { StyleLibrary } from "./styles.js";
 import { ADMIN_ID } from "./users.js";
-import { registerSuites } from "./suites.js";
+import { registerSuites, SUITE_FILE_MB } from "./suites.js";
 import { SCENES, textsForImage } from "../shared/scenes.js";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -829,13 +829,15 @@ export async function createWorkspace({
   app.use((_req, res) =>
     res.status(404).send("页面不存在。首次运行请先执行 npm run build。"),
   );
-  app.use((error, _req, res, _next) => {
+  app.use((error, req, res, _next) => {
     const status =
       error instanceof multer.MulterError ? 400 : error.status || 500;
     res.status(status).json({
       error:
         error instanceof multer.MulterError
-          ? "上传超过限制：最多 4 张图片、10MB 文件限制"
+          ? req.path.startsWith("/api/suites")
+            ? `上传超过限制：单个文件最多 ${SUITE_FILE_MB}MB、最多 30 张图；Word 太大可以把图片另外单独上传`
+            : "上传超过限制：最多 4 张图片、10MB 文件限制"
           : status >= 500
             ? "服务器处理失败，请查看本机日志"
             : error.message,
