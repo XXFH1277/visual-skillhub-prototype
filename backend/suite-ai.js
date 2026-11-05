@@ -4,6 +4,7 @@ import { PHOTO_ROLES } from "../shared/suite.js";
 const CATS = ["生鲜水产", "食品零食", "酒水茶饮", "美妆护肤", "家居日用", "数码家电", "服饰配饰", "母婴", "其他"];
 const FACTS = `事实规则：只能使用商家资料、问答和照片里能看到的信息。不编造数字、认证、奖项、销量、功效、价格、日期、地址。
 商家原话里的数字、品牌名、产地照抄。资料里没有的字段留空字符串，不要猜。
+要上架淘宝，按广告法写：不说“无污染、不受污染、远离污染”（改成具体的海域、深度、产地），不说美容、保健、治疗作用，不针对孕产妇、儿童、老人宣传功效；资料里有这类话就换成中性的事实描述或不写。字段值里不要加“（据实拍图）”“（资料未提及）”这类来源备注。
 资料可能是商家随口说的话、手机语音转的文字（口语、错别字、没标点）、或者跟客户的聊天记录：从里面提取事实，按上下文改正明显的同音错字，写成通顺的书面表达，不要照搬口语和语气词。`;
 
 import { parseJsonObject as parse } from "./json.js";
@@ -19,7 +20,12 @@ async function ask(ai, request) {
     }
   }
 }
-const clip = (v, n) => (typeof v === "string" ? Array.from(v.trim()).slice(0, n).join("") : "");
+// Values go straight onto customer-facing pages: drop the model's own source notes
+// like "（据实拍图）" / "（资料未提及）".
+const clip = (v, n) =>
+  typeof v === "string"
+    ? Array.from(v.replace(/[（(][^（）()]*?(据|资料|实拍图|推测|未提及|未说明)[^（）()]*?[）)]/g, "").trim()).slice(0, n).join("")
+    : "";
 const arr = (v, n) => (Array.isArray(v) ? v.slice(0, n) : []);
 
 export async function labelPhotos(ai, files) {
