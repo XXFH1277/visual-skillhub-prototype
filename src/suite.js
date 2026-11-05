@@ -561,6 +561,8 @@ export function initSuite(ctx) {
     const ai = s.sections.filter((x) => x.mode === "ai" || x.mode === "bg");
     const planned = ai.length && ai.every((x) => x.scene);
     const job = s.jobs?.detail;
+    // Every AI screen still in the page already has a picture: removing screens needs no new run.
+    const done = job?.status === "succeeded" && ai.every((x) => aiImage(s, x));
     box.innerHTML = `
       ${s.look !== undefined ? `<p class="muted look-line">风格：<b>${esc(s.look?.conceptName || "实拍精修")}</b>（在“3 商品图”里换，换完点“重新规划 AI 画面”）</p>` : ""}
       ${busyTask(s, "detail") ? spinner("AI 正在规划详情页画面", "约 1 分钟") : ""}${failed(s, "detail")}
@@ -581,16 +583,17 @@ export function initSuite(ctx) {
           <label class="mini"><input type="checkbox" id="safe" ${safeMode ? "checked" : ""}>淘宝合规（自动替换“最、第一、没有之一”等）</label>
           <div class="row wrap">
             <button class="btn" id="plan-detail">${planned ? "重新规划 AI 画面" : "AI 规划画面"}（免费）</button>
-            ${planned ? `<button class="btn primary" id="gen-detail" ${busyTask(s, "detail") ? "disabled" : ""}>生成 ${ai.length} 屏 AI 图 · ${ai.length * cost} 积分</button>` : ""}
+            ${planned ? `<button class="btn ${done ? "" : "primary"}" id="gen-detail" ${busyTask(s, "detail") ? "disabled" : ""}>${done ? "全部重新生成" : "生成"} ${ai.length} 屏 AI 图 · ${ai.length * cost} 积分</button>` : ""}
           </div>
           ${job && ["queued", "running"].includes(job.status) ? spinner(job.phase || "生成中", `共 ${job.frames?.length || ai.length} 屏，约 ${ai.length * 2} 分钟`) : ""}
           ${job?.status === "failed" ? `<p class="warn-text">${esc(job.error)}</p>` : ""}
+          ${done ? `<p class="ok-text">AI 图都已生成，删掉或调整顺序后直接导出就行，不用重新生成。</p>` : ""}
           <button class="btn primary wide" id="export">导出详情长图（750 宽）</button>
-          <p class="muted">也可以单独导出每一屏：点预览里那一屏右上角的“↓”。</p>
+          <p class="muted">哪屏不满意，点预览里那一屏右上角的“✕”（或在上面选“不要这屏”），长图里就不拼它，不扣积分；想要回来，把选项改回去就行。单独导出某一屏点“↓”。</p>
         </section>
         <section class="preview-col"><div class="dp" id="dp">${s.sections
           .filter((x) => x.mode !== "off")
-          .map((x) => `<div class="dp-sec ${x.mode === "tpl" ? "tpl" : x.mode === "bg" ? "bg" : ""}" data-pv="${x.id}">${x.mode === "bg" ? `<div class="bg-panel">${sectionHtml(s, x, safeMode)}</div>` : sectionHtml(s, x, safeMode)}<button class="dp-dl" data-dl="${x.id}" title="导出这一屏">↓</button></div>`)
+          .map((x) => `<div class="dp-sec ${x.mode === "tpl" ? "tpl" : x.mode === "bg" ? "bg" : ""}" data-pv="${x.id}">${x.mode === "bg" ? `<div class="bg-panel">${sectionHtml(s, x, safeMode)}</div>` : sectionHtml(s, x, safeMode)}<button class="dp-dl" data-dl="${x.id}" title="导出这一屏">↓</button><button class="dp-dl dp-off" data-off="${x.id}" title="不要这屏">✕</button></div>`)
           .join("")}</div></section>
       </div>`;
     const dp = $("#dp");
@@ -644,6 +647,11 @@ export function initSuite(ctx) {
       }),
     );
     const shoot = (el) => toPng(el, { pixelRatio: 1, cacheBust: true, filter: (n) => !n.classList?.contains("dp-dl") });
+    $$("[data-off]", box).forEach(
+      (b) =>
+        (b.onclick = () =>
+          persist(collect().map((x) => (x.id === b.dataset.off ? { ...x, mode: "off" } : x)))),
+    );
     const download = (url, name) => {
       const a = document.createElement("a");
       a.href = url;
