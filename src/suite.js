@@ -1,12 +1,5 @@
 import { toPng } from "html-to-image";
 
-// Long headlines break at their first comma (or before “vs”) rather than leaving one character alone on a line.
-const head = (text) => {
-  const v = String(text || "");
-  if (Array.from(v).length <= 9) return esc(v);
-  const m = v.match(/^(.{3,}?)[，,、]\s*(.+)$/) || v.match(/^(.{3,}?)\s+(vs\s*.+)$/i);
-  return m ? `${esc(m[1])}<br>${esc(m[2])}` : esc(v);
-};
 // Stat numbers are set big; longer ones (“48小时”) step down so they stay on one line.
 const bigSize = (t) => { const n = [...String(t)].length; return n > 5 ? "xs" : n > 3 ? "sm" : ""; };
 
@@ -20,6 +13,14 @@ export function initSuite(ctx) {
   const busyTask = (s, name) => s.tasks?.[name]?.status === "running";
   const anyBusy = (s) => Object.values(s.tasks || {}).some((t) => t.status === "running");
   const nl = (t) => esc(t).replace(/\n/g, "<br>");
+  // Long headlines break at their first comma (or before “vs”) rather than leaving one character alone on a line.
+  const head = (text) => {
+    const v = String(text || "");
+    if (Array.from(v).length <= 9) return esc(v);
+    const m = v.match(/^(.{3,}?)[，,、]\s*(.+)$/) || v.match(/^(.{3,}?)\s+(vs\s*.+)$/i);
+    return m ? `${esc(m[1])}<br>${esc(m[2])}` : esc(v);
+  };
+
 
   /* ---------------- home: my products ---------------- */
   async function homePage() {
