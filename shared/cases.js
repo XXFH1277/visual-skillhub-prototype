@@ -31,7 +31,7 @@ export const CASES = [
       { id: "pack", title: "包装与收货", photos: ["package", "product"], brief: "包装 + 实物同框，标注包装方式、冷链/快递，下方简短收货说明" },
       { id: "service", title: "售后保障", photos: ["product", "package"], brief: "实物做背景虚化，前面排 3–4 个大圆形保障图标（只用 content 里的保障与发货事实，不编造承诺），标题如“放心买”" },
       { id: "normal", title: "正常现象说明", photos: ["product", "detail"], brief: "实物特写，用圆圈和引线标出 content 里的正常现象（如虾头易断、掉鳞），标题如“收到别担心 这些是正常的”，语气安抚" },
-      { id: "white", title: "白底图", photos: ["product", "detail"], noText: true, brief: "淘宝白底图：纯白背景（#FFFFFF），只有商品本身，完整、居中、占画面约 70%，边缘干净；不要任何文字、道具、色块、装饰和投影场景。这一张不用整套风格里的道具、背景和版式，只保留商品真实的样子。" },
+      { id: "white", title: "白底图", photos: ["product"], noText: true, brief: "淘宝白底图：纯白背景（#FFFFFF），只有商品本体（鱼、虾、蟹、鸡蛋、水果本身，2–3 个完整的），不要泡沫箱、盘子、袋子、碎冰，完整、居中、占画面约 70%，边缘干净；不要任何文字、道具、色块、装饰和投影场景。这一张不用整套风格里的道具、背景和版式，只保留商品真实的样子。" },
       { id: "gift", title: "礼赠场景", photos: ["package"], optional: true, brief: "礼盒放在中式茶桌/餐边柜，温暖居家氛围，标题偏情感（带给惦记的人）；只有包装照里真是礼盒时才出" },
     ],
     sections: [
@@ -76,7 +76,7 @@ export const CASES = [
       { id: "pack", title: "包装与收货", photos: ["package", "product"], brief: "包装 + 实物同框，标注包装方式和快递，下方简短收货说明" },
       { id: "service", title: "售后保障", photos: ["product", "package"], brief: "实物做背景虚化，前面排 3–4 个大圆形保障图标（只用 content 里的保障与发货事实，不编造承诺），标题如“放心买”" },
       { id: "normal", title: "正常现象说明", photos: ["product", "detail"], brief: "实物特写，用圆圈和引线标出 content 里的正常现象（如表皮斑点、大小不一），标题如“收到别担心 这些是正常的”，语气安抚" },
-      { id: "white", title: "白底图", photos: ["product", "detail"], noText: true, brief: "淘宝白底图：纯白背景（#FFFFFF），只有商品本身，完整、居中、占画面约 70%，边缘干净；不要任何文字、道具、色块、装饰和投影场景。这一张不用整套风格里的道具、背景和版式，只保留商品真实的样子。" },
+      { id: "white", title: "白底图", photos: ["product"], noText: true, brief: "淘宝白底图：纯白背景（#FFFFFF），只有商品本体（鱼、虾、蟹、鸡蛋、水果本身，2–3 个完整的），不要泡沫箱、盘子、袋子、碎冰，完整、居中、占画面约 70%，边缘干净；不要任何文字、道具、色块、装饰和投影场景。这一张不用整套风格里的道具、背景和版式，只保留商品真实的样子。" },
       { id: "gift", title: "送礼场景", photos: ["package", "product"], optional: true, brief: "包装放在居家桌面或节庆场景，温暖氛围，标题偏情感" },
     ],
     sections: [

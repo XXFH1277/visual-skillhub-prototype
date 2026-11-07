@@ -158,7 +158,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       const c = caseById(s.caseId);
       const used = new Map();
       const items = c.shots.map((shot) => {
-        const photos = pickPhotos(s, shot.photos, 2, used);
+        const photos = pickPhotos(s, shot.photos, shot.noText ? 1 : 2, used);
         return { id: shot.id, title: shot.title, brief: shot.brief, content: shotContent(shot.id, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), files: photos.map((p) => p.file), noText: shot.noText, optional: shot.optional };
       });
       // The white-background picture has no words and no styling: nothing to plan.
@@ -196,6 +196,16 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       }
     },
   };
+  // The planner quotes each line inside the scene ("竖条写「…」"): when the merchant edits a
+  // line, the old wording in the scene would otherwise still get drawn.
+  function syncScene(scene, before = [], after = []) {
+    let out = scene || "";
+    before.forEach((t, i) => {
+      const next = after[i]?.text;
+      if (t?.text && next && next !== t.text && t.text.length >= 2) out = out.split(t.text).join(next);
+    });
+    return out;
+  }
   // Facts a product image may print (shots that answer buyers' doubts need them spelled out).
   function shotContent(id, p) {
     return {
@@ -355,7 +365,9 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     if (Array.isArray(b.shots) && s.shots)
       s.shots = s.shots.map((x) => {
         const e = b.shots.find((y) => y?.id === x.id) || {};
-        return { ...x, enabled: typeof e.enabled === "boolean" ? e.enabled : x.enabled, texts: Array.isArray(e.texts) ? cleanTexts(e.texts) : x.texts, scene: typeof e.scene === "string" ? e.scene.slice(0, 800) : x.scene };
+        const texts = Array.isArray(e.texts) ? cleanTexts(e.texts) : x.texts;
+        const scene = typeof e.scene === "string" ? e.scene.slice(0, 800) : x.scene;
+        return { ...x, enabled: typeof e.enabled === "boolean" ? e.enabled : x.enabled, texts, scene: syncScene(scene, x.texts, texts) };
       });
     if (Array.isArray(b.sections))
       s.sections = b.sections
@@ -363,7 +375,8 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
           const x = s.sections.find((y) => y.id === e?.id);
           if (!x) return null;
           const mode = Object.hasOwn(SECTION_MODES, e.mode) && (e.mode === "off" || SECTION_TYPES[x.type].modes.includes(e.mode)) ? e.mode : x.mode;
-          return { ...x, mode, texts: Array.isArray(e.texts) ? cleanTexts(e.texts) : x.texts, scene: typeof e.scene === "string" ? e.scene.slice(0, 800) : x.scene, photos: Array.isArray(e.photos) ? e.photos.filter((f) => s.photos.some((p) => p.file === f)).slice(0, 3) : x.photos };
+          const texts = Array.isArray(e.texts) ? cleanTexts(e.texts) : x.texts;
+          return { ...x, mode, texts, scene: syncScene(typeof e.scene === "string" ? e.scene.slice(0, 800) : x.scene, x.texts, texts), photos: Array.isArray(e.photos) ? e.photos.filter((f) => s.photos.some((p) => p.file === f)).slice(0, 3) : x.photos };
         })
         .filter(Boolean);
     res.json(view(save(s)));

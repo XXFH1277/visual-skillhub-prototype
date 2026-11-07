@@ -390,3 +390,22 @@ test("packaging: foam-box size → two front designs → flat at real size + moc
   const pkgPhotos = suite.shots.flatMap((x) => x.photos).filter((f) => suite.photos.find((p) => p.file === f)?.role === "package");
   assert.ok(pkgPhotos.every((f) => f === designed.file));
 });
+
+test("editing a line on a planned shot also updates the wording quoted in its scene", async (t) => {
+  const s = await setup(t);
+  const form = new FormData();
+  form.append("text", "舟山带鱼");
+  for (const c of ["#aa3311", "#3355aa", "#22aa66"]) form.append("photos", new Blob([await photo(c)], { type: "image/jpeg" }), "p.jpg");
+  const id = (await (await s.request("/api/suites", { method: "POST", body: form })).json()).id;
+  await s.waitTask(id, "profile");
+  await s.post(`/api/suites/${id}/shots/plan`, {});
+  let suite = await s.waitTask(id, "shots");
+  const hero = suite.shots.find((x) => x.enabled && x.texts.length);
+  const old = hero.texts[0].text;
+  const scene = `顶部大字写「${old}」，下面一行小字`;
+  await s.post(`/api/suites/${id}`, { shots: [{ id: hero.id, scene }] });
+  suite = await (await s.post(`/api/suites/${id}`, { shots: [{ id: hero.id, texts: [{ ...hero.texts[0], text: "肉厚油多" }, ...hero.texts.slice(1)] }] })).json();
+  const after = suite.shots.find((x) => x.id === hero.id);
+  assert.equal(after.texts[0].text, "肉厚油多");
+  assert.equal(after.scene, "顶部大字写「肉厚油多」，下面一行小字");
+});
