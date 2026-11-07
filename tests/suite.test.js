@@ -223,19 +223,20 @@ test("style directions vary the look; AI dish pictures join the photo library an
   await s.post(`/api/suites/${id}/shots/plan`, {});
   suite = await s.waitTask(id, "shots");
   // Seafood picks among listing layouts; the proven best-seller layout always comes first.
-  assert.deepEqual(suite.looks.map((l) => l.styleId), ["promo-bold", "ink-navy", "guochao-gift"]);
-  assert.equal(suite.look.conceptName, "爆款大字报");
+  assert.deepEqual(suite.looks.map((l) => l.styleId), ["ocean-gold", "ink-navy", "guochao-gift"]);
+  assert.equal(suite.look.conceptName, "海味大片");
   assert.match(suite.looks[1].layout, /印章/);
   const lookAsk = s.ai.calls.findLast((c) => c.system.includes("美术指导")).system;
-  assert.match(lookAsk, /第 1 个必须用「promo-bold/);
+  assert.match(lookAsk, /第 1 个必须用「ocean-gold/);
   assert.doesNotMatch(lookAsk, /wabi｜/);
   const plan = s.ai.calls.findLast((c) => c.system.includes("电商美工")).system;
-  assert.match(plan, /爆款大字报/);
-  assert.match(plan, /版式元素 .*胶囊/);
+  assert.match(plan, /海味大片/);
+  assert.match(plan, /版式元素 .*书法|版式元素 .*胶囊/);
+  assert.match(plan, /cinematic:true/);
   assert.match(plan, /每项已经指定了版式/);
   // Every planned picture got its own layout, none repeated, sent in parallel chunks of two.
   const sentItems = s.ai.calls.filter((c) => c.system.includes("电商美工")).flatMap((c) => JSON.parse(c.text.split("要做的图：")[1]));
-  const layouts = sentItems.slice(-suite.shots.filter((x) => x.photos.length).length).map((it) => it.layout);
+  const layouts = sentItems.slice(-suite.shots.filter((x) => x.photos.length && x.id !== "white").length).map((it) => it.layout);
   assert.equal(new Set(layouts).size, layouts.length, layouts.join());
   assert.ok(s.ai.calls.filter((c) => c.system.includes("电商美工")).every((c) => JSON.parse(c.text.split("要做的图：")[1]).length <= 2));
   assert.match(plan, /实拍里没有出现的包装形式/);
@@ -408,4 +409,35 @@ test("editing a line on a planned shot also updates the wording quoted in its sc
   const after = suite.shots.find((x) => x.id === hero.id);
   assert.equal(after.texts[0].text, "肉厚油多");
   assert.equal(after.scene, "顶部大字写「肉厚油多」，下面一行小字");
+});
+
+test("internal reference library: admin uploads standout designs, each picture learns from a fitting one", async (t) => {
+  const s = await setup(t);
+  const up = new FormData();
+  up.append("images", new Blob([await photo("#0e2a3f")], { type: "image/jpeg" }), "crab.jpg");
+  up.append("uses", "hero,sell");
+  up.append("category", "生鲜水产");
+  const added = await (await s.request("/api/admin/refs", { method: "POST", body: up })).json();
+  assert.equal(added.added[0].uses.join(), "hero,sell");
+  const form = new FormData();
+  form.append("text", "舟山大黄鱼");
+  for (const c of ["#aa3311", "#3355aa", "#22aa66"]) form.append("photos", new Blob([await photo(c)], { type: "image/jpeg" }), "p.jpg");
+  const id = (await (await s.request("/api/suites", { method: "POST", body: form })).json()).id;
+  await s.waitTask(id, "profile");
+  await s.post(`/api/suites/${id}/shots/plan`, {});
+  await s.waitTask(id, "shots");
+  const r = await s.post(`/api/suites/${id}/shots/generate`, {}, { "Idempotency-Key": randomUUID() });
+  assert.equal(r.status, 202, await r.clone().text());
+  const job = await s.terminal((await r.json()).id);
+  assert.equal(job.status, "succeeded", job.error);
+  const p = s.generated.at(-1);
+  const hero = p.frames.find((f) => f.ref === "hero");
+  assert.deepEqual(hero.styleRefs, [added.added[0].file]);
+  assert.equal(hero.photoUse, "hero", "main image is cinematic");
+  assert.ok(p.inputs.includes(added.added[0].file));
+  assert.equal(p.frames.find((f) => f.ref === "white")?.styleRefs, undefined, "white background learns from nothing");
+  const { framePrompt } = await import("../backend/prompts.js");
+  const prompt = framePrompt(p, p.frames.indexOf(hero));
+  assert.match(prompt, /优秀设计参考/);
+  assert.match(prompt, /只用来确定商品长什么样/);
 });

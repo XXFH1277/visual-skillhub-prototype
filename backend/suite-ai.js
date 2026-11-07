@@ -78,7 +78,7 @@ const BASIC_SCHEMA = `{
 }`;
 const STORY_SCHEMA = `{
   "why": {"kicker":"为什么是××（产地或品牌）","headline":"一句有力的标题，可用\\n分两行","cards":[{"big":"2-4字的大数字或关键词","label":"4-8字","sub":"4-12字"}],"body":"60-120字说明","highlight":"body里要高亮的一小段原文"},
-  "compare": {"headline":"对比标题","ours":"我们的叫法","others":"对比对象（如 其它海域带鱼）","rows":[{"aspect":"对比项","ours":"我们","others":"对方"}],"note":"一句补充"},
+  "compare": {"headline":"对比标题","ours":"我们的叫法","others":"对比对象（如 普通大黄鱼、近海带鱼）","rows":[{"aspect":"对比项","ours":"我们","others":"对方"}],"note":"一句补充"},
   "pick": {"headline":"怎么挑/怎么辨别","points":[{"title":"4-8字","detail":"10-30字"}]},
   "faq": {"kicker":"提前打个招呼","headline":"标题，可用\\n分两行","cards":[{"big":"2-4字","label":"4-8字","sub":"4-12字"}],"body":"60-140字，把容易被误会的地方说清楚","highlight":"body里要高亮的原文"},
   "normal": {"headline":"收到别担心，这些是正常的（10-16字）","items":[{"title":"现象 4-10字","detail":"为什么、影响不影响吃 15-40字"}]},
@@ -105,7 +105,7 @@ export async function buildProfile(ai, { text, answers, photos, images }) {
     ask(ai, {
       system: `${intro}
 why（为什么是这个产地/品牌）、compare（对比）、pick（怎么挑）、faq（容易误会的地方）是详情页最打动人的部分，资料里有线索就要提炼出来；完全没有线索就留空。
-compare 里“对方”那一列不要替别人编缺点：只写资料里提到的，或者行业公认的常识；拿不准的格子写“—”。
+compare 的对比对象是这类商品的“普通货”（如 普通大黄鱼、近海带鱼、淡水养殖黄花鱼），不点名任何品牌和商家；“对方”那一列写这类普通货公认的常见情况（如 浅海网箱、人工饲料、口感偏软），每格都要填，不要写“—”。
 cards 正好 3 个；compare.rows 3-5 行。
 normal：这类商品收货后常见、但不影响品质的现象（例如冻虾虾头易断或发黑、带鱼破肚掉鳞、冰衣化水后变轻、梭子蟹掉腿、水果表皮有斑点大小不一、土鸡蛋壳颜色深浅不一带点鸡毛）。资料里有就照资料；没有就按这类商品公认的常识写 2-4 条，只写真实常见的现象，不承诺资料里没有的售后。
 service：售后保障，只从资料里提取（坏单包赔、少称补发、超时赔付等），资料没写就留空数组。
@@ -232,7 +232,7 @@ export function recipeLook(recipe, profile = {}) {
 }
 
 // Layout variety so a set of images (and different products) don't share one template.
-const LAYOUTS = ["大标题压在画面上方", "左文右图", "右文左图", "底部通栏标题条", "标题竖排在一侧", "满版大图+角落小字", "居中留白大标题", "分格拼图（2-3 格）", "斜切色块分区", "卖点贴纸/圆标环绕商品"];
+const LAYOUTS = ["大标题压在画面上方", "左文右图", "右文左图", "底部通栏标题条", "标题竖排在一侧", "满版大图+角落小字", "居中留白大标题", "分格拼图（2-3 格）", "斜切色块分区", "卖点贴纸/圆标环绕商品", "中式窗格画框+金色牌匾标题", "四宫格细节+打勾标注"];
 // Each picture gets its own layout up front (no repeats in a set), so variety doesn't
 // depend on the model and the pictures can be planned in parallel.
 export function assignLayouts(n, random = Math.random) {
@@ -256,9 +256,11 @@ export async function planFrames(ai, profile, items, { kind, look }) {
 - scene：80-200 字的具体画面描述：用哪张实拍图里的什么、怎么摆、背景与道具、光线、文字放哪里多大。
 ${style}
 每项已经指定了版式（layout），按它来设计画面和文字位置。带 content 的项（规格、售后保障、正常现象等），文字只从 content 里取，事实照抄，content 里没有的保障和数字不要写。${kind === "detail" ? "\n详情页的每项带了 content（这一屏能用的要点）：文字从里面挑最有力的，整屏文字加起来不超过 50 字；数字、产地等事实照抄。" : ""}
-商品和包装只能画实拍图里有的样子：实拍里没有出现的包装形式（真空袋、保温箱、手提袋、内托等）不要画进画面，需要说明就放在文字里。生鲜没有被烹饪就不要加热气、蒸汽。对比屏里“对方”只做中性示意，不要把别人的商品画得发白、发灰、变质或难看，不出现别家品牌和包装。
+商品和包装只能画实拍图里有的样子：实拍里没有出现的包装形式（真空袋、保温箱、手提袋、内托等）不要画进画面，需要说明就放在文字里。生鲜没有被烹饪就不要加热气、蒸汽。对比屏里“普通的”一侧画同类普通货的样子（可以更暗淡、更普通），不出现任何品牌、店名和包装。
+带 cinematic:true 的项是“大片”：实拍图只用来确定商品长什么样（品种、外形、颜色、纹理），画面要重新构图成一个戏剧性的瞬间——手托起商品出水、水花飞溅、海面/渔船/渔网背景、碎冰水珠特写、戏剧侧逆光，商品占画面 50–60%，像餐厅和品牌的广告大片；不要照搬实拍的背景、泡沫箱和盘子。
+视觉系统里有英文手写或印章时，可以另加 1 条 role=tag：英文装饰短语（2–5 个英文单词，如 Fresh From The East Sea）或印章字（1–3 个汉字，只能是产地或品类字，如 东海、鲜）。
 ${FACTS}
-只输出 JSON：{"frames":[{"id":"同输入","texts":[{"role":"headline|sub|point","text":"..."}],"scene":"..."}]}`;
+只输出 JSON：{"frames":[{"id":"同输入","texts":[{"role":"headline|sub|point|tag","text":"..."}],"scene":"..."}]}`;
   // Two pictures per call, all calls at once: one long call for 6 pictures timed out.
   const chunks = [];
   for (let i = 0; i < withLayout.length; i += 2) chunks.push(withLayout.slice(i, i + 2));
@@ -289,7 +291,7 @@ ${FACTS}
   return items.map((it, k) => {
     const f = planned[k] || {};
     const texts = arr(f.texts, 6)
-      .map((t) => ({ role: ["headline", "sub", "point"].includes(t?.role) ? t.role : "point", text: clip(t?.text, t?.role === "headline" ? 16 : 18) }))
+      .map((t) => ({ role: ["headline", "sub", "point", "tag"].includes(t?.role) ? t.role : "point", text: clip(t?.text, t?.role === "headline" ? 16 : t?.role === "tag" ? 30 : 18) }))
       .filter((t) => t.text);
     return { id: it.id, texts, scene: clip(f.scene, 600) || it.brief };
   });

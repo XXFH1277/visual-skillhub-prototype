@@ -9,9 +9,10 @@ export const SUITE_FILE_MB = 100;
 import { AppError } from "./errors.js";
 import { importNote } from "./importers.js";
 import { labelPhotos, buildProfile, normalizeProfile, writeNote, planFrames, proposeLooks } from "./suite-ai.js";
-import { STYLES, FARM_CATEGORIES, SAFE_LAYOUT } from "../shared/styles.js";
+import { STYLES, FARM_CATEGORIES, SAFE_LAYOUT, FIRST_LAYOUT } from "../shared/styles.js";
 import { PACK_KINDS, packSize, mainFace, aspectFor, renderDieline } from "./packaging.js";
 import { withUsage } from "./usage.js";
+import { createRefs, REF_USES } from "./refs.js";
 import { noteDocx } from "./docx-note.js";
 import { caseById, CASES } from "../shared/cases.js";
 import { SECTION_TYPES, SECTION_MODES, PHOTO_ROLES, QUICK, scanRisky, paletteRoles } from "../shared/suite.js";
@@ -19,6 +20,7 @@ import { SECTION_TYPES, SECTION_MODES, PHOTO_ROLES, QUICK, scanRisky, paletteRol
 // "商品全套": one product → profile → note → product images → detail page.
 // Each AI step is one multimodal call; image generation reuses the job queue.
 export function registerSuites({ app, store, users, styles, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir }) {
+  const refs = createRefs(dataDir);
   const root = path.join(dataDir, "suites");
   fs.mkdirSync(root, { recursive: true });
   store.db.exec(`CREATE TABLE IF NOT EXISTS suites (id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
@@ -122,7 +124,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     // Farm produce and seafood choose among listing layouts, with the proven best-seller first.
     const farm = FARM_CATEGORIES.includes(s.profile.category);
     const pool = farm ? styleCandidates().filter((x) => x.layout && x.categories.includes(s.profile.category)) : styleCandidates();
-    s.looks = await proposeLooks(textAI, s.profile, pool.length >= 3 ? pool : styleCandidates(), imgPaths(s, rep), farm ? { must: SAFE_LAYOUT } : {});
+    s.looks = await proposeLooks(textAI, s.profile, pool.length >= 3 ? pool : styleCandidates(), imgPaths(s, rep), farm ? { must: FIRST_LAYOUT[s.profile.category] || SAFE_LAYOUT } : {});
     if (!s.look && s.looks.length) s.look = s.looks[0];
   }
   const steps = {
@@ -159,13 +161,15 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       const used = new Map();
       const items = c.shots.map((shot) => {
         const photos = pickPhotos(s, shot.photos, shot.noText ? 1 : 2, used);
-        return { id: shot.id, title: shot.title, brief: shot.brief, content: shotContent(shot.id, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), files: photos.map((p) => p.file), noText: shot.noText, optional: shot.optional };
+        // A shot that needs facts the merchant hasn't given (e.g. weight for the size shot) waits.
+        const optional = shot.optional || (shot.needs && !s.profile[shot.needs]);
+        return { id: shot.id, title: shot.title, brief: shot.brief, content: shotContent(shot.id, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), files: photos.map((p) => p.file), noText: shot.noText, optional, ...(shot.cinematic ? { cinematic: true } : {}) };
       });
       // The white-background picture has no words and no styling: nothing to plan.
       const planned = await planFrames(textAI, s.profile, items.filter((i) => i.files.length && !i.noText).map(({ files, noText, optional, ...rest }) => rest), { kind: "product", look: s.look });
       s.shots = items.map((it) => {
         const f = planned.find((p) => p.id === it.id);
-        return { id: it.id, title: it.title, enabled: !!it.files.length && !it.optional, photos: it.files, texts: it.noText ? [] : f?.texts || [], scene: it.noText ? it.brief : f?.scene || it.brief, missing: it.files.length ? "" : `缺少${it.title}需要的实拍图` };
+        return { id: it.id, title: it.title, ...(it.cinematic ? { cinematic: true } : {}), enabled: !!it.files.length && !it.optional, photos: it.files, texts: it.noText ? [] : f?.texts || [], scene: it.noText ? it.brief : f?.scene || it.brief, missing: it.files.length ? "" : `缺少${it.title}需要的实拍图` };
       });
     },
     async detail(s) {
@@ -179,7 +183,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         let photos = pickPhotos(s, roles, 2, used);
         if (!photos.length) photos = pickPhotos(s, ["product", "detail"], 1, used);
         x.photos = photos.map((p) => p.file);
-        return { id: x.id, title: SECTION_TYPES[x.type].name, brief: sectionBrief(x.type, s.profile), content: sectionContent(x.type, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`) };
+        return { id: x.id, title: SECTION_TYPES[x.type].name, brief: sectionBrief(x.type, s.profile), content: sectionContent(x.type, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), ...(x.cinematic ? { cinematic: true } : {}) };
       });
       // Background screens: the text is typeset on top, so the picture only sets the mood.
       for (const x of s.sections.filter((y) => y.mode === "bg")) {
@@ -241,7 +245,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       hero: `首屏：${p.name}，包装和实物同框，大标题写品名，副标题一句概念`,
       why: `为什么是${p.origin || "这里"}：大标题 + 3 个关键数字/关键词（来自 content.cards），配产地或商品实拍`,
       origin: `产地/货源实景：${p.shipFrom || p.origin}`,
-      compare: "对比：左右或上下分屏，我们 vs 对方，2-3 个差异点用短词标注（来自 content.rows）。“对方”一侧只用中性的示意（图标、剪影、文字格或同款中性摆放），不要画成发白、发灰、变质、脏乱等难看的样子，也不要出现别家的品牌或包装——广告法不允许贬低同行",
+      compare: "对比：左右或上下分屏，我们 vs 对方，2-3 个差异点用短词标注（来自 content.rows）。“普通的”一侧画同类普通货（不出现任何品牌、店名、包装），左右两张卡片各配打勾/打叉列表",
       pick: "怎么挑：商品特写，用引线标注 2-3 个看点（来自 content.points）",
       material: "选材与细节：近距离质感特写",
       usage: `吃法/用法：${p.usage?.headline || "成品展示"}`,
@@ -255,12 +259,14 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     const empty = { why: !p.why?.headline, compare: !p.compare?.rows?.length, pick: !p.pick?.points?.length, faq: !p.faq?.headline, normal: !p.normal?.items?.length, notice: !p.notice?.length };
     return c.sections.map((x, i) => {
       const modes = SECTION_TYPES[x.type].modes;
-      const hasPhoto = SECTION_TYPES[x.type].photo.length === 0 || pickPhotos(s, SECTION_TYPES[x.type].photo, 1).length > 0;
+      // Cinematic screens rebuild the scene (sea, boat, splash) around the real product.
+      const roles = x.cinematic ? [...SECTION_TYPES[x.type].photo, "product"] : SECTION_TYPES[x.type].photo;
+      const hasPhoto = roles.length === 0 || pickPhotos(s, roles, 1).length > 0;
       let mode = x.mode;
       if (empty[x.type]) mode = "off";
       // No matching photo: never let the image model invent it — typeset over an AI background instead.
       if ((mode === "ai" || mode === "photo") && !hasPhoto) mode = modes.includes("bg") ? "bg" : modes.includes("tpl") ? "tpl" : "off";
-      return { id: `${x.type}-${i}`, type: x.type, mode, photos: [], texts: [], scene: "" };
+      return { id: `${x.type}-${i}`, type: x.type, mode, ...(x.cinematic ? { cinematic: true } : {}), photos: [], texts: [], scene: "" };
     });
   }
 
@@ -384,7 +390,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
   const cleanTexts = (list) =>
     list
       .slice(0, 6)
-      .map((t) => ({ role: ["headline", "sub", "point"].includes(t?.role) ? t.role : "point", text: String(t?.text || "").trim().slice(0, 20) }))
+      .map((t) => ({ role: ["headline", "sub", "point", "tag"].includes(t?.role) ? t.role : "point", text: String(t?.text || "").trim().slice(0, t?.role === "tag" ? 30 : 20) }))
       .filter((t) => t.text);
   const needProfile = (s) => {
     if (!s.profile) throw new AppError("请等商品档案整理完成");
@@ -455,6 +461,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       : s.sections.filter((x) => x.mode === "ai" || x.mode === "bg");
     if (!frames.length) throw new AppError(kind === "shots" ? "请先规划商品图" : "详情页没有需要 AI 出图的屏");
     if (frames.some((f) => !f.scene)) throw new AppError("请先让 AI 规划画面");
+    const refTaken = new Map();
     const params = {
       version: 3,
       skillId: kind === "shots" ? "product" : "detail",
@@ -466,7 +473,11 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         const bg = f.mode === "bg";
         const usesAI = f.photos.some((file) => s.photos.find((p) => p.file === file)?.ai);
         const texts = bg ? [] : usesAI && s.aiLabel !== false ? [...f.texts, { role: "tag", text: AI_LABEL }] : f.texts;
+        const kindId = f.type || f.id;
+        const ref = bg || f.id === "white" ? null : refs.pick(s.profile.category, kindId, refTaken);
         return {
+        ...(ref ? { styleRefs: [ref] } : {}),
+        ...(f.cinematic ? { photoUse: "hero" } : {}),
         title: f.title || SECTION_TYPES[f.type]?.name || "",
         textMode: bg ? "overlay" : texts.length ? "ai" : "none",
         layout: bg ? "center" : texts.length ? "free" : "none",
@@ -488,8 +499,12 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       suiteId: s.id,
       brandColor: direction(s).palette[1] || "#e8541e",
     };
+    // Reference images live in the internal library, not with the product's photos.
+    const extra = {};
+    for (const f of params.frames) for (const r of f.styleRefs || []) extra[r] = refs.file(r);
+    params.inputs = [...new Set([...params.inputs, ...Object.keys(extra)])];
     const holder = { status: (code) => ({ json: (job) => (holder.result = { code, job }) }) };
-    await createJob(req, holder, params, dirOf(s.id));
+    await createJob(req, holder, params, dirOf(s.id), null, extra);
     const latest = read(s.id);
     latest.jobs = { ...(latest.jobs || {}), [kind]: holder.result.job.id };
     save(latest);
@@ -603,6 +618,34 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     await fsp.copyFile(await regularFile(path.join(jobsDir, job.id, job.manifest.exportId), asset.name), path.join(dirOf(s.id), file));
     s.photos.push({ file, role: "cooked", desc: `AI 示意：${job.params.dishMethod || "成品菜"}`, usable: true, ai: true, source: "ai", fromJob: `${job.id}/${asset.name}` });
     res.json(view(save(s)));
+  });
+  // ---- Internal reference library (admin only) ----
+  const refUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024, files: 20 } });
+  const adminOnlyHere = (req) => {
+    if (req.user?.role !== "admin") throw new AppError("只有管理员可以管理素材库", 403);
+  };
+  app.get("/api/admin/refs", (req, res) => {
+    adminOnlyHere(req);
+    res.json({ refs: refs.list(), uses: REF_USES });
+  });
+  app.post("/api/admin/refs", refUpload.array("images", 20), async (req, res) => {
+    adminOnlyHere(req);
+    if (!req.files?.length) throw new AppError("请选择图片");
+    const uses = String(req.body?.uses || "").split(/[,，\s]+/).filter(Boolean);
+    const added = [];
+    for (const f of req.files) added.push(await refs.add(f.buffer, { uses, category: req.body?.category || "生鲜水产", note: req.body?.note || "" }));
+    res.json({ added, refs: refs.list() });
+  });
+  app.get("/api/admin/refs/:file", async (req, res) => {
+    adminOnlyHere(req);
+    const f = refs.file(req.params.file);
+    if (!f) throw new AppError("没有这张参考图", 404);
+    res.sendFile(f);
+  });
+  app.delete("/api/admin/refs/:file", (req, res) => {
+    adminOnlyHere(req);
+    refs.remove(req.params.file);
+    res.json({ refs: refs.list() });
   });
   // ---- Packaging: an outer carton / gift box printed around the merchant's foam box ----
   // Designed before product shots and the detail page, which then show the new box.

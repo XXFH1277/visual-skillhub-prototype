@@ -16,7 +16,9 @@ export function frameInputs(params, index) {
   if (params.operation === "tweak") return [...params.inputs];
   const frame = params.frames[index];
   const files = frame?.photos?.length ? [...frame.photos] : [...params.inputs];
-  if (params.styleRef && params.frames[index]?.textMode !== "overlay") files.push(params.styleRef);
+  // A picked reference from the internal library replaces the generic style sample.
+  if (frame?.styleRefs?.length) files.push(...frame.styleRefs);
+  else if (params.styleRef && frame?.textMode !== "overlay") files.push(params.styleRef);
   return files;
 }
 
@@ -57,6 +59,8 @@ export function framePrompt(params, index) {
           ? `图${n}：生鲜实拍${note}——只用来看食材本身（品种、大小、颜色、纹理），成品里的食材要和它一致；不要照搬它的背景、容器和构图。`
           : frame.photoUse === "print"
             ? `图${n}：商品实拍${note}——包装上的商品图案以它为准（品种、颜色、形状一致），可以做成干净的摄影抠图或精致插画；不要照搬它的背景和容器。`
+            : frame.photoUse === "hero"
+              ? `图${n}：商家实拍${note}——只用来确定商品长什么样（品种、外形、颜色、鳞片/纹理、大小比例），画面里的商品必须是它；场景完全重新构图（手托出水、水花、海面渔船、戏剧光），不要照搬它的背景、容器和摆放。`
             : frame.photoUse === "artwork"
               ? `图${n}：包装平面设计稿${note}——效果图里包装上的图案、文字、颜色、版式必须和它完全一致，只是贴到立体盒子上，不要重新设计。`
               : `图${n}：商家实拍${note}——画面以它为基础重新布光、构图和排版；商品/包装的形状、颜色、图案、Logo 和文字保持真实，不重新设计。`,
@@ -75,6 +79,10 @@ export function framePrompt(params, index) {
   if (refs > 0) {
     roles.push(`图${n}${refs > 1 ? `–图${n + refs - 1}` : ""}：商家给的风格参考——照着它的色调、光线、道具和排版气质做，但不要复制其中的商品、文字和 Logo。`);
     n += refs;
+  }
+  for (const r of frame.styleRefs || []) {
+    roles.push(`图${n}：优秀设计参考——学它的构图张力、字体气质（书法大字、金字、竖排、大小错落）、色调光影和装饰层次，做出同等水准；不要照搬里面的商品、文字、店名、印章、水印和 Logo。`);
+    n++;
   }
   if (files.includes(params.styleRef))
     roles.push(`图${n}：风格样图——只借鉴它的视觉系统（色调、光、道具类型、排版气质），里面的商品和文字与本次无关，不要出现。`);

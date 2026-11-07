@@ -538,6 +538,23 @@ export const styleById = (id) => STYLES.find((s) => s.id === id);
 // best-seller's 10 main images + 21-screen detail page).
 export const LAYOUT_STYLES = [
   {
+    id: "ocean-gold",
+    name: "海味大片",
+    tagline: "深海蓝水纹、书法金字、手托出水的瞬间，像餐厅广告大片",
+    categories: ["生鲜水产"],
+    types: ["main", "selling", "detail", "poster"],
+    tone: "冲击",
+    sample: { product: "东海大黄鱼", headline: "源头产地" },
+    palette: ["#0e2a3f", "#c9a45c", "#c8352b"],
+    props: "深海蓝水面与水纹、飞溅的水花和水珠、碎冰、渔船/渔网/海面（首屏和产地）、一只手托起商品",
+    light: "戏剧性侧逆光，水珠和鳞片高光闪亮，背景压暗，主体饱满发亮",
+    camera: "商品被手托起或腾在水花中，占画面 50–60%，低角度略仰，背景虚化的海面或渔船；内页实物特写放进带中式窗格圆角的画框",
+    type: "毛笔书法大字（金色渐变、烫金质感，可竖排，主次大小错落）+ 宋体细字说明；一行英文手写体做装饰；画面底部半透明英文大写水印；红色小印章",
+    layout: "首屏：书法大标题竖排压在画面一侧，副标题与日期放进圆角细框胶囊，右下角红色数字条（如净含量、规格）；内页：统一藏青底，图片放进中式窗格圆角画框，菜名/卖点放进金色牌匾，质检用四宫格配打勾图标，对比用左右两张卡片（我们的 / 普通的）各配打勾和打叉列表",
+    avoid: "米白平铺底、塑料感贴纸、杂乱色块、文字压住商品主体",
+    core: "cinematic premium Chinese seafood advertising, deep navy water texture, splashing water and droplets, hand lifting the glistening product, gold-foil brush calligraphy headlines, vertical text, red seal stamp, elegant serif captions, dramatic rim light",
+  },
+  {
     id: "promo-bold",
     name: "爆款大字报",
     tagline: "粗黑大字、品牌色块、胶囊标签，一眼看懂卖什么",
@@ -678,3 +695,5 @@ STYLES.push(...LAYOUT_STYLES);
 // Farm produce and seafood: the listing's graphic system, with the proven best-seller layout as the safe default.
 export const FARM_CATEGORIES = ["生鲜水产", "农副产品"];
 export const SAFE_LAYOUT = "promo-bold";
+// The look a category opens with: seafood goes cinematic, farm produce stays bold and clear.
+export const FIRST_LAYOUT = { 生鲜水产: "ocean-gold", 农副产品: "promo-bold" };
