@@ -1,5 +1,5 @@
 import { codexRunner, checkCodex } from "./runner.js";
-import { imageConfig, createImageRunner, checkImageApi } from "./image-api.js";
+import { imageConfig, createImageRunner, checkImageApi, probeImageModel } from "./image-api.js";
 import { imageSize, upscaleSize } from "../shared/generation.js";
 import { AppError } from "./store.js";
 
@@ -36,6 +36,9 @@ export function createProviders({
     validate,
     describe,
     list: () => Object.keys(names).map(describe),
+    // Everything the relay key can see, not just the two configured models.
+    allModels: () => states.api?.models || [],
+    probe: (opts) => probeImageModel(config, opts, fetchImpl),
     async check(mode) {
       validate(mode);
       states[mode] =

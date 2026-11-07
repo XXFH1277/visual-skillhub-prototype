@@ -129,3 +129,21 @@ test("proofreading accepts the shapes models actually answer in", async () => {
   assert.deepEqual(readLines('{"lines":"清蒸\\n白灼"}'), ["清蒸", "白灼"]);
   assert.deepEqual(readLines("清蒸\n白灼"), ["清蒸", "白灼"]);
 });
+
+test("image probe reports what a relay model returns (SVG, error) without leaking the key", async () => {
+  const { probeImageModel } = await import("../backend/image-api.js");
+  const config = { base: "https://relay.example/v1/", key: "sk-secret" };
+  let sent;
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="5"/></svg>';
+  const ok = await probeImageModel(config, { model: "gpt-image-2.6-sunburst", prompt: "logo", format: "svg", background: "transparent" }, async (url, init) => {
+    sent = JSON.parse(init.body);
+    return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from(svg).toString("base64") }] }), { status: 200 });
+  });
+  assert.equal(sent.output_format, "svg");
+  assert.equal(sent.background, "transparent");
+  assert.equal(ok.kind, "svg");
+  const bad = await probeImageModel(config, { model: "nope", prompt: "x" }, async () => new Response("model nope not found for sk-secret", { status: 404 }));
+  assert.equal(bad.ok, false);
+  assert.equal(bad.status, 404);
+  assert.doesNotMatch(bad.message, /sk-secret/);
+});

@@ -279,6 +279,33 @@ export async function createWorkspace({
   // ---- Admin: accounts, invite codes, top-ups ----
   app.use("/api/admin", adminOnly);
   app.get("/api/admin", (_req, res) => res.json({ users: users.list(), invites: users.invites() }));
+  // Which image models the relay offers, and a one-off test of any of them (SVG, transparent, ...).
+  app.get("/api/admin/image-models", async (_req, res) => {
+    await registry.check("api");
+    res.json({ models: registry.allModels(), configured: registry.describe("api").modelsByResolution });
+  });
+  app.post("/api/admin/image-probe", async (req, res) => {
+    const b = req.body || {};
+    const model = String(b.model || "");
+    if (!/^[\w.\-]{3,60}$/.test(model)) throw new AppError("模型名无效");
+    const format = ["png", "jpeg", "webp", "svg"].includes(b.format) ? b.format : "png";
+    const size = /^\d{3,4}x\d{3,4}$/.test(b.size || "") ? b.size : "1024x1024";
+    const prompt = String(b.prompt || "").slice(0, 2000) || "一个简洁的海鲜品牌 logo：一只橙红色的虾和一道蓝色浪花，扁平矢量风格，下方写“鲜海记”三个字，白色背景";
+    const r = await registry.probe({ model, prompt, size, format, background: b.background === "transparent" ? "transparent" : undefined });
+    if (r.bytes) {
+      const dir = path.join(dataDir, "probe");
+      await fsp.mkdir(dir, { recursive: true });
+      r.file = `${model}-${Date.now()}.${r.kind === "unknown" ? "bin" : r.kind}`;
+      await fsp.writeFile(path.join(dir, r.file), r.bytes);
+      r.size = r.bytes.length;
+      if (r.kind === "svg") r.svgHead = r.bytes.subarray(0, 400).toString("utf8");
+      delete r.bytes;
+    }
+    res.json(r);
+  });
+  app.get("/api/admin/probe/:file", async (req, res) => {
+    res.sendFile(await regularFile(path.join(dataDir, "probe"), req.params.file));
+  });
   app.post("/api/admin/invites", (req, res) => res.json({ code: users.createInvite(req.body || {}), invites: users.invites() }));
   app.post("/api/admin/invites/:code/revoke", (req, res) => {
     users.revokeInvite(req.params.code);

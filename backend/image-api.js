@@ -280,3 +280,45 @@ export function createImageRunner(config, fetchImpl = fetch) {
     }
   };
 }
+
+// Admin probe: try one model on the relay (e.g. a new gpt-image-2.6, SVG output,
+// transparent background) and keep whatever comes back for inspection. Never retries.
+export async function probeImageModel(config, { model, prompt, size = "1024x1024", format = "png", background }, fetchImpl = fetch) {
+  if (!config) return { ok: false, message: "生图 API 未配置" };
+  const body = { model, prompt, size, n: 1 };
+  if (format !== "png") body.output_format = format;
+  if (background) body.background = background;
+  const started = Date.now();
+  let response;
+  try {
+    response = await fetchImpl(new URL("images/generations", config.base), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.key}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      redirect: "error",
+      signal: AbortSignal.timeout(300000),
+    });
+  } catch (error) {
+    return { ok: false, seconds: Math.round((Date.now() - started) / 1000), message: `请求失败：${error.name}` };
+  }
+  const seconds = Math.round((Date.now() - started) / 1000);
+  const text = Buffer.from(await response.arrayBuffer()).toString("utf8");
+  const redact = (t) => t.replaceAll(config.key, "[redacted]");
+  if (!response.ok) return { ok: false, status: response.status, seconds, message: redact(text).slice(0, 600) };
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return { ok: false, status: response.status, seconds, message: "返回的不是 JSON：" + redact(text).slice(0, 300) };
+  }
+  const item = data.data?.[0] || {};
+  const out = { ok: true, status: response.status, seconds, keys: Object.keys(item), usage: data.usage || null, outputFormat: data.output_format || null };
+  if (typeof item.b64_json === "string") {
+    const bytes = Buffer.from(item.b64_json, "base64");
+    const head = bytes.subarray(0, 200).toString("utf8").trimStart();
+    out.kind = /^(<\?xml|<svg)/i.test(head) ? "svg" : bytes[0] === 0x89 ? "png" : bytes[0] === 0xff ? "jpeg" : head.startsWith("RIFF") ? "webp" : "unknown";
+    out.bytes = bytes;
+  } else if (typeof item.url === "string") out.url = item.url;
+  else if (typeof item.svg === "string") (out.kind = "svg"), (out.bytes = Buffer.from(item.svg));
+  return out;
+}

@@ -199,3 +199,15 @@ test("merchants only see their own jobs, products, drafts and uploaded styles", 
   assert.equal((await b.request("/api/styles/" + style.id, { method: "DELETE" })).status, 403);
   assert.equal((await a.request("/api/styles/" + style.id, { method: "DELETE" })).status, 200);
 });
+
+test("admin can list every relay image model and probe one (merchants can't)", async (t) => {
+  const { browser } = await setup(t);
+  const admin = browser();
+  await admin.post("/api/login", { code: ACCESS });
+  // The fake provider has no relay: the probe answers with a reason instead of failing.
+  const r = await admin.post("/api/admin/image-probe", { model: "gpt-image-2.6-sunburst", format: "svg" });
+  assert.ok([200, 500].includes(r.status));
+  assert.equal((await admin.post("/api/admin/image-probe", { model: "../etc" })).status, 400);
+  const guest = browser();
+  assert.equal((await guest.post("/api/admin/image-probe", { model: "x-model" })).status, 401);
+});
