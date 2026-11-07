@@ -11,6 +11,7 @@ import { importNote } from "./importers.js";
 import { labelPhotos, buildProfile, normalizeProfile, writeNote, planFrames, proposeLooks } from "./suite-ai.js";
 import { STYLES, FARM_CATEGORIES, SAFE_LAYOUT } from "../shared/styles.js";
 import { PACK_KINDS, packSize, mainFace, aspectFor, renderDieline } from "./packaging.js";
+import { withUsage } from "./usage.js";
 import { noteDocx } from "./docx-note.js";
 import { caseById, CASES } from "../shared/cases.js";
 import { SECTION_TYPES, SECTION_MODES, PHOTO_ROLES, QUICK, scanRisky, paletteRoles } from "../shared/suite.js";
@@ -71,7 +72,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     s.tasks = { ...(s.tasks || {}), [name]: { status: "running", startedAt: Date.now() } };
     save(s);
     running++;
-    (async () => {
+    withUsage({ suiteId: id, userId: s.userId || null, purpose: name }, async () => {
       try {
         if (!textAI.describe().ready) throw new Error("未配置 Kimi，请在 .env 填写 KIMI_API_KEY");
         const latest = read(id);
@@ -91,7 +92,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       } finally {
         running--;
       }
-    })();
+    });
     return read(id);
   }
 

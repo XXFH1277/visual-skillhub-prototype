@@ -147,3 +147,17 @@ test("image probe reports what a relay model returns (SVG, error) without leakin
   assert.equal(bad.status, 404);
   assert.doesNotMatch(bad.message, /sk-secret/);
 });
+
+test("usage records carry the product and step they were made for", async () => {
+  const { setUsageSink, recordUsage, withUsage } = await import("../backend/usage.js");
+  const seen = [];
+  setUsageSink((u) => seen.push(u));
+  await withUsage({ suiteId: "s1", purpose: "profile" }, async () => {
+    await new Promise((r) => setTimeout(r, 5));
+    recordUsage({ kind: "text", promptTokens: 1200, completionTokens: 300 });
+    await withUsage({ purpose: "proofread", jobId: "j1" }, async () => recordUsage({ kind: "text", promptTokens: 2000 }));
+  });
+  recordUsage({ kind: "image" });
+  setUsageSink(null);
+  assert.deepEqual(seen.map((u) => [u.suiteId, u.purpose, u.jobId]), [["s1", "profile", undefined], ["s1", "proofread", "j1"], [undefined, undefined, undefined]]);
+});

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { Store, SKILLS, AppError } from "./store.js";
 import { normalizeUpload, regularFile, deliver } from "./media.js";
+import { setUsageSink, withUsage } from "./usage.js";
 import { JobQueue } from "./queue.js";
 import { createProviders } from "./providers.js";
 import { createTextAI, compareTexts } from "./text-ai.js";
@@ -80,6 +81,20 @@ export async function createWorkspace({
       .prepare("INSERT OR REPLACE INTO settings VALUES('access-code',?)")
       .run(fingerprint);
   }
+  // Every model call: who it was for, which step, how long, how many tokens (when the API says).
+  store.db.exec(`CREATE TABLE IF NOT EXISTS ai_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, kind TEXT NOT NULL, model TEXT,
+    purpose TEXT, suite_id TEXT, job_id TEXT, user_id TEXT, seconds INTEGER, images INTEGER,
+    prompt_tokens INTEGER, completion_tokens INTEGER, reasoning_tokens INTEGER, detail TEXT)`);
+  const usageInsert = store.db.prepare(
+    "INSERT INTO ai_usage(at,kind,model,purpose,suite_id,job_id,user_id,seconds,images,prompt_tokens,completion_tokens,reasoning_tokens,detail) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+  );
+  setUsageSink((u) =>
+    usageInsert.run(
+      new Date().toISOString(), u.kind, u.model ?? null, u.purpose ?? null, u.suiteId ?? null, u.jobId ?? null, u.userId ?? null,
+      u.seconds ?? null, u.images ?? null, u.promptTokens ?? null, u.completionTokens ?? null, u.reasoningTokens ?? null, u.detail ?? null,
+    ),
+  );
   const registry =
     providers ||
     createProviders({
@@ -97,7 +112,9 @@ export async function createWorkspace({
     createTextAI({ codexReady: () => registry.describe("codex").ready });
   await textAI.check?.();
   // After generation: let the vision model read back text the image model drew.
-  const proofread = async (job, dir, signal, phase) => {
+  const proofread = (job, dir, signal, phase) =>
+    withUsage({ jobId: job.id, suiteId: job.params.suiteId || null, userId: job.userId || null, purpose: "proofread" }, () => proofreadNow(job, dir, signal, phase));
+  const proofreadNow = async (job, dir, signal, phase) => {
     const p = job.params;
     if (!p.frames || !textAI.describe().ready) return;
     const targets = p.frames.map((f, i) => [i, textsForImage(p.skillId, f)]).filter(([, t]) => t.length);
@@ -302,6 +319,19 @@ export async function createWorkspace({
       delete r.bytes;
     }
     res.json(r);
+  });
+  // Token / call report: per product (suite) and step, or the latest calls.
+  app.get("/api/admin/usage", (req, res) => {
+    const suiteId = String(req.query.suite || "");
+    const where = suiteId ? "WHERE suite_id = ?" : "WHERE at >= datetime('now','-7 days')";
+    const args = suiteId ? [suiteId] : [];
+    const byStep = store.db
+      .prepare(`SELECT kind, purpose, model, count(*) AS calls, sum(images) AS images, sum(seconds) AS seconds,
+        sum(prompt_tokens) AS promptTokens, sum(completion_tokens) AS completionTokens, sum(reasoning_tokens) AS reasoningTokens
+        FROM ai_usage ${where} GROUP BY kind, purpose, model ORDER BY kind, purpose`)
+      .all(...args);
+    const latest = store.db.prepare(`SELECT * FROM ai_usage ${where} ORDER BY id DESC LIMIT 40`).all(...args);
+    res.json({ byStep, latest });
   });
   app.get("/api/admin/probe/:file", async (req, res) => {
     res.sendFile(await regularFile(path.join(dataDir, "probe"), req.params.file));

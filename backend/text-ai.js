@@ -1,3 +1,4 @@
+import { recordUsage } from "./usage.js";
 import { parseJsonObject } from "./json.js";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -182,6 +183,7 @@ export function createTextAI({
       reasoningTokens: u.completion_tokens_details?.reasoning_tokens ?? null,
     });
     recent.length = Math.min(recent.length, 12);
+    recordUsage({ kind: "text", model: config.model, seconds: recent[0].seconds, images: images.length, promptTokens: recent[0].promptTokens, completionTokens: recent[0].completionTokens, reasoningTokens: recent[0].reasoningTokens });
     const answer = body?.choices?.[0]?.message?.content;
     if (typeof answer !== "string" || !answer.trim()) throw new Error("Kimi 没有返回内容");
     return answer.trim();

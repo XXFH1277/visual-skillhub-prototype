@@ -1,3 +1,4 @@
+import { recordUsage, withUsage } from "./usage.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
@@ -110,8 +111,10 @@ export function createImageRunner(config, fetchImpl = fetch) {
     const started = Date.now();
     let phase = "prepare";
     // Frames are independent: run a few at once (the relay takes ~1 min per image).
-    const runFrame = async (i) => {
+    const runFrame = (i) => withUsage({ jobId: job.id, suiteId: p.suiteId || null, purpose: p.packStep ? `pack-${p.packStep}` : p.operation || p.skillId }, () => runFrameNow(i));
+    const runFrameNow = async (i) => {
         combined.throwIfAborted();
+        const frameStarted = Date.now();
         const form = new FormData();
         form.set("model", p.imageModel);
         // The relay's 4K model owns upscale dimensions. `auto` preserves arbitrary
@@ -167,6 +170,16 @@ export function createImageRunner(config, fetchImpl = fetch) {
         }
         phase = "read-response";
         const body = await readJson(response, 64 * 1024 * 1024);
+        // The relay may or may not pass token usage through; seconds and count always.
+        recordUsage({
+          kind: "image",
+          model: p.imageModel,
+          seconds: Math.round((Date.now() - frameStarted) / 1000),
+          images: files.length,
+          promptTokens: body.usage?.input_tokens ?? null,
+          completionTokens: body.usage?.output_tokens ?? null,
+          detail: body.usage ? JSON.stringify(body.usage).slice(0, 400) : null,
+        });
         if (
           body.data?.length !== 1 ||
           typeof body.data[0]?.b64_json !== "string"
@@ -285,7 +298,7 @@ export function createImageRunner(config, fetchImpl = fetch) {
 // transparent background) and keep whatever comes back for inspection. Never retries.
 export async function probeImageModel(config, { model, prompt, size = "1024x1024", format = "png", background }, fetchImpl = fetch) {
   if (!config) return { ok: false, message: "生图 API 未配置" };
-  const body = { model, prompt, size, n: 1 };
+  const body = { model, prompt, size, n: 1, response_format: "b64_json" };
   if (format !== "png") body.output_format = format;
   if (background) body.background = background;
   const started = Date.now();
@@ -318,7 +331,33 @@ export async function probeImageModel(config, { model, prompt, size = "1024x1024
     const head = bytes.subarray(0, 200).toString("utf8").trimStart();
     out.kind = /^(<\?xml|<svg)/i.test(head) ? "svg" : bytes[0] === 0x89 ? "png" : bytes[0] === 0xff ? "jpeg" : head.startsWith("RIFF") ? "webp" : "unknown";
     out.bytes = bytes;
-  } else if (typeof item.url === "string") out.url = item.url;
+  } else if (typeof item.url === "string") {
+    out.url = item.url;
+    try {
+      const r = await fetchImpl(item.url, { signal: AbortSignal.timeout(60000) });
+      const bytes = Buffer.from(await r.arrayBuffer());
+      out.kind = bytes[0] === 0x89 ? "png" : bytes[0] === 0xff ? "jpeg" : bytes.subarray(0, 4).toString() === "RIFF" ? "webp" : /^(<\?xml|<svg)/i.test(bytes.subarray(0, 200).toString("utf8").trimStart()) ? "svg" : "unknown";
+      out.bytes = bytes;
+    } catch {
+      out.message = "图片地址下载失败";
+    }
+  }
   else if (typeof item.svg === "string") (out.kind = "svg"), (out.bytes = Buffer.from(item.svg));
+  // Is there real transparency (not a drawn checkerboard)?
+  if (out.bytes && ["png", "webp"].includes(out.kind)) {
+    try {
+      const img = sharp(out.bytes);
+      const meta = await img.metadata();
+      out.width = meta.width;
+      out.height = meta.height;
+      out.hasAlpha = Boolean(meta.hasAlpha);
+      if (meta.hasAlpha) {
+        const { data } = await img.extractChannel("alpha").raw().toBuffer({ resolveWithObject: true });
+        let clear = 0;
+        for (let i = 0; i < data.length; i += 16) if (data[i] < 250) clear++;
+        out.transparentShare = Math.round((clear / (data.length / 16)) * 1000) / 1000;
+      }
+    } catch {}
+  }
   return out;
 }
