@@ -320,6 +320,28 @@ export async function createWorkspace({
     }
     res.json(r);
   });
+  // Try another text/vision model on the Kimi key: plain answer, then reading a picture with text.
+  app.post("/api/admin/text-probe", async (req, res) => {
+    const model = String(req.body?.model || "");
+    if (!/^[\w.\-]{3,60}$/.test(model)) throw new AppError("模型名无效");
+    if (!textAI.probe) throw new AppError("当前文字模型不支持试跑");
+    const out = { model };
+    try {
+      out.text = await withUsage({ purpose: "probe" }, () => textAI.probe(model));
+    } catch (error) {
+      out.textError = error.message;
+      return res.json(out);
+    }
+    // A bundled style sample with a Chinese headline: does it see images and read the text right?
+    const sample = styles.coverFile(String(req.body?.image || "promo-bold")) || styles.coverFile("appetite");
+    if (sample)
+      try {
+        out.vision = await withUsage({ purpose: "probe" }, () => textAI.probe(model, { image: sample }));
+      } catch (error) {
+        out.visionError = error.message;
+      }
+    res.json(out);
+  });
   // Token / call report: per product (suite) and step, or the latest calls.
   app.get("/api/admin/usage", (req, res) => {
     const suiteId = String(req.query.suite || "");

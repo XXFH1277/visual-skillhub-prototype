@@ -132,7 +132,7 @@ export function createTextAI({
   let available = null;
   const recent = [];
 
-  async function viaApi({ system, text, images = [], json = false }, signal) {
+  async function viaApi({ system, text, images = [], json = false, model }, signal) {
     const content = [
       ...(await Promise.all(images.map(async (f) => ({ type: "image_url", image_url: { url: await dataUrl(f) } })))),
       { type: "text", text },
@@ -144,7 +144,7 @@ export function createTextAI({
         method: "POST",
         headers: { Authorization: `Bearer ${config.key}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: config.model,
+          model: model || config.model,
           messages: [
             { role: "system", content: system },
             { role: "user", content },
@@ -183,7 +183,7 @@ export function createTextAI({
       reasoningTokens: u.completion_tokens_details?.reasoning_tokens ?? null,
     });
     recent.length = Math.min(recent.length, 12);
-    recordUsage({ kind: "text", model: config.model, seconds: recent[0].seconds, images: images.length, promptTokens: recent[0].promptTokens, completionTokens: recent[0].completionTokens, reasoningTokens: recent[0].reasoningTokens });
+    recordUsage({ kind: "text", model: model || config.model, seconds: recent[0].seconds, images: images.length, promptTokens: recent[0].promptTokens, completionTokens: recent[0].completionTokens, reasoningTokens: recent[0].reasoningTokens });
     const answer = body?.choices?.[0]?.message?.content;
     if (typeof answer !== "string" || !answer.trim()) throw new Error("Kimi 没有返回内容");
     return answer.trim();
@@ -307,6 +307,22 @@ export function createTextAI({
         signal,
       );
       return parseJsonObject(answer);
+    },
+    // Admin: try another model on the same key (does it answer, read images, how fast, how many tokens).
+    async probe(model, { image, signal } = {}) {
+      if (!config) throw new Error("未配置 Kimi");
+      const started = Date.now();
+      const answer = await viaApi(
+        {
+          model,
+          system: image ? "你是严格的文字校对员。逐行列出图片里能看到的全部文字，并用一句话说这张图拍的是什么。只输出 JSON：{\"lines\":[\"...\"],\"what\":\"...\"}" : "只输出 JSON。",
+          text: image ? "请看这张图。" : '回答：{"ok":true,"model":"你的模型名"}',
+          images: image ? [image] : [],
+          json: true,
+        },
+        signal,
+      );
+      return { model, seconds: Math.round((Date.now() - started) / 1000), usage: recent[0], answer: answer.slice(0, 600) };
     },
     // Proofread: list every visible line of text in a generated image.
     async readTexts(image, { signal } = {}) {
