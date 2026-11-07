@@ -20,7 +20,7 @@ import { CATEGORIES, IMAGE_TYPES, TONES } from "../shared/styles.js";
 export function textConfig(env = process.env) {
   const baseUrl = env.KIMI_API_BASE_URL || env.TEXT_API_BASE_URL || "https://api.moonshot.cn";
   const key = env.KIMI_API_KEY || env.TEXT_API_KEY;
-  const model = env.KIMI_MODEL || env.TEXT_API_MODEL || "kimi-k3";
+  const model = env.KIMI_MODEL || env.TEXT_API_MODEL || "kimi-k3.1-pro";
   if (!key) return null;
   const base = new URL(baseUrl);
   if (base.protocol !== "https:" || base.username || base.password)
@@ -249,7 +249,7 @@ export function createTextAI({
       const ids = ((await response.json())?.data || []).map((m) => m?.id).filter((id) => typeof id === "string");
       available = ids.filter((id) => /kimi|moonshot/i.test(id));
       if (ids.length && !ids.includes(config.model)) {
-        const prefer = ["kimi-k3", "kimi-k3.1-pro", "kimi-k2.6", "kimi-k2.5", "kimi-latest", "moonshot-v1-32k-vision-preview", "moonshot-v1-8k-vision-preview"];
+        const prefer = ["kimi-k3.1-pro", "kimi-k3", "kimi-k2.6", "kimi-k2.5", "kimi-latest", "moonshot-v1-32k-vision-preview", "moonshot-v1-8k-vision-preview"];
         const pick = prefer.find((id) => ids.includes(id)) || available.find((id) => /vision|k3|k2\.[5-9]/i.test(id));
         if (pick) {
           console.log(`Kimi 模型 ${config.model} 不在列表中，改用 ${pick}`);

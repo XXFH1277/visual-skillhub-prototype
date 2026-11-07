@@ -57,7 +57,7 @@
 | `IMAGE_API_BASE_URL` / `IMAGE_API_KEY` | 中转站地址与密钥 |
 | `IMAGE_API_MODEL_2K` / `IMAGE_API_MODEL_4K` | 出图模型 / 4K 提升模型 |
 | `GENERATION_PROVIDER` | `api`（中转站）或 `codex`（本机 Codex） |
-| `KIMI_API_BASE_URL` / `KIMI_API_KEY` / `KIMI_MODEL` | Kimi，需支持看图的模型，如 `kimi-k3` |
+| `KIMI_API_BASE_URL` / `KIMI_API_KEY` / `KIMI_MODEL` | Kimi，需支持看图的模型，默认 `kimi-k3.1-pro`（不输出思考过程，比 k3 便宜、快） |
 | `PORT` / `ACCESS_CODE` / `PUBLIC_ORIGIN` | 端口 / 访问码 / 公网地址（Cloudflare 隧道，见 `scripts/start.ps1 -Public`） |
 
 ## 目录
