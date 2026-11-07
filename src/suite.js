@@ -1,5 +1,12 @@
 import { toPng } from "html-to-image";
 
+// Long headlines break at their first comma (or before “vs”) rather than leaving one character alone on a line.
+const head = (text) => {
+  const v = String(text || "");
+  if (Array.from(v).length <= 9) return esc(v);
+  const m = v.match(/^(.{3,}?)[，,、]\s*(.+)$/) || v.match(/^(.{3,}?)\s+(vs\s*.+)$/i);
+  return m ? `${esc(m[1])}<br>${esc(m[2])}` : esc(v);
+};
 // Stat numbers are set big; longer ones (“48小时”) step down so they stay on one line.
 const bigSize = (t) => { const n = [...String(t)].length; return n > 5 ? "xs" : n > 3 ? "sm" : ""; };
 
@@ -653,15 +660,15 @@ export function initSuite(ctx) {
       compare: () => {
         const c = p.compare;
         const pics = s.photos.filter((ph) => ph.usable && ph.role === "compare").slice(0, 2);
-        return `<div class="tp-kicker">看得见的差别</div><h3 class="tp-head">${esc(t(c.headline) || `${c.ours} vs ${c.others}`)}</h3>
+        return `<div class="tp-kicker">看得见的差别</div><h3 class="tp-head">${head(t(c.headline) || `${c.ours} vs ${c.others}`)}</h3>
           ${pics.length ? `<div class="tp-pics">${pics.map((ph) => `<img src="${photoUrl(s, ph.file)}" alt="">`).join("")}</div>` : ""}
           <table class="tp-table"><tr><th></th><th class="ours">${esc(c.ours)}</th><th>${esc(c.others)}</th></tr>${c.rows.map((r) => `<tr><td>${esc(r.aspect)}</td><td class="ours">${esc(t(r.ours))}</td><td>${esc(r.others)}</td></tr>`).join("")}</table>
           ${c.note ? `<p class="tp-body">${esc(t(c.note))}</p>` : ""}`;
       },
-      pick: () => `<div class="tp-kicker">买之前看一眼</div><h3 class="tp-head">${esc(t(p.pick.headline) || "怎么挑")}</h3>
+      pick: () => `<div class="tp-kicker">买之前看一眼</div><h3 class="tp-head">${head(t(p.pick.headline) || "怎么挑")}</h3>
         <ol class="tp-points">${p.pick.points.map((x, i) => `<li><span>${String(i + 1).padStart(2, "0")}</span><div><b>${esc(t(x.title))}</b><p>${esc(t(x.detail))}</p></div></li>`).join("")}</ol>`,
       material: () => `<h3 class="tp-head">${esc(p.sellingPoints[0]?.title || "选材")}</h3><ol class="tp-points">${p.sellingPoints.map((x, i) => `<li><span>${String(i + 1).padStart(2, "0")}</span><div><b>${esc(t(x.title))}</b><p>${esc(t(x.detail))}</p></div></li>`).join("")}</ol>`,
-      normal: () => `<div class="tp-kicker">收到别担心</div><h3 class="tp-head">${esc(t(p.normal?.headline) || "这些是正常现象")}</h3>
+      normal: () => `<div class="tp-kicker">收到别担心</div><h3 class="tp-head">${head(t(p.normal?.headline) || "这些是正常现象")}</h3>
         <ol class="tp-points">${(p.normal?.items || []).map((x, i) => `<li><span>${String(i + 1).padStart(2, "0")}</span><div><b>${esc(t(x.title))}</b><p>${esc(t(x.detail))}</p></div></li>`).join("")}</ol>`,
       pack: () => `<h3 class="tp-head">从包装，到收货</h3><p class="tp-body">${esc(p.packaging)}</p>`,
       info: () => `<h3 class="tp-head">商品信息</h3><table class="tp-info">${[["品名", p.name], ["产地", p.origin], ["发货地", p.shipFrom], ["规格", p.spec], ["储存", p.storage], ["包装", p.packaging], ["快递", p.courier], ["发货时效", p.dispatch]]
