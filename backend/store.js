@@ -127,7 +127,7 @@ export class Store {
         !Object.hasOwn(SKILLS, params.skillId) ||
         !Number.isInteger(count) ||
         count < 1 ||
-        count > (params.skillId === "detail" ? 12 : 10)
+        count > 12
       )
         throw new AppError("无效的技能或张数");
       if (

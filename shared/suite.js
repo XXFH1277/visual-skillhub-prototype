@@ -44,6 +44,8 @@ export const SECTION_MODES = { ai: "AI 出图", bg: "AI 底图+排字", tpl: "�
 // Ad-law "极限词" that are fine in a private WeChat group but get listings punished on Taobao.
 export const RISKY_WORDS = [
   ["没有之一", "删除"],
+  ["最接近", "接近"],
+  ["远胜", "更胜一筹"],
   ["最好吃", "口碑好"],
   ["最好", "很好"],
   ["最佳", "很适合"],

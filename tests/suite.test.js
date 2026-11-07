@@ -134,13 +134,17 @@ test("merchant with a PDF note: import text + photos → profile → note/Word �
   await s.post(`/api/suites/${id}/shots/plan`, {});
   suite = await s.waitTask(id, "shots");
   // A seafood main-image set: 10 pictures, including after-sales and "this is normal" ones.
-  assert.equal(suite.shots.length, 10);
-  assert.ok(["spec", "service", "normal"].every((id) => suite.shots.some((x) => x.id === id)));
+  assert.equal(suite.shots.length, 12);
+  assert.ok(["texture", "spec", "service", "normal", "white"].every((id) => suite.shots.some((x) => x.id === id)));
+  const white = suite.shots.find((x) => x.id === "white");
+  assert.deepEqual(white.texts, []);
+  assert.match(white.scene, /纯白背景/);
+  assert.equal(suite.shots.find((x) => x.id === "gift").enabled, false, "gift scene is optional");
   const shotAsk = s.ai.calls.filter((c) => c.system.includes("电商美工")).flatMap((c) => JSON.parse(c.text.split("要做的图：")[1]));
   assert.ok(shotAsk.find((x) => x.id === "service")?.content, "service shot gets the after-sales facts");
   const enabled = suite.shots.filter((x) => x.enabled);
   assert.ok(enabled.length >= 4);
-  assert.ok(enabled.every((x) => x.photos.length && x.scene.startsWith("画面")), JSON.stringify(enabled.map((x) => [x.id, x.photos.length, x.scene.slice(0, 20)])));
+  assert.ok(enabled.every((x) => x.photos.length && (x.id === "white" || x.scene.startsWith("画面"))), JSON.stringify(enabled.map((x) => [x.id, x.photos.length, x.scene.slice(0, 20)])));
   const gen = await s.post(`/api/suites/${id}/shots/generate`, {}, { "Idempotency-Key": randomUUID() });
   assert.equal(gen.status, 202, await gen.clone().text());
   const job = await s.terminal((await gen.json()).id);

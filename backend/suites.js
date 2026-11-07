@@ -159,12 +159,13 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       const used = new Map();
       const items = c.shots.map((shot) => {
         const photos = pickPhotos(s, shot.photos, 2, used);
-        return { id: shot.id, title: shot.title, brief: shot.brief, content: shotContent(shot.id, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), files: photos.map((p) => p.file) };
+        return { id: shot.id, title: shot.title, brief: shot.brief, content: shotContent(shot.id, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), files: photos.map((p) => p.file), noText: shot.noText, optional: shot.optional };
       });
-      const planned = await planFrames(textAI, s.profile, items.filter((i) => i.files.length).map(({ files, ...rest }) => rest), { kind: "product", look: s.look });
+      // The white-background picture has no words and no styling: nothing to plan.
+      const planned = await planFrames(textAI, s.profile, items.filter((i) => i.files.length && !i.noText).map(({ files, noText, optional, ...rest }) => rest), { kind: "product", look: s.look });
       s.shots = items.map((it) => {
         const f = planned.find((p) => p.id === it.id);
-        return { id: it.id, title: it.title, enabled: !!it.files.length, photos: it.files, texts: f?.texts || [], scene: f?.scene || it.brief, missing: it.files.length ? "" : `缺少${it.title}需要的实拍图` };
+        return { id: it.id, title: it.title, enabled: !!it.files.length && !it.optional, photos: it.files, texts: it.noText ? [] : f?.texts || [], scene: it.noText ? it.brief : f?.scene || it.brief, missing: it.files.length ? "" : `缺少${it.title}需要的实拍图` };
       });
     },
     async detail(s) {
