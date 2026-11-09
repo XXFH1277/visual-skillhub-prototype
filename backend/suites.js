@@ -478,6 +478,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         return {
         ...(ref ? { styleRefs: [ref] } : {}),
         ...(f.cinematic ? { photoUse: "hero" } : {}),
+        ...(f.id === "white" ? { cutout: true } : {}),
         title: f.title || SECTION_TYPES[f.type]?.name || "",
         textMode: bg ? "overlay" : texts.length ? "ai" : "none",
         layout: bg ? "center" : texts.length ? "free" : "none",
@@ -640,7 +641,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     adminOnlyHere(req);
     const f = refs.file(req.params.file);
     if (!f) throw new AppError("没有这张参考图", 404);
-    res.sendFile(f);
+    res.sendFile(f, { dotfiles: "allow" });
   });
   app.delete("/api/admin/refs/:file", (req, res) => {
     adminOnlyHere(req);

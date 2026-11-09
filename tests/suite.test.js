@@ -138,7 +138,7 @@ test("merchant with a PDF note: import text + photos → profile → note/Word �
   assert.ok(["texture", "spec", "service", "normal", "white"].every((id) => suite.shots.some((x) => x.id === id)));
   const white = suite.shots.find((x) => x.id === "white");
   assert.deepEqual(white.texts, []);
-  assert.match(white.scene, /纯白背景/);
+  assert.match(white.scene, /透明背景抠图/);
   assert.equal(suite.shots.find((x) => x.id === "gift").enabled, false, "gift scene is optional");
   const shotAsk = s.ai.calls.filter((c) => c.system.includes("电商美工")).flatMap((c) => JSON.parse(c.text.split("要做的图：")[1]));
   assert.ok(shotAsk.find((x) => x.id === "service")?.content, "service shot gets the after-sales facts");
@@ -433,11 +433,12 @@ test("internal reference library: admin uploads standout designs, each picture l
   const p = s.generated.at(-1);
   const hero = p.frames.find((f) => f.ref === "hero");
   assert.deepEqual(hero.styleRefs, [added.added[0].file]);
-  assert.equal(hero.photoUse, "hero", "main image is cinematic");
+  assert.equal(hero.photoUse, undefined, "main image is built on the real photo");
+  assert.equal(p.frames.find((f) => f.ref === "white").cutout, true, "white background is a transparent cut-out");
   assert.ok(p.inputs.includes(added.added[0].file));
   assert.equal(p.frames.find((f) => f.ref === "white")?.styleRefs, undefined, "white background learns from nothing");
   const { framePrompt } = await import("../backend/prompts.js");
   const prompt = framePrompt(p, p.frames.indexOf(hero));
   assert.match(prompt, /优秀设计参考/);
-  assert.match(prompt, /只用来确定商品长什么样/);
+  assert.match(prompt, /真实细节不要修掉/);
 });

@@ -24,7 +24,9 @@ export function imageConfig(env = process.env) {
   return {
     base: base.href,
     key: env.IMAGE_API_KEY,
-    model2k: env.IMAGE_API_MODEL_2K || "gpt-image-2.5",
+    model2k: env.IMAGE_API_MODEL_2K || "gpt-image-2.6-sunburst",
+    // Quick model for cut-outs (transparent background) such as the white-background shot.
+    modelFast: env.IMAGE_API_MODEL_FAST || "gpt-image-2.6-flare",
     model4k: env.IMAGE_API_MODEL_4K || "gpt-image-2-4K",
     timeoutMs: Number(env.GENERATION_TIMEOUT_MS) || 900000,
     concurrency: Math.min(Math.max(Number(env.IMAGE_API_CONCURRENCY) || 3, 1), 6),
@@ -115,8 +117,13 @@ export function createImageRunner(config, fetchImpl = fetch) {
     const runFrameNow = async (i) => {
         combined.throwIfAborted();
         const frameStarted = Date.now();
+        const frame = p.frames?.[i] || {};
+        // A cut-out frame (white-background shot): fast model, transparent, flattened onto white below.
+        const cutout = p.operation !== "upscale" && frame.cutout === true && p.resolution !== "4K";
+        const model = cutout ? config.modelFast : p.imageModel;
         const form = new FormData();
-        form.set("model", p.imageModel);
+        form.set("model", model);
+        if (cutout) form.set("background", "transparent");
         // The relay's 4K model owns upscale dimensions. `auto` preserves arbitrary
         // source aspect ratios without sending unsupported square 4K size values.
         form.set("size", p.operation === "upscale" ? "auto" : requestedSize);
@@ -138,7 +145,8 @@ export function createImageRunner(config, fetchImpl = fetch) {
           throw new Error("生图任务缺少参考素材");
         const requestBody = textOnly
           ? JSON.stringify({
-              model: p.imageModel,
+              model,
+              ...(cutout ? { background: "transparent" } : {}),
               size: requestedSize,
               n: 1,
               response_format: "b64_json",
@@ -173,7 +181,7 @@ export function createImageRunner(config, fetchImpl = fetch) {
         // The relay may or may not pass token usage through; seconds and count always.
         recordUsage({
           kind: "image",
-          model: p.imageModel,
+          model,
           seconds: Math.round((Date.now() - frameStarted) / 1000),
           images: files.length,
           promptTokens: body.usage?.input_tokens ?? null,
@@ -214,9 +222,8 @@ export function createImageRunner(config, fetchImpl = fetch) {
             (meta.pages || 1) !== 1
           )
             throw new Error("invalid");
-          await sharp(bytes, { limitInputPixels: 40000000, failOn: "warning" })
-            .png()
-            .toFile(path.join(dir, `result-${i + 1}.png`));
+          const img = sharp(bytes, { limitInputPixels: 40000000, failOn: "warning" });
+          await (cutout ? img.flatten({ background: "#ffffff" }) : img).png().toFile(path.join(dir, `result-${i + 1}.png`));
         } catch {
           throw new Error("生图 API 返回的图片无法解码或不符合尺寸限制");
         }

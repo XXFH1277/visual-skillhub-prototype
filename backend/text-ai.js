@@ -117,6 +117,13 @@ export function compareTexts(expected, seen) {
     if (score < 0.999)
       problems.push({ text: t.text, role: t.role, score: Math.round(score * 100) / 100 });
   }
+  // The same line printed twice (a pill and again under the title) looks careless.
+  for (const t of expected) {
+    const want = normalize(t.text);
+    if (Array.from(want).length < 4) continue;
+    const times = items.filter((x) => x.includes(want)).length;
+    if (times > 1 && !problems.some((p) => p.text === t.text)) problems.push({ text: t.text, role: t.role, repeated: times });
+  }
   return { ok: problems.length === 0, problems, seen };
 }
 

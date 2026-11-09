@@ -10,7 +10,7 @@ export function createProviders({
   fetchImpl = fetch,
 } = {}) {
   const config = imageConfig(env);
-  const model2k = config?.model2k || env.IMAGE_API_MODEL_2K || "gpt-image-2.5";
+  const model2k = config?.model2k || env.IMAGE_API_MODEL_2K || "gpt-image-2.6-sunburst";
   const model4k = config?.model4k || env.IMAGE_API_MODEL_4K || "gpt-image-2-4K";
   const imageModels = [model2k, model4k];
   const apiRun = createImageRunner(config, fetchImpl);

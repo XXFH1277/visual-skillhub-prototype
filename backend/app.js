@@ -356,7 +356,7 @@ export async function createWorkspace({
     res.json({ byStep, latest });
   });
   app.get("/api/admin/probe/:file", async (req, res) => {
-    res.sendFile(await regularFile(path.join(dataDir, "probe"), req.params.file));
+    res.sendFile(await regularFile(path.join(dataDir, "probe"), req.params.file), { dotfiles: "allow" });
   });
   app.post("/api/admin/invites", (req, res) => res.json({ code: users.createInvite(req.body || {}), invites: users.invites() }));
   app.post("/api/admin/invites/:code/revoke", (req, res) => {
