@@ -161,3 +161,13 @@ test("usage records carry the product and step they were made for", async () => 
   setUsageSink(null);
   assert.deepEqual(seen.map((u) => [u.suiteId, u.purpose, u.jobId]), [["s1", "profile", undefined], ["s1", "proofread", "j1"], [undefined, undefined, undefined]]);
 });
+
+test("JSON from the model survives plain quotes inside values and trailing commas", async () => {
+  const { parseJsonObject } = await import("../backend/json.js");
+  const bad = '好的：{"looks":[{"conceptName":"金鳞宴","layout":"顶部写"深海大黄鱼"四个字，右上角胶囊","why":"大字醒目",}]}';
+  const d = parseJsonObject(bad);
+  assert.equal(d.looks[0].layout, '顶部写"深海大黄鱼"四个字，右上角胶囊');
+  assert.equal(d.looks[0].why, "大字醒目");
+  assert.deepEqual(parseJsonObject('{"a":"x\ny"}'), { a: "x\ny" });
+  assert.throws(() => parseJsonObject("没有 JSON"), /无法解析/);
+});

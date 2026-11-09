@@ -16,6 +16,7 @@ async function ask(ai, request) {
     try {
       return parse(answer);
     } catch (error) {
+      console.warn(`AI 返回内容无法解析（第 ${attempt + 1} 次）：${String(answer).slice(0, 300)}`);
       if (attempt >= 1) throw error;
     }
   }
