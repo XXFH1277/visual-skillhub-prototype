@@ -1,3 +1,4 @@
+import { preview } from "./preview.js";
 import { SCENES, SIZE_NAMES, TEXT_MODES, TEXT_ROLES, MAX_TEXTS } from "../shared/scenes.js";
 import { CATEGORIES, IMAGE_TYPES, TONES, sceneTypes } from "../shared/styles.js";
 import { IMAGE_SIZES, upscaleSize } from "../shared/generation.js";
@@ -15,7 +16,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const date = (v) => new Date(v).toLocaleString("zh-CN", { hour12: false, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const active = (job) => ["queued", "running"].includes(job.status);
-const STATUS = { queued: "排队中", running: "生成中", succeeded: "已完成", failed: "失败 · 已退积分", cancelled: "已取消 · 已退积分" };
+const STATUS = { partial: "部分完成", queued: "排队中", running: "生成中", succeeded: "已完成", failed: "失败 · 已退积分", cancelled: "已取消 · 已退积分" };
 const SCENE_NAME = (id) => (id === "upscale" ? "4K 提升" : SCENES[id]?.name || id);
 const MODE_SHORT = { ai: "AI 画字", overlay: "精确排字", none: "不加字" };
 const key = () => crypto.randomUUID();
@@ -88,6 +89,7 @@ function login(mode, invite = "") {
     register: `<label>邀请码<input name="invite" required value="${esc(invite)}" placeholder="找管理员要" autocomplete="off"></label>
       <label>手机号<input name="phone" type="tel" inputmode="tel" autocomplete="username" required placeholder="以后用它登录"></label>
       <label>设个密码<input name="password" type="password" autocomplete="new-password" required minlength="6" placeholder="至少 6 位"></label>
+      <label>确认密码<input id="confirm-password" type="password" autocomplete="new-password" required placeholder="请再输入一次密码"></label>
       <label>店铺 / 称呼<input name="name" maxlength="20" placeholder="选填，例如：阿海水产"></label>
       <button class="btn primary wide">注册并进入</button>`,
     code: `<label>管理员访问码<input name="code" type="password" autocomplete="current-password" required></label>
@@ -99,8 +101,19 @@ function login(mode, invite = "") {
     <button class="link login-alt" id="alt">${mode === "code" ? "← 用手机号登录" : "管理员用访问码登录"}</button></section>`;
   $$("[data-mode]").forEach((b) => (b.onclick = () => login(b.dataset.mode, $("[name=invite]")?.value || invite)));
   $("#alt").onclick = () => login(mode === "code" ? "login" : "code");
-  $("#login-form").onsubmit = async (e) => {
+  const form = $("#login-form");
+  const confirmation = $("#confirm-password", form);
+  if (confirmation) {
+    form.addEventListener("input", () => confirmation.setCustomValidity(""));
+  }
+  form.onsubmit = async (e) => {
     e.preventDefault();
+    if (confirmation && confirmation.value !== form.elements.password.value) {
+      confirmation.setCustomValidity("两次输入的密码不一致，请重新确认。");
+      confirmation.reportValidity();
+      confirmation.select();
+      return;
+    }
     const b = e.currentTarget.querySelector("button");
     const body = Object.fromEntries(new FormData(e.currentTarget));
     b.disabled = true;
@@ -138,8 +151,8 @@ function paint(root = document) {
   });
 }
 function coverHtml(style, fallbackUrl = null) {
-  if (style?.cover) return `<img src="${style.cover}" alt="${esc(style.name)} 样图" loading="lazy">`;
-  if (fallbackUrl) return `<img src="${fallbackUrl}" alt="参考图">`;
+  if (style?.cover) return `<img src="${preview(style.cover,320)}" alt="${esc(style.name)} 样图" loading="lazy">`;
+  if (fallbackUrl) return `<img src="${fallbackUrl.startsWith("/api/") ? preview(fallbackUrl,320) : fallbackUrl}" alt="参考图">`;
   return `<div class="cover-ph" data-gradient="${esc((style?.palette || ["#eee", "#ccc"]).join(","))}"><span>${esc(style?.name || "")}</span></div>`;
 }
 
@@ -412,7 +425,7 @@ function renderPlan() {
   const seen = [a.product, a.material, a.mood, a.audience && "适合" + a.audience].filter(Boolean).join(" · ");
   box.innerHTML = `
     <section class="plan-head">
-      <div class="row spread"><h2>选一个方向 <small class="muted">${d.via === "rules" ? "常用风格" : d.via === "codex" ? "本机 Codex" : "Kimi"}</small></h2><button class="link" id="reroll">换一批</button></div>
+      <div class="row spread"><h2>选一个方向 <small class="muted">${d.via === "rules" ? "常用风格" : d.via === "codex" ? "本机 Codex" : d.via === "deepseek" ? "DeepSeek" : "Kimi"}</small></h2><button class="link" id="reroll">换一批</button></div>
       ${seen ? `<p class="summary">AI 看到的：${esc(seen)}</p>` : ""}
       ${d.warning ? `<p class="warn-text">${esc(d.warning)}</p>` : ""}
     </section>
@@ -490,6 +503,14 @@ async function submitJob(button) {
 const lib = { cat: "", type: "", tone: "", mine: false };
 async function stylesPage() {
   const all = await loadStyles(true);
+  if (!location.hash.startsWith("#/styles")) return;
+  renderStyleFilters(all);
+  if (all.some((s) => s.status === "analyzing")) {
+    const t = setTimeout(() => location.hash.startsWith("#/styles") && stylesPage(), 3000);
+    cleanup = () => clearTimeout(t);
+  }
+}
+function renderStyleFilters(all) {
   const list = all.filter(
     (s) =>
       (!lib.cat || s.categories?.includes(lib.cat)) &&
@@ -518,8 +539,8 @@ async function stylesPage() {
     )
     .join("")}</div>`;
   paint(app);
-  $$("[data-f]").forEach((b) => (b.onclick = () => ((lib[b.dataset.f] = b.dataset.v), stylesPage())));
-  $$("[data-mine]").forEach((b) => (b.onclick = () => ((lib.mine = b.dataset.mine === "1"), stylesPage())));
+  $$("[data-f]").forEach((b) => (b.onclick = () => ((lib[b.dataset.f] = b.dataset.v), renderStyleFilters(all))));
+  $$("[data-mine]").forEach((b) => (b.onclick = () => ((lib.mine = b.dataset.mine === "1"), renderStyleFilters(all))));
   $$("[data-style]").forEach((b) => (b.onclick = () => styleModal(b.dataset.style)));
   $("#upload-style").onclick = uploadModal;
   $("#all-covers")?.addEventListener("click", (e) =>
@@ -529,10 +550,6 @@ async function stylesPage() {
       toast(`已排队 ${r.queued} 张样图（${codex ? "本机 Codex" : "中转站"}，不扣积分），生成好会自动出现`);
     }),
   );
-  if (all.some((s) => s.status === "analyzing")) {
-    const t = setTimeout(() => location.hash.startsWith("#/styles") && stylesPage(), 3000);
-    cleanup = () => clearTimeout(t);
-  }
 }
 function modal(html) {
   const wrap = document.createElement("div");
@@ -552,14 +569,14 @@ const TWEAK_IDEAS = ["背景再亮一点", "换成干净的浅色背景", "商�
 function tweakModal(job, i) {
   const p = job.params;
   const frame = p.frames[i];
-  const asset = job.manifest.assets.filter((a) => ["image", "module"].includes(a.role))[i];
+  const asset = job.manifest.assets.filter((a) => ["image", "module"].includes(a.role)).find((a, pos) => (a.frame ?? pos) === i);
   const cost = workspace.skills[p.skillId]?.cost || 10;
   const aiTexts = frame.textMode === "ai" ? frame.texts : [];
   const { wrap, close } = modal(`
     <div class="tweak">
-      <div class="tweak-img"><img src="${fileUrl(job, asset.name)}" alt="要微调的图"></div>
+      <div class="tweak-img"><img src="${preview(fileUrl(job, asset.name))}" alt="要微调的图"></div>
       <form class="tweak-form">
-        <h2>微调这张图</h2>
+        <h2>修改图片 · ${esc(frame.title || `第 ${i + 1} 张`)}</h2>
         <p class="muted">以这张图为底，只改你说的地方，其他尽量不动。原图会一直保留。</p>
         <label>想怎么改？<textarea name="instruction" rows="3" maxlength="300" placeholder="例如：背景再亮一点，去掉左边的柠檬"></textarea></label>
         <div class="chips">${TWEAK_IDEAS.map((t) => `<button type="button" class="chip" data-idea="${esc(t)}">${esc(t)}</button>`).join("")}</div>
@@ -636,7 +653,6 @@ function styleModal(id) {
   $("#share-style", wrap)?.addEventListener("click", (e) =>
     busy(e.currentTarget, async () => {
       await api(`/styles/${s.id}/share`, json({ shared: !s.shared }));
-      await loadStyles(true);
       close();
       stylesPage();
       toast(s.shared ? "已改为仅上传者可见" : "已公开，所有商家都能在风格库看到");
@@ -690,7 +706,7 @@ const fileUrl = (job, name, download = false) =>
 function thumb(job) {
   const assets = job.manifest?.assets || [];
   const a = assets.find((x) => x.role === "image") || assets.find((x) => x.role === "module") || assets[0];
-  return a && job.status === "succeeded" ? `<img src="${fileUrl(job, a.name)}" alt="" loading="lazy">` : `<span class="ph ${job.status}">${STATUS[job.status]}</span>`;
+  return a && ["succeeded","partial"].includes(job.status) ? `<img src="${preview(fileUrl(job, a.name),320)}" alt="" loading="lazy">` : `<span class="ph ${job.status}">${STATUS[job.status]}</span>`;
 }
 function tasksPage(jobs) {
   app.innerHTML = `<div class="page-head"><h1>我的作品</h1><a class="btn primary" href="#/">＋ 新建</a></div>
@@ -725,49 +741,49 @@ function jobPage(job) {
   const long = m?.assets.find((a) => a.role === "long" || a.role === "long-preview");
   const apiReady = workspace.providers.find((x) => x.mode === "api")?.ready;
   const canUpscale = (a) => {
-    if (!apiReady || a.role !== "image" || p.operation === "cover") return false;
+    if (job.status === "partial" || !apiReady || a.role !== "image" || p.operation === "cover") return false;
     const [w, h] = upscaleSize(a.width, a.height).split("x").map(Number);
     return a.width < w || a.height < h;
   };
   const special = ["upscale", "cover"].includes(p.operation);
   const card = (a, i) => `<article class="card result">
-      <a href="${fileUrl(job, a.name)}" target="_blank" rel="noopener"><img src="${fileUrl(job, a.name)}" alt="第 ${i + 1} 张"></a>
+      <a href="${fileUrl(job, a.name)}" target="_blank" rel="noopener"><img loading="lazy" decoding="async" src="${preview(fileUrl(job, a.name))}" alt="第 ${i + 1} 张"></a>
       <div class="result-bar"><b>${esc(p.frames?.[i]?.title || `第 ${i + 1} 张`)}</b><small class="muted">${a.width}×${a.height}</small></div>
       ${checkBadge(job, i)}
-      ${textEditor(job, i)}
+      ${job.status === "partial" ? "" : textEditor(job, i)}
       <div class="row wrap">
         <a class="btn small" href="${fileUrl(job, a.name, true)}">下载</a>
-        ${legacy || special ? "" : `<button class="btn small primary-soft" data-tweak="${i}">微调 · ${cost(1)}</button><button class="btn small" data-redo="${i}">重出这张 · ${cost(1)}</button>`}
-        ${!legacy && !special && p.frames?.[i]?.textMode === "ai" ? `<button class="btn small" data-overlay="${i}" title="重新出一张留白的图，由程序把字排上去">改用精确排字 · ${cost(1)}</button>` : ""}
+        ${legacy || special ? "" : `<button class="btn small primary-soft" data-tweak="${i}">修改这张图 · ${cost(1)}</button><button class="btn small" data-redo="${i}">重出这张 · ${cost(1)}</button>`}
+        ${job.status !== "partial" && !legacy && !special && p.frames?.[i]?.textMode === "ai" ? `<button class="btn small" data-overlay="${i}" title="重新出一张留白的图，由程序把字排上去">改用精确排字 · ${cost(1)}</button>` : ""}
         ${canUpscale(a) ? `<button class="link" data-upscale="${esc(a.name)}">提升到 4K · ${workspace.skills.upscale.cost}</button>` : ""}
       </div>
     </article>`;
   const d = p.direction;
-  app.innerHTML = `<a class="back" href="#/tasks">← 我的作品</a>
+  app.innerHTML = `${p.suiteId && p.skillId === "product" ? `<a class="back" href="#/suite/${encodeURIComponent(p.suiteId)}/shots">← 返回商品图</a>` : `<a class="back" href="#/tasks">← 我的作品</a>`}
   <div class="page-head"><div><h1>${esc(p.productName)}</h1><p class="muted">${p.operation === "cover" ? "风格样图" : SCENE_NAME(p.skillId)}${d?.conceptName ? ` · ${esc(d.conceptName)}` : ""} · ${date(job.createdAt)} · ${job.cost} 积分</p></div><span class="status ${job.status}">${STATUS[job.status]}</span></div>
   ${active(job) ? `<section class="card progress"><div class="spinner"></div><div><b>${esc(job.phase)}</b><p class="muted">一张图通常 1–3 分钟，${p.count > 1 ? `这次共 ${p.count} 张，` : ""}可以先离开，稍后在“我的作品”里看。</p><div class="bar"></div></div><button class="btn" id="cancel">取消并退积分</button></section>` : ""}
-  ${job.status === "failed" || job.status === "cancelled" ? `<section class="card warn"><b>${STATUS[job.status]}</b><p>${esc(job.error || "")}</p></section>` : ""}
+  ${["partial","failed","cancelled"].includes(job.status) ? `<section class="card warn"><b>${STATUS[job.status]}</b><p>${esc(job.error || "")}</p></section>` : ""}
   ${m?.warnings?.length ? `<p class="warn-text">${m.warnings.map(esc).join("<br>")}</p>` : ""}
   ${p.operation === "tweak" ? `<section class="card tweak-info"><b>修改要求</b><p>${esc(p.instruction)}</p>
-      ${m ? `<div class="compare"><figure><img src="/api/jobs/${p.tweakFrom.jobId}/files/${p.skillId === "detail" ? "module" : "image"}-${p.tweakFrom.frame + 1}.png" alt="微调前"><figcaption>微调前</figcaption></figure><figure><img src="${fileUrl(job, images[0].name)}" alt="微调后"><figcaption>微调后</figcaption></figure></div>` : ""}
+      ${m ? `<div class="compare"><figure><img src="/api/jobs/${p.tweakFrom.jobId}/files/${p.skillId === "detail" ? "module" : "image"}-${p.tweakFrom.frame + 1}.png?thumb=720" alt="微调前"><figcaption>微调前</figcaption></figure><figure><img src="${preview(fileUrl(job, images[0].name))}" alt="微调后"><figcaption>微调后</figcaption></figure></div>` : ""}
       ${m ? `${checkBadge(job, 0)}<div class="row wrap"><a class="btn small primary" href="${fileUrl(job, images[0].name, true)}">下载这张</a><button class="btn small primary-soft" data-tweak="0">继续微调 · ${cost(1)}</button><button class="btn small" data-redo="0">按同样要求再来一张 · ${cost(1)}</button></div>` : ""}
       <p class="muted">不满意可以在新图上继续微调，或回到<a href="#/job/${p.tweakFrom.jobId}">上一版</a>。</p></section>` : ""}
   ${job.tweaks?.length ? `<section class="card versions"><b>微调过的版本</b><div class="version-list">${job.tweaks
-    .map((t) => `<a href="#/job/${t.id}" class="version">${t.asset ? `<img src="/api/jobs/${t.id}/files/${encodeURIComponent(t.asset)}" alt="">` : `<span class="status ${t.status}">${STATUS[t.status]}</span>`}<small>第 ${t.frame + 1} 张 · ${esc(t.instruction.slice(0, 18))}</small></a>`)
+    .map((t) => `<a href="#/job/${t.id}" class="version">${t.asset ? `<img src="/api/jobs/${t.id}/files/${encodeURIComponent(t.asset)}?thumb=320" alt="">` : `<span class="status ${t.status}">${STATUS[t.status]}</span>`}<small>第 ${t.frame + 1} 张 · ${esc(t.instruction.slice(0, 18))}</small></a>`)
     .join("")}</div></section>` : ""}
   ${
     m && p.skillId === "detail" && long && p.operation !== "tweak"
       ? `<div class="detail-result">
-          <div class="long-view card"><img src="${fileUrl(job, long.name)}" alt="详情页长图"></div>
+          <div class="long-view card"><a href="${fileUrl(job, long.name)}" target="_blank" rel="noopener"><img src="${preview(fileUrl(job, long.name))}" alt="查看详情页长图原图"></a></div>
           <div class="side">
             <section class="card"><h2>下载</h2><a class="btn primary wide" href="${fileUrl(job, long.name, true)}">下载整张长图</a></section>
             ${images.map((a, i) => card(a, i)).join("")}
           </div></div>`
       : m && p.operation !== "tweak"
-        ? `<div class="results">${images.map(card).join("")}</div>`
+        ? `<div class="results">${images.map((a,i) => card(a,a.frame ?? i)).join("")}</div>`
         : ""
   }
-  ${!active(job) && !legacy && !special && p.operation !== "tweak" ? `<div class="row wrap"><button class="btn" id="retry">${job.status === "succeeded" ? "整组再来一次" : "重新生成"} · ${job.cost} 积分</button><a class="btn" href="#/new/${p.skillId}">新建</a>${job.sourceId ? `<a class="link" href="#/job/${job.sourceId}">查看来源</a>` : ""}</div>` : ""}
+  ${!active(job) && !legacy && !special && p.operation !== "tweak" ? `<div class="row wrap"><button class="btn" id="retry">${m?.missing ? "只补缺少的 " + m.missing.length + " 张" : job.status === "succeeded" ? "整组再来一次" : "重新生成"} · ${cost(m?.missing?.length || p.count)} 积分</button><a class="btn" href="#/new/${p.skillId}">新建</a>${job.sourceId ? `<a class="link" href="#/job/${job.sourceId}">查看来源</a>` : ""}</div>` : ""}
   ${
     !legacy && d
       ? `<details class="card plan-detail"><summary>查看方案与分镜</summary>

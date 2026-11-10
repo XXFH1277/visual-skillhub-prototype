@@ -122,6 +122,10 @@ export class Store {
         if (old.userId !== userId) throw new AppError("提交编号冲突，请刷新后重试", 409);
         return old;
       }
+      if (params.reusedFrames?.length && sourceId) {
+        const previous = this.decode(this.db.prepare("SELECT * FROM jobs WHERE source_id=? AND user_id=? AND json_type(params,'$.reusedFrames')='array' AND status IN ('queued','running','succeeded','partial') ORDER BY rowid DESC LIMIT 1").get(sourceId, userId));
+        if (previous) return previous;
+      }
       const count = params.count;
       if (
         !Object.hasOwn(SKILLS, params.skillId) ||
@@ -145,7 +149,7 @@ export class Store {
       )
         throw new AppError("你已有 3 个任务在排队，请等它们完成后再提交", 429);
       // Style-library covers are workspace maintenance, not a merchant generation.
-      const cost = params.operation === "cover" ? 0 : SKILLS[params.skillId].cost * count;
+      const cost = params.operation === "cover" ? 0 : SKILLS[params.skillId].cost * (count - (params.reusedFrames?.length || 0));
       if (this.balance(userId) < cost)
         throw new AppError("积分不足，请联系管理员充值", 402);
       const now = new Date().toISOString();
@@ -167,6 +171,12 @@ export class Store {
           null,
           userId,
         );
+      if (params.reusedFrames?.length && params.suiteId) {
+        for (const slot of ["shots", "detail"]) {
+          const field = "$.jobs." + slot;
+          this.db.prepare("UPDATE suites SET data=json_set(data,?,?), updated_at=? WHERE id=? AND user_id=? AND json_extract(data,?)=?").run(field,id,now,params.suiteId,userId,field,sourceId);
+        }
+      }
       if (cost) {
         this.db.prepare("UPDATE users SET balance=balance-? WHERE id=?").run(cost, userId);
         this.db
@@ -200,6 +210,21 @@ export class Store {
         )
         .run(JSON.stringify(manifest), new Date().toISOString(), id).changes > 0
     );
+  }
+  partial(job, manifest, reason) {
+    return this.transaction(() => {
+      const current = this.get(job.id);
+      if (!current || !["running","failed","cancelled"].includes(current.status)) return;
+      // Historical failures already received their full refund.
+      const refund = current.status === "running" ? Math.min(job.cost, manifest.missing.length * SKILLS[job.params.skillId].cost) : 0;
+      const message = `已保留 ${job.params.count - manifest.missing.length}/${job.params.count} 张。待补：第 ${manifest.missing.map(i => i+1).join("、")} 张。` + (refund ? `已退 ${refund} 积分。` : "") + (reason || "");
+      const now = new Date().toISOString();
+      this.db.prepare("UPDATE jobs SET status='partial', phase='部分完成', error=?, manifest=?, updated_at=? WHERE id=?").run(message, JSON.stringify(manifest),now,job.id);
+      if (refund) {
+        this.db.prepare("UPDATE users SET balance=balance+? WHERE id=?").run(refund, job.userId);
+        this.db.prepare("INSERT INTO ledger(job_id,kind,amount,created_at,user_id) VALUES(?,?,?,?,?)").run(job.id,"refund",refund,now,job.userId);
+      }
+    });
   }
   fail(id, message, status = "failed") {
     return this.transaction(() => {

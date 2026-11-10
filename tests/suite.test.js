@@ -7,9 +7,20 @@ import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { Document, Packer, Paragraph, TextRun, ImageRun } from "docx";
 import { createWorkspace } from "../backend/app.js";
+import { labelPhotos } from "../backend/suite-ai.js";
 import { scanRisky, saferText } from "../shared/suite.js";
 
 const ACCESS = "test-only-access-code-123456";
+test("photo labeling recovers structured labels from a vision transcript", async () => {
+  const transcript = "**图 1**：泡沫箱里有鱼";
+  const ai = { async complete(request) {
+    if (request.images.length) return transcript;
+    assert.ok(request.text.includes(transcript));
+    return JSON.stringify({ photos: [{ i: 1, role: "package", desc: "泡沫箱里有鱼", usable: true }] });
+  } };
+  assert.deepEqual(await labelPhotos(ai, ["photo.jpg"]), [{ role: "package", desc: "泡沫箱里有鱼", usable: true }]);
+  await assert.rejects(labelPhotos({ complete: async () => '{"photos":[]}' }, ["photo.jpg"]), /标签不完整/);
+});
 const photo = (color) => sharp({ create: { width: 640, height: 800, channels: 3, background: color } }).jpeg().toBuffer();
 
 // Fake Kimi: answers by looking at which step's system prompt it received.
@@ -138,7 +149,7 @@ test("merchant with a PDF note: import text + photos → profile → note/Word �
   assert.ok(["texture", "spec", "service", "normal", "white"].every((id) => suite.shots.some((x) => x.id === id)));
   const white = suite.shots.find((x) => x.id === "white");
   assert.deepEqual(white.texts, []);
-  assert.match(white.scene, /透明背景抠图/);
+  assert.match(white.scene, /纯白背景/);
   assert.equal(suite.shots.find((x) => x.id === "gift").enabled, false, "gift scene is optional");
   const shotAsk = s.ai.calls.filter((c) => c.system.includes("电商美工")).flatMap((c) => JSON.parse(c.text.split("要做的图：")[1]));
   assert.ok(shotAsk.find((x) => x.id === "service")?.content, "service shot gets the after-sales facts");
@@ -434,7 +445,7 @@ test("internal reference library: admin uploads standout designs, each picture l
   const hero = p.frames.find((f) => f.ref === "hero");
   assert.deepEqual(hero.styleRefs, [added.added[0].file]);
   assert.equal(hero.photoUse, undefined, "main image is built on the real photo");
-  assert.equal(p.frames.find((f) => f.ref === "white").cutout, true, "white background is a transparent cut-out");
+  assert.equal(p.frames.find((f) => f.ref === "white").cutout, undefined);
   assert.ok(p.inputs.includes(added.added[0].file));
   assert.equal(p.frames.find((f) => f.ref === "white")?.styleRefs, undefined, "white background learns from nothing");
   const { framePrompt } = await import("../backend/prompts.js");

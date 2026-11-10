@@ -1,3 +1,4 @@
+import { sendImage } from "./preview.js";
 import express from "express";
 import multer from "multer";
 import fs from "node:fs";
@@ -6,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { Store, SKILLS, AppError } from "./store.js";
-import { normalizeUpload, regularFile, deliver } from "./media.js";
+import { normalizeUpload, regularFile, deliver, partialDelivery } from "./media.js";
 import { setUsageSink, withUsage } from "./usage.js";
 import { JobQueue } from "./queue.js";
 import { createProviders } from "./providers.js";
@@ -106,6 +107,7 @@ export async function createWorkspace({
     store.db
       .prepare("SELECT value FROM settings WHERE key='generation-provider'")
       .get()?.value || registry.defaultMode;
+  if (registry.apiOnly) providerMode = "api";
   registry.validate(providerMode);
   const textAI =
     options.textAI ||
@@ -146,6 +148,11 @@ export async function createWorkspace({
     if (asset) await styles.setCover(job.params.styleId, path.join(dir, manifest.exportId, asset.name));
   };
   const queue = new JobQueue(store, jobsDir, registry.run, proofread, afterSuccess);
+  for (const row of store.db.prepare("SELECT id FROM jobs WHERE status IN ('failed','cancelled') AND manifest IS NULL AND json_extract(params,'$.count')>1 AND json_extract(params,'$.providerMode')='api'").all()) {
+    const job = store.get(row.id);
+    const partial = await partialDelivery(job, path.join(jobsDir, row.id));
+    if (partial) store.partial(job, partial, job.error);
+  }
   const draftsDir = path.join(dataDir, "drafts");
   fs.mkdirSync(draftsDir, { recursive: true });
   const app = express();
@@ -269,6 +276,7 @@ export async function createWorkspace({
       .prepare("DELETE FROM sessions WHERE hash=?")
       .run(digest(cookie(req)).toString("hex"));
     res
+      .set("Clear-Site-Data", '"cache"')
       .clearCookie("vsh_session", { ...cookieOptions, maxAge: undefined })
       .json({ ok: true });
   });
@@ -430,10 +438,11 @@ export async function createWorkspace({
   });
   app.get("/api/styles", (req, res) => res.json({ styles: styles.list(req.user) }));
   app.get("/api/styles/:id", (req, res) => res.json(styles.get(req.params.id, req.user)));
-  app.get("/api/styles/:id/cover", (req, res) => {
+  app.get("/api/styles/:id/cover", async (req, res) => {
+    if (!styles.get(req.params.id, req.user)) throw new AppError("风格不存在", 404);
     const file = styles.coverFile(req.params.id);
     if (!file) throw new AppError("没有样图", 404);
-    res.sendFile(file, { dotfiles: "allow" });
+    await sendImage(req, res, file, dataDir, { mutable: true });
   });
   const styleUpload = multer({
     storage: multer.memoryStorage(),
@@ -659,14 +668,14 @@ export async function createWorkspace({
     const d = getDraft(req.params.id, req.user);
     const name = d.inputs[Number(req.params.n)];
     if (!name) throw new AppError("文件不存在", 404);
-    res.sendFile(await regularFile(d.dir, name), { dotfiles: "allow" });
+    await sendImage(req, res, await regularFile(d.dir, name), dataDir);
   });
 
   async function prepareJob(dir, params, sourceDir, extra = {}) {
     for (const name of params.inputs)
       await fsp.copyFile(Object.hasOwn(extra, name) ? extra[name] : await regularFile(sourceDir, name), path.join(dir, name));
     if (params.styleRef && sourceDir) await fsp.copyFile(await regularFile(sourceDir, params.styleRef), path.join(dir, params.styleRef));
-    else if (params.styleId && params.operation !== "cover") {
+    else if (!params.reusedFrames && params.styleId && params.operation !== "cover") {
       const cover = styles.coverFile(params.styleId);
       if (cover) {
         await fsp.copyFile(cover, path.join(dir, "style-ref.png"));
@@ -691,6 +700,10 @@ export async function createWorkspace({
     await fsp.mkdir(dir);
     try {
       await prepareJob(dir, params, sourceDir, extra);
+      for (const i of params.reusedFrames || []) {
+        const name = `result-${i+1}.png`;
+        await fsp.copyFile(await regularFile(sourceDir,name),path.join(dir,name));
+      }
       const job = store.create(params, req.get("Idempotency-Key"), { id, sourceId, userId: req.user.id });
       if (job.id !== id) await fsp.rm(dir, { recursive: true, force: true });
       res.status(202).json(job);
@@ -746,6 +759,11 @@ export async function createWorkspace({
       frames = [frame];
     }
     const params = { ...source.params, frames, count: frames.length };
+    delete params.reusedFrames;
+    if (source.status === "partial" && index == null) {
+      params.reusedFrames = source.manifest.assets.filter(a => ["image","module"].includes(a.role)).map(a => a.frame);
+      req.body = { providerMode: "api", resolution: source.params.resolution };
+    }
     for (const k of ["imageModel", "resolution", "requestedSize"]) delete params[k];
     if (index != null) params.productName = `${source.params.productName.slice(0, 30)} · 第${index + 1}张重出`;
     req.body = { providerMode: source.params.providerMode, resolution: source.params.resolution, ...req.body };
@@ -754,10 +772,12 @@ export async function createWorkspace({
   // Fine-tune one finished image: it becomes the base, the merchant says what to change.
   app.post("/api/jobs/:id/tweak", admission, async (req, res) => {
     const source = store.get(req.params.id);
-    if (source.status !== "succeeded") throw new AppError("请等这张图生成完成后再微调");
+    if (!["succeeded", "partial"].includes(source.status)) throw new AppError("请等这张图生成完成后再微调");
     if (["upscale", "cover"].includes(source.params.operation) || !source.params.frames) throw new AppError("这张图不支持微调");
     const index = req.body?.frame;
     if (!Number.isInteger(index) || !source.params.frames[index]) throw new AppError("图片序号无效");
+    if (source.status === "partial" && !source.manifest?.assets.some(a => a.frame === index && ["image", "module"].includes(a.role)))
+      throw new AppError("这张图尚未生成，请先补图");
     const instruction = text(req.body?.instruction, 300, "修改要求");
     let frame = { ...source.params.frames[index] };
     delete frame.photos;
@@ -775,6 +795,7 @@ export async function createWorkspace({
     const rootName = source.params.tweakOf ? source.params.rootName : source.params.productName;
     const params = {
       ...source.params,
+      reusedFrames: undefined,
       operation: "tweak",
       instruction: instruction || "只把画面中的文字改成下面【文字】里的内容，其他一切不变。",
       frames: [frame],
@@ -901,7 +922,7 @@ export async function createWorkspace({
       name = req.params.name;
     if (
       !job ||
-      job.status !== "succeeded" ||
+      !["succeeded","partial"].includes(job.status) ||
       !(
         name === "manifest.json" ||
         job.manifest.assets.some((a) => a.name === name)
@@ -915,7 +936,8 @@ export async function createWorkspace({
     // Files are authorized above; .data is deliberately outside the public tree.
     if (req.query.download === "1")
       res.download(file, name, { dotfiles: "allow" });
-    else res.sendFile(file, { dotfiles: "allow" });
+    else if (name === "manifest.json") res.sendFile(file, { dotfiles: "allow" });
+    else await sendImage(req, res, file, dataDir, { mutable: req.query.v !== job.updatedAt });
   });
   // Uploaded material and layout sketches of a job.
   app.get("/api/jobs/:id/source/:name", async (req, res) => {

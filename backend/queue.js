@@ -1,5 +1,5 @@
 import path from "node:path";
-import { deliver } from "./media.js";
+import { deliver, partialDelivery } from "./media.js";
 
 export class JobQueue {
   constructor(store, jobsDir, runner, afterRun = null, onSuccess = null) {
@@ -35,6 +35,11 @@ export class JobQueue {
         this.store.succeed(job.id, manifest);
         await this.onSuccess?.(job, manifest, dir).catch?.(() => {});
       } catch (error) {
+        const partial = await partialDelivery(job, dir).catch(() => null);
+        if (partial) {
+          this.store.partial(job, partial, error.message);
+          continue;
+        }
         this.store.fail(
           job.id,
           controller.signal.aborted

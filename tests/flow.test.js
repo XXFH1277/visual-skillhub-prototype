@@ -403,3 +403,70 @@ test("API mode: brief carries the visual system and exact text; covers feed the 
   const all = (await (await s.request("/api/styles")).json()).styles;
   assert.equal(all.filter((x) => x.source === "builtin" && !x.types.includes("interior") && !x.cover).length, 0);
 });
+
+test("partial batch exports completed frames and a duplicate resume bills and requests only the missing frame", async t => {
+  const calls = [];
+  const providers = createProviders({
+    env: { IMAGE_API_BASE_URL:"https://relay.example", IMAGE_API_KEY:"test", IMAGE_API_MODEL_2K:"test-model", IMAGE_API_CONCURRENCY:"1" },
+    codexCheck:async()=>({ready:true}),
+    fetchImpl:async(url, init)=>{
+      if(url.pathname.endsWith("models")) return Response.json({data:[{id:"test-model"}]});
+      calls.push(init.body.get("prompt"));
+      assert.equal(init.body.get("model"),"test-model");
+      assert.equal(init.body.has("background"),false);
+      if(calls.length===2) return new Response(null,{status:502});
+      return Response.json({data:[{b64_json:image.toString("base64")}]});
+    }
+  });
+  const s=await setup(t,null,{providers});
+  const created=await s.submit({fields:{count:"2"},extra:{providerMode:"api",resolution:"2K"}});
+  const partial=await s.terminal((await created.json()).id);
+  assert.equal(partial.status,"partial",partial.error);
+  assert.deepEqual(partial.manifest.missing,[1]);
+  assert.equal(partial.manifest.assets.length,1);
+  assert.equal((await s.request(`/api/jobs/${partial.id}/files/image-1.png`)).status,200);
+  assert.equal((await s.request(`/api/jobs/${partial.id}/files/image-2.png`)).status,404);
+  assert.equal(await s.balance(),490);
+  const retry=()=>s.post(`/api/jobs/${partial.id}/retry`,{},{ "Idempotency-Key":randomUUID() }).then(r=>r.json());
+  const [a,b]=await Promise.all([retry(),retry()]);
+  assert.equal(a.id,b.id);
+  const done=await s.terminal(a.id);
+  assert.equal(done.status,"succeeded",done.error);
+  assert.deepEqual(done.params.reusedFrames,[0]);
+  assert.equal(done.cost,10);
+  assert.equal(done.manifest.assets[0].sha256,partial.manifest.assets[0].sha256);
+  assert.equal(done.manifest.assets.length,2);
+  assert.equal(calls.length,3);
+  assert.equal(calls[2],calls[1]);
+  assert.equal(await s.balance(),480);
+  const tweak = frame => s.post(`/api/jobs/${partial.id}/tweak`, { frame, instruction: "保留商品，背景调亮" }, { "Idempotency-Key": randomUUID() });
+  assert.equal((await tweak(1)).status, 400);
+  const edited = await s.terminal((await (await tweak(0)).json()).id);
+  assert.equal(edited.status, "succeeded", edited.error);
+  assert.deepEqual(edited.params.tweakOf, { jobId: partial.id, frame: 0 });
+  assert.equal(edited.params.frames.length, 1);
+  assert.equal(calls.length, 4);
+  assert.equal(await s.balance(), 470);
+});
+
+test("authorized previews are resized and privately cacheable; downloading returns the exact export", async t => {
+  const s = await setup(t);
+  const j = await s.terminal((await (await s.submit()).json()).id);
+  const asset = j.manifest.assets.find(a=>a.role==="image");
+  const url = `/api/jobs/${j.id}/files/${asset.name}?v=${encodeURIComponent(j.updatedAt)}`;
+  const preview = url+"&thumb=320";
+  const [first, concurrent] = await Promise.all([s.request(preview), s.request(preview)]);
+  assert.equal(first.status,200);
+  assert.equal(concurrent.status,200);
+  assert.match(first.headers.get("cache-control"),/private, max-age=/);
+  assert.match(first.headers.get("vary"),/Cookie/i);
+  const bytes=Buffer.from(await first.arrayBuffer());
+  assert.deepEqual(bytes,Buffer.from(await concurrent.arrayBuffer()));
+  const meta=await sharp(bytes).metadata();
+  assert.equal(meta.format,"webp");
+  assert.ok(meta.width <= 320);
+  assert.equal((await fetch(s.url+preview)).status,401);
+  const dl=await s.request(url+"&thumb=320&download=1");
+  const {createHash}=await import("node:crypto");
+  assert.equal(createHash("sha256").update(Buffer.from(await dl.arrayBuffer())).digest("hex"),asset.sha256);
+});

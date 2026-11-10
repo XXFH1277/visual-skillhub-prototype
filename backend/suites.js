@@ -1,3 +1,4 @@
+import { sendImage } from "./preview.js";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -63,7 +64,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     packaging: s.packaging ? packState(s) : null,
     jobs: Object.fromEntries(Object.entries(s.jobs || {}).map(([k, id]) => [k, id && store.get(id) ? summary(store.get(id)) : null])),
   });
-  const summary = (j) => ({ id: j.id, status: j.status, phase: j.phase, error: j.error, cost: j.cost, manifest: j.manifest, updatedAt: j.updatedAt, frames: j.params.frames, tweaks: store.tweaksOf(j.id) });
+  const summary = (j) => ({ id: j.id, skillId: j.params.skillId, status: j.status, phase: j.phase, error: j.error, cost: j.cost, manifest: j.manifest, updatedAt: j.updatedAt, frames: j.params.frames, tweaks: store.tweaksOf(j.id) });
 
   // Run one AI step in the background and record its state on the suite.
   let running = 0;
@@ -134,20 +135,16 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     },
     async profile(s) {
       // AI dish pictures keep their own label; only real photos are (re)read.
-      const real = s.photos.filter((p) => !p.ai);
+      const real = s.photos.filter((p) => !p.ai && !p.desc?.trim());
       if (real.length) {
         const labels = await labelPhotos(textAI, imgPaths(s, real));
         const byFile = new Map(real.map((p, i) => [p.file, labels[i]]));
         s.photos = s.photos.map((p) => (byFile.has(p.file) ? { ...p, ...byFile.get(p.file) } : p));
         const fresh = read(s.id);
-        fresh.photos = fresh.photos.map((p) => s.photos.find((x) => x.file === p.file) || p);
+        fresh.photos = fresh.photos.map((p) => (byFile.has(p.file) && !p.desc?.trim() ? { ...p, ...byFile.get(p.file) } : p));
         save(fresh);
       }
-      const rep = ["package", "product", "cooked", "origin", "detail", "compare"]
-        .map((r) => s.photos.find((p) => p.role === r && p.usable))
-        .filter(Boolean)
-        .slice(0, 6);
-      s.profile = await buildProfile(textAI, { text: s.text, answers: s.answers, photos: s.photos, images: imgPaths(s, rep) });
+      s.profile = await buildProfile(textAI, { text: s.text, answers: s.answers, photos: s.photos });
       if (!s.caseId) s.caseId = { 生鲜水产: "seafood-gift", 农副产品: "farm-produce" }[s.profile.category] || "general";
       s.sections = defaultSections(s);
       s.shots = null;
@@ -341,7 +338,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
   app.get("/api/suites/:id/photo/:file", async (req, res) => {
     const s = read(req.params.id);
     if (!s.photos.some((p) => p.file === req.params.file)) throw new AppError("图片不存在", 404);
-    res.sendFile(await regularFile(dirOf(s.id), req.params.file), { dotfiles: "allow" });
+    await sendImage(req, res, await regularFile(dirOf(s.id), req.params.file), dataDir);
   });
   app.post("/api/suites/:id/photos", upload, async (req, res) => {
     const s = read(req.params.id);
@@ -478,7 +475,6 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         return {
         ...(ref ? { styleRefs: [ref] } : {}),
         ...(f.cinematic ? { photoUse: "hero" } : {}),
-        ...(f.id === "white" ? { cutout: true } : {}),
         title: f.title || SECTION_TYPES[f.type]?.name || "",
         textMode: bg ? "overlay" : texts.length ? "ai" : "none",
         layout: bg ? "center" : texts.length ? "free" : "none",
@@ -784,6 +780,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     const s = read(req.params.id);
     const name = { "dieline.png": "pack-dieline.png", "front.png": "pack-front.png" }[req.params.file];
     if (!name || !s.packaging?.dieline) throw new AppError("还没有包装稿", 404);
+    if (req.query.thumb && req.query.download !== "1") return sendImage(req,res,await regularFile(dirOf(s.id), name),dataDir,{mutable:true});
     res.attachment(`${s.profile?.name || "包装"}-${req.params.file === "dieline.png" ? "展开图" : "正面设计稿"}.png`);
     res.sendFile(await regularFile(dirOf(s.id), name), { dotfiles: "allow" });
   });

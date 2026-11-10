@@ -25,8 +25,6 @@ export function imageConfig(env = process.env) {
     base: base.href,
     key: env.IMAGE_API_KEY,
     model2k: env.IMAGE_API_MODEL_2K || "gpt-image-2.6-sunburst",
-    // Quick model for cut-outs (transparent background) such as the white-background shot.
-    modelFast: env.IMAGE_API_MODEL_FAST || "gpt-image-2.6-flare",
     model4k: env.IMAGE_API_MODEL_4K || "gpt-image-2-4K",
     timeoutMs: Number(env.GENERATION_TIMEOUT_MS) || 900000,
     concurrency: Math.min(Math.max(Number(env.IMAGE_API_CONCURRENCY) || 3, 1), 6),
@@ -112,18 +110,16 @@ export function createImageRunner(config, fetchImpl = fetch) {
     const results = [];
     const started = Date.now();
     let phase = "prepare";
+    const framePhases = new Map();
+    let failedFrame = null;
     // Frames are independent: run a few at once (the relay takes ~1 min per image).
     const runFrame = (i) => withUsage({ jobId: job.id, suiteId: p.suiteId || null, purpose: p.packStep ? `pack-${p.packStep}` : p.operation || p.skillId }, () => runFrameNow(i));
     const runFrameNow = async (i) => {
         combined.throwIfAborted();
         const frameStarted = Date.now();
-        const frame = p.frames?.[i] || {};
-        // A cut-out frame (white-background shot): fast model, transparent, flattened onto white below.
-        const cutout = p.operation !== "upscale" && frame.cutout === true && p.resolution !== "4K";
-        const model = cutout ? config.modelFast : p.imageModel;
+        const model = p.imageModel;
         const form = new FormData();
         form.set("model", model);
-        if (cutout) form.set("background", "transparent");
         // The relay's 4K model owns upscale dimensions. `auto` preserves arbitrary
         // source aspect ratios without sending unsupported square 4K size values.
         form.set("size", p.operation === "upscale" ? "auto" : requestedSize);
@@ -146,14 +142,13 @@ export function createImageRunner(config, fetchImpl = fetch) {
         const requestBody = textOnly
           ? JSON.stringify({
               model,
-              ...(cutout ? { background: "transparent" } : {}),
               size: requestedSize,
               n: 1,
               response_format: "b64_json",
               prompt: form.get("prompt"),
             })
           : form;
-        phase = "request";
+        framePhases.set(i, "request");
         const response = await fetchImpl(
           new URL(
             textOnly ? "images/generations" : "images/edits",
@@ -176,7 +171,7 @@ export function createImageRunner(config, fetchImpl = fetch) {
             `生图 API 返回 HTTP ${response.status}；未自动重试，请检查中转站状态与账单`,
           );
         }
-        phase = "read-response";
+        framePhases.set(i, "read-response");
         const body = await readJson(response, 64 * 1024 * 1024);
         // The relay may or may not pass token usage through; seconds and count always.
         recordUsage({
@@ -208,7 +203,7 @@ export function createImageRunner(config, fetchImpl = fetch) {
         )
           throw new Error("生图 API 图片编码无效");
         const bytes = Buffer.from(b64, "base64");
-        phase = "decode-image";
+        framePhases.set(i, "decode-image");
         let meta;
         try {
           meta = await sharp(bytes, {
@@ -223,7 +218,9 @@ export function createImageRunner(config, fetchImpl = fetch) {
           )
             throw new Error("invalid");
           const img = sharp(bytes, { limitInputPixels: 40000000, failOn: "warning" });
-          await (cutout ? img.flatten({ background: "#ffffff" }) : img).png().toFile(path.join(dir, `result-${i + 1}.png`));
+          const file = path.join(dir, `result-${i + 1}.png`);
+          await img.png().toFile(file + ".tmp");
+          await fs.rename(file + ".tmp", file);
         } catch {
           throw new Error("生图 API 返回的图片无法解码或不符合尺寸限制");
         }
@@ -240,10 +237,15 @@ export function createImageRunner(config, fetchImpl = fetch) {
       const worker = async () => {
         while (!failed && next < p.count) {
           const i = next++;
+          if (p.reusedFrames?.includes(i)) continue;
           try {
             await runFrame(i);
           } catch (error) {
-            failed ||= error;
+            if (!failed) {
+              failed = error;
+              failedFrame = i + 1;
+              phase = framePhases.get(i) || "prepare";
+            }
           }
         }
       };
@@ -274,6 +276,7 @@ export function createImageRunner(config, fetchImpl = fetch) {
           JSON.stringify(
             {
               phase,
+              frame: failedFrame,
               model: p.imageModel,
               requestedSize,
               durationSeconds: Math.round((Date.now() - started) / 1000),

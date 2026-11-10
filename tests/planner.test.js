@@ -95,6 +95,35 @@ test("Kimi client sends images, falls back to common styles on failure", async (
   await fs.rm(dir, { recursive: true, force: true });
 });
 
+test("DeepSeek detail planning sends the direction and frame schemas alongside the photo", async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "detail-plan-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "photo.png");
+  await sharp({ create: { width: 40, height: 40, channels: 3, background: "#fff" } }).png().toFile(file);
+  const input = { skillId: "detail", count: 4, size: "3:4", copy: "水瓶", hasMain: true };
+  const candidates = candidatesFor(lib, "detail");
+  const ai = createTextAI({
+    env: { TEXT_API_KEY: "test", TEXT_API_MODEL: "deepseek-test" },
+    fetchImpl: async (_url, init) => {
+      const user = JSON.parse(init.body).messages.find(m => m.role === "user");
+      const prompt = user.content.find(p => p.type === "text").text;
+      let answer = "这是一份详情页建议";
+      if (prompt.includes('"directions"') && prompt.includes(candidates[0].id)) {
+        answer = JSON.stringify({ directions: [{ styleId: candidates[0].id, conceptName: "水瓶展示" }] });
+      } else if (prompt.includes('"frames"')) {
+        answer = JSON.stringify({ frames: Array.from({ length: 4 }, () => ({ scene: "水瓶实拍" })) });
+      }
+      return Response.json({ choices: [{ message: { content: answer } }] });
+    },
+  });
+  const plan = await ai.analyze(input, [file], candidates);
+  assert.equal(plan.via, "deepseek");
+  assert.equal(plan.result.directions[0].conceptName, "水瓶展示");
+  const board = await ai.storyboard(input, [file], plan.result, plan.result.directions[0]);
+  assert.equal(board.via, "deepseek");
+  assert.equal(board.frames.length, 4);
+});
+
 test("program typesetting renders sketches and overlays", async () => {
   assert.deepEqual(wrap("一二三四五", 10, 30), ["一二三", "四五"]);
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "render-"));

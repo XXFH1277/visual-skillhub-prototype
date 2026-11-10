@@ -68,7 +68,22 @@ async function readJson(file) {
 }
 
 
-export async function deliver(job, dir) {
+// Return validated, original frame indexes. Never match files from another job.
+export async function partialDelivery(job, dir) {
+  if (job.params.providerMode !== "api" || !job.params.frames || job.params.count < 2) return null;
+  const available = [];
+  for (let i = 0; i < job.params.count; i++) {
+    try {
+      const file = await regularFile(dir, `result-${i + 1}.png`);
+      await sharp(file, OPTIONS).stats();
+      available.push(i);
+    } catch { /* Missing or incomplete output must be regenerated. */ }
+  }
+  if (!available.length || available.length === job.params.count) return null;
+  return deliver(job, dir, available);
+}
+
+export async function deliver(job, dir, available = null) {
   // Immutable export revisions: a failed re-layout cannot corrupt the last delivery.
   const p = job.params;
   const exportId = "exports-" + randomUUID();
@@ -93,6 +108,7 @@ export async function deliver(job, dir) {
   };
   const modules = [];
   for (let i = 0; i < p.count; i++) {
+    if (available && !available.includes(i)) continue;
     const source = await regularFile(dir, `result-${i + 1}.png`);
     const meta = await sharp(source, OPTIONS).metadata();
     if (!["png", "jpeg", "webp"].includes(meta.format) || (meta.pages || 1) > 1 || meta.width < 256 || meta.height < 256)
@@ -121,7 +137,7 @@ export async function deliver(job, dir) {
     else await fs.writeFile(path.join(out, name), base);
     await add(name, "image", i);
   }
-  if (p.skillId === "detail") {
+  if (!available && p.skillId === "detail") {
     const total = modules.reduce((h, m) => h + m.height, 0);
     let top = 0;
     await sharp({ create: { width: 750, height: total, channels: 3, background: "#ffffff" } })
@@ -141,6 +157,7 @@ export async function deliver(job, dir) {
     frames: p.frames || [],
     textCheck,
     generation: { mode: p.providerMode || "codex", model: p.imageModel || null, requestedSize: p.requestedSize || null },
+    ...(available ? { missing: Array.from({ length: p.count }, (_, i) => i).filter(i => !available.includes(i)) } : {}),
     warnings,
   };
   await fs.writeFile(path.join(out, "manifest.json"), JSON.stringify(manifest, null, 2));

@@ -9,6 +9,7 @@ export function createProviders({
   codexCheck = checkCodex,
   fetchImpl = fetch,
 } = {}) {
+  const apiOnly = env.API_ONLY === "1";
   const config = imageConfig(env);
   const model2k = config?.model2k || env.IMAGE_API_MODEL_2K || "gpt-image-2.6-sunburst";
   const model4k = config?.model4k || env.IMAGE_API_MODEL_4K || "gpt-image-2-4K";
@@ -32,10 +33,11 @@ export function createProviders({
       : {}),
   });
   return {
-    defaultMode: env.GENERATION_PROVIDER === "api" ? "api" : "codex",
+    apiOnly,
+    defaultMode: apiOnly || env.GENERATION_PROVIDER === "api" ? "api" : "codex",
     validate,
     describe,
-    list: () => Object.keys(names).map(describe),
+    list: () => (apiOnly ? ["api"] : Object.keys(names)).map(describe),
     // Everything the relay key can see, not just the two configured models.
     allModels: () => states.api?.models || [],
     probe: (opts) => probeImageModel(config, opts, fetchImpl),
@@ -44,7 +46,7 @@ export function createProviders({
       states[mode] =
         mode === "api"
           ? await checkImageApi(config, fetchImpl)
-          : await codexCheck();
+          : apiOnly ? { ready: false, message: "工作台已启用纯 API 模式" } : await codexCheck();
       if (
         mode === "api" &&
         states.api.ready &&
@@ -58,7 +60,7 @@ export function createProviders({
       return describe(mode);
     },
     selection(body, fallback = "codex") {
-      const mode = body.providerMode || fallback;
+      const mode = apiOnly ? "api" : body.providerMode || fallback;
       validate(mode);
       if (!states[mode]?.ready)
         throw new AppError(states[mode]?.message || "生成服务未就绪", 503);
@@ -91,6 +93,7 @@ export function createProviders({
     async run(job, dir, signal) {
       const mode = job.params.providerMode || "codex";
       validate(mode);
+      if (apiOnly && mode !== "api") throw new AppError("工作台已启用纯 API 模式");
       await (mode === "api" ? apiRun : codexRun)(job, dir, signal);
     },
   };

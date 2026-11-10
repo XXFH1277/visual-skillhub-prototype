@@ -88,11 +88,12 @@ export function framePrompt(params, index) {
     roles.push(`图${n}：风格样图——只借鉴它的视觉系统（色调、光、道具类型、排版气质），里面的商品和文字与本次无关，不要出现。`);
   if (roles.length) lines.push("【附件】\n" + roles.join("\n"));
 
-  if (d.conceptName)
+  const white = frame.ref === "white" || frame.cutout === true;
+  if (!white && d.conceptName)
     lines.push(
       `【视觉系统 · ${d.conceptName}】${d.story || ""}\n色板：${(d.palette || []).join(" ")}\n道具与材质：${d.props}\n光线：${d.light}\n机位构图：${d.camera}\n字体排版：${d.type}${d.layout ? `\n版式元素：${d.layout}` : ""}${d.avoid ? `\n避免：${d.avoid}` : ""}${d.core ? `\nStyle: ${d.core}` : ""}`,
     );
-  lines.push("【这一张】" + frame.title + "\n" + frame.scene);
+  lines.push("【这一张】" + frame.title + "\n" + (white ? (frame.scene || "").replaceAll("透明背景抠图（之后自动铺纯白）", "纯白背景商品摄影") + "。直接生成不透明的纯白背景，只保留商品本体，无包装、道具、文字或装饰。" : frame.scene));
 
   if (texts.length) {
     const list = texts.map((t, i) => `${i + 1}. ${TEXT_ROLES[t.role]?.name || "文字"}："${t.text}"`).join("\n");
