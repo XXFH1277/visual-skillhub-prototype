@@ -7,7 +7,7 @@ import sharp from "sharp";
 import { normalizeAnalysis, normalizeStoryboard, sanitizeFrames, analyzeMessages, storyboardMessages, sceneGuide, candidatesFor } from "../backend/planner.js";
 import { STYLES } from "../shared/styles.js";
 import { compareTexts, createTextAI } from "../backend/text-ai.js";
-import { framePrompt } from "../backend/prompts.js";
+import { framePrompt, frameInputs } from "../backend/prompts.js";
 import { renderLayoutSketch, overlayTexts, wrap } from "../backend/render.js";
 const lib = STYLES.map((x) => ({ ...x, status: "ready" }));
 
@@ -199,4 +199,32 @@ test("JSON from the model survives plain quotes inside values and trailing comma
   assert.equal(d.looks[0].why, "大字醒目");
   assert.deepEqual(parseJsonObject('{"a":"x\ny"}'), { a: "x\ny" });
   assert.throws(() => parseJsonObject("没有 JSON"), /无法解析/);
+});
+
+test("fresh seafood and farm produce keep the merchant's real photo as the product", () => {
+  const candidates = candidatesFor(lib, "poster");
+  const result = normalizeAnalysis({ analysis: { category: "生鲜水产" }, directions: [{ styleId: candidates[0].id, conceptName: "木桌热鲜饭", props: "白瓷浅盘、竹筷", light: "窗侧暖光，虾身油润反光", camera: "手入画一角" }] }, { skillId: "poster" }, candidates);
+  const chosen = result.directions[0];
+  const sb = storyboardMessages({ skillId: "poster", count: 1, copy: "", hasMain: true }, result, chosen);
+  assert.match(sb.system, /主体就是商家实拍照片本身/);
+  assert.doesNotMatch(sb.system, /油润反光|手入画一角|大胆造景/);
+  // No photo uploaded, or another category: the creative brief stays as it was.
+  assert.match(storyboardMessages({ skillId: "poster", count: 1, copy: "", hasMain: false }, result, chosen).system, /大胆造景/);
+  const other = { ...result, analysis: { ...result.analysis, category: "美妆护肤" } };
+  assert.match(storyboardMessages({ skillId: "poster", count: 1, copy: "", hasMain: true }, other, chosen).system, /油润反光/);
+
+  const base = { skillId: "poster", size: "3:4", hasMainImage: true, refCount: 0, inputs: ["input-0.png"], styleRef: "style-ref.png", direction: chosen, frames: [{ title: "海报", layout: "free", textMode: "ai", texts: [{ role: "headline", text: "海中樱花" }], scene: "虾仁特写" }] };
+  const real = { ...base, fidelity: "real" };
+  const prompt = framePrompt(real, 0);
+  assert.match(prompt, /真实细节不要修掉/);
+  assert.match(prompt, /【真实度】/);
+  assert.doesNotMatch(prompt, /油润反光|手入画一角|可以换角度摆放进新场景|风格样图|Style:/);
+  assert.match(prompt, /色板/);
+  assert.deepEqual(frameInputs(real, 0), ["input-0.png"], "no AI-made style sample next to a real photo");
+  assert.deepEqual(frameInputs(base, 0), ["input-0.png", "style-ref.png"]);
+  assert.match(framePrompt(base, 0), /可以换角度摆放进新场景/);
+  // Cinematic shots and dish pictures keep their own way of using the photo.
+  const hero = { ...real, hasMainImage: false, frames: [{ ...base.frames[0], photos: ["p.png"], photoUse: "hero" }] };
+  assert.match(framePrompt(hero, 0), /场景完全重新构图/);
+  assert.doesNotMatch(framePrompt(hero, 0), /【真实度】/);
 });

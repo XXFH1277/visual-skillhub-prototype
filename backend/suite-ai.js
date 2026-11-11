@@ -266,8 +266,13 @@ export function assignLayouts(n, random = Math.random) {
 }
 
 export async function planFrames(ai, profile, items, { kind, look }) {
+  // 生鲜/农副：商品的光线、容器和摆放以实拍为准，视觉系统只管底色、画框和文字，
+  // 否则“侧逆光、白瓷盘”这类描述会让生图模型把商品重画一遍。大片（cinematic）项仍可重新造景。
+  const real = ["生鲜水产", "农副产品"].includes(profile.category);
   const style = look
-    ? `整套视觉系统「${look.conceptName}」：${look.story} 色板 ${(look.palette || []).join(" ")}；道具 ${look.props}；光线 ${look.light}；机位 ${look.camera}；字体排版 ${look.type}。${look.layout ? `版式元素 ${look.layout}。` : ""}`
+    ? real
+      ? `整套视觉系统「${look.conceptName}」（只用于底色、画框、标题和标签；商品本身的光线、容器和摆放以实拍为准，不要另外设计）：色板 ${(look.palette || []).join(" ")}；字体排版 ${look.type}。${look.layout ? `版式元素 ${look.layout}。` : ""}带 cinematic:true 的项可另用：道具 ${look.props}；光线 ${look.light}；机位 ${look.camera}。`
+      : `整套视觉系统「${look.conceptName}」：${look.story} 色板 ${(look.palette || []).join(" ")}；道具 ${look.props}；光线 ${look.light}；机位 ${look.camera}；字体排版 ${look.type}。${look.layout ? `版式元素 ${look.layout}。` : ""}`
     : `${profile.palette?.length ? `主色 ${profile.palette.join(" ")}，` : ""}真实商业摄影质感。`;
   const layouts = assignLayouts(items.length);
   const withLayout = items.map((it, k) => ({ ...it, layout: layouts[k] }));
@@ -278,7 +283,7 @@ export async function planFrames(ai, profile, items, { kind, look }) {
 ${style}
 每项已经指定了版式（layout），按它来设计画面和文字位置。带 content 的项（规格、售后保障、正常现象等），文字只从 content 里取，事实照抄，content 里没有的保障和数字不要写。${kind === "detail" ? "\n详情页的每项带了 content（这一屏能用的要点）：文字从里面挑最有力的，整屏文字加起来不超过 50 字；数字、产地等事实照抄。" : ""}
 商品和包装只能画实拍图里有的样子：实拍里没有出现的包装形式（真空袋、保温箱、手提袋、内托等）不要画进画面，需要说明就放在文字里。生鲜没有被烹饪就不要加热气、蒸汽。对比屏里“普通的”一侧画同类普通货的样子（可以更暗淡、更普通），不出现任何品牌、店名和包装。
-真实感最重要：画面主体就是商家的实拍照片，保留它的光影、冰碴、反光、鳞片纹理等真实细节，只做裁切、轻微调色提亮和换掉杂乱背景；标题、牌匾、印章、画框、底色这些设计元素放在照片周围或照片的空白处。不要把商品重画成 3D 渲染质感，不要不可能的动作（冷冻的鱼不会跳出水面）。
+真实感最重要：画面主体就是商家的实拍照片，保留它的光影、冰碴、反光、鳞片纹理等真实细节，只做裁切、轻微调色提亮和换掉杂乱背景；标题、牌匾、印章、画框、底色这些设计元素放在照片周围或照片的空白处。不要把商品重画成 3D 渲染质感，不要不可能的动作（冷冻的鱼不会跳出水面）。scene 只写实拍图里看得见的东西：数量、容器、手、生熟和冷冻状态按实拍如实写，不编造实拍里没有的盘子、手、动作、蘸料和配菜，不用“油亮、饱满、晶莹”这类美化词。
 带 cinematic:true 的项是“大片”：实拍图只用来确定商品长什么样（品种、外形、颜色、纹理），画面要重新构图成一个戏剧性的瞬间——手托起商品出水、水花飞溅、海面/渔船/渔网背景、碎冰水珠特写、戏剧侧逆光，商品占画面 50–60%，像餐厅和品牌的广告大片；不要照搬实拍的背景、泡沫箱和盘子。
 视觉系统里有英文手写或印章时，可以另加 1 条 role=tag：英文装饰短语（2–5 个英文单词，如 Fresh From The East Sea）或印章字（1–3 个汉字，只能是产地或品类字，如 东海、鲜）。
 ${FACTS}

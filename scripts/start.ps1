@@ -1,7 +1,25 @@
-param([switch]$Public, [string]$Cloudflared, [string]$EdgeBindAddress, [switch]$ResolveEdgeViaHttps)
+﻿param(
+    [switch]$Public,
+    [string]$Cloudflared,
+    [string]$EdgeBindAddress,
+    [switch]$ResolveEdgeViaHttps,
+    [string]$FixedOrigin,
+    [string]$TunnelTokenFile
+)
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $dataRoot = Join-Path $projectRoot '.data'
+if ($FixedOrigin -or $TunnelTokenFile) {
+    if (-not $Public -or -not $FixedOrigin -or -not $TunnelTokenFile) {
+        throw '正式隧道需要同时指定 -Public、-FixedOrigin 和 -TunnelTokenFile。'
+    }
+    $origin = [uri]$FixedOrigin
+    if (-not $origin.IsAbsoluteUri -or $origin.Scheme -ne 'https' -or $origin.UserInfo -or $origin.PathAndQuery -ne '/' -or $origin.Fragment) {
+        throw '固定公网地址必须是 HTTPS 域名。'
+    }
+    $FixedOrigin = $origin.GetLeftPart([System.UriPartial]::Authority)
+    $TunnelTokenFile = (Resolve-Path -LiteralPath $TunnelTokenFile).Path
+}
 New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
 $stateFile = Join-Path $dataRoot 'processes.json'
 if (Test-Path -LiteralPath $stateFile) {
@@ -31,7 +49,7 @@ try {
         if (-not $Cloudflared) { $Cloudflared = Join-Path $projectRoot '../tools/cloudflared.exe' }
         $Cloudflared = (Resolve-Path -LiteralPath $Cloudflared).Path
         $tunnelLog = Join-Path $dataRoot 'tunnel.stderr.log'
-        $tunnelArgs = @('tunnel','--url','http://127.0.0.1:8787','--protocol','http2','--edge-ip-version','4','--no-autoupdate')
+        $tunnelArgs = @('tunnel','--protocol','http2','--edge-ip-version','4','--no-autoupdate')
         if ($EdgeBindAddress) {
             $parsedAddress = [System.Net.IPAddress]::Parse($EdgeBindAddress)
             $tunnelArgs += @('--edge-bind-address', $parsedAddress.ToString())
@@ -48,13 +66,19 @@ try {
                 }
             }
         }
+        if ($FixedOrigin) {
+            $tunnelArgs += @('run','--token-file',('"' + $TunnelTokenFile + '"'))
+        } else {
+            $tunnelArgs += @('--url','http://127.0.0.1:8787')
+        }
         $tunnel = Start-Process -FilePath $Cloudflared -ArgumentList $tunnelArgs -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $dataRoot 'tunnel.stdout.log') -RedirectStandardError $tunnelLog -PassThru
         $started += Remember-Process $tunnel 'tunnel' $Cloudflared
         $deadline = (Get-Date).AddSeconds(45)
         while ((Get-Date) -lt $deadline) {
             if ($tunnel.HasExited) { throw '隧道启动失败，请检查 .data/tunnel.stderr.log。' }
             $log = Get-Content -LiteralPath $tunnelLog -Raw -ErrorAction SilentlyContinue
-            if ($log -match 'https://[a-z0-9-]+\.trycloudflare\.com') { $publicUrl = $Matches[0]; break }
+            if ($FixedOrigin -and $log -match 'Registered tunnel connection') { $publicUrl = $FixedOrigin; break }
+            if (-not $FixedOrigin -and $log -match 'https://[a-z0-9-]+\.trycloudflare\.com') { $publicUrl = $Matches[0]; break }
             Start-Sleep -Milliseconds 500
         }
         if (-not $publicUrl) { throw '没有获得公网地址，请检查 .data/tunnel.stderr.log。' }
@@ -74,7 +98,9 @@ try {
         } catch {}
     }
     if (-not $ready) { throw '网站启动超时，请检查本机日志。' }
-    if ($publicUrl) {
+    # Verify a new random hostname before reporting it. A fixed tunnel can
+    # serve visitors while this computer's DNS resolver is still catching up.
+    if ($publicUrl -and -not $FixedOrigin) {
         $connected = $false
         $deadline = (Get-Date).AddSeconds(60)
         while ((Get-Date) -lt $deadline) {

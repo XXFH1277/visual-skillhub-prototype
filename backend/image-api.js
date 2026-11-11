@@ -25,7 +25,7 @@ export function imageConfig(env = process.env) {
     base: base.href,
     key: env.IMAGE_API_KEY,
     model2k: env.IMAGE_API_MODEL_2K || "gpt-image-2.6-sunburst",
-    model4k: env.IMAGE_API_MODEL_4K || "gpt-image-2-4K",
+    model4k: env.IMAGE_API_MODEL_4K || "gpt-image-2.6-sunburst",
     timeoutMs: Number(env.GENERATION_TIMEOUT_MS) || 900000,
     concurrency: Math.min(Math.max(Number(env.IMAGE_API_CONCURRENCY) || 3, 1), 6),
   };
@@ -89,7 +89,7 @@ function upscalePrompt(p) {
   return `请将附件这张已经完成的图片提升至 4K 清晰度，目标 ${p.requestedSize}。严格保留原图画幅比例、构图、主体形状、颜色、Logo、全部文字、光线与背景，不增加、删除或重新设计任何元素。只改善材质细节、边缘与清晰度，避免过度锐化。仅输出一张提升后的图片。`;
 }
 
-export function createImageRunner(config, fetchImpl = fetch) {
+export function createImageRunner(config, fetchImpl = fetch, channels = [config]) {
   return async (job, dir, signal) => {
     if (!config) throw new Error("生图 API 未配置");
     const p = job.params;
@@ -100,7 +100,7 @@ export function createImageRunner(config, fetchImpl = fetch) {
     if (!requestedSize || requestedSize !== p.requestedSize)
       throw new Error("生图请求尺寸无效");
     if (p.resolution === "4K" && p.imageModel !== config.model4k)
-      throw new Error("生图 4K 请求必须使用 2.0 4K 模型");
+      throw new Error("生图 4K 请求必须使用配置的 4K 模型");
     const timeout = AbortSignal.timeout(config.timeoutMs);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const prompts =
@@ -113,8 +113,8 @@ export function createImageRunner(config, fetchImpl = fetch) {
     const framePhases = new Map();
     let failedFrame = null;
     // Frames are independent: run a few at once (the relay takes ~1 min per image).
-    const runFrame = (i) => withUsage({ jobId: job.id, suiteId: p.suiteId || null, purpose: p.packStep ? `pack-${p.packStep}` : p.operation || p.skillId }, () => runFrameNow(i));
-    const runFrameNow = async (i) => {
+    const runFrame = (i, channel) => withUsage({ jobId: job.id, suiteId: p.suiteId || null, purpose: p.packStep ? `pack-${p.packStep}` : p.operation || p.skillId }, () => runFrameNow(i, channel));
+    const runFrameNow = async (i, channel) => {
         combined.throwIfAborted();
         const frameStarted = Date.now();
         const model = p.imageModel;
@@ -152,12 +152,12 @@ export function createImageRunner(config, fetchImpl = fetch) {
         const response = await fetchImpl(
           new URL(
             textOnly ? "images/generations" : "images/edits",
-            config.base,
+            channel.base,
           ),
           {
             method: "POST",
             headers: {
-              Authorization: `Bearer ${config.key}`,
+              Authorization: `Bearer ${channel.key}`,
               ...(textOnly ? { "Content-Type": "application/json" } : {}),
             },
             body: requestBody,
@@ -189,7 +189,7 @@ export function createImageRunner(config, fetchImpl = fetch) {
         ) {
           await fs.writeFile(
             path.join(dir, `api-response-${i + 1}.json`),
-            JSON.stringify(body).replaceAll(config.key, "[redacted]"),
+            JSON.stringify(body).replaceAll(channel.key, "[redacted]"),
           );
           throw new Error(
             "生图 API 返回了不同格式；已在本机保留响应，便于恢复结果，未自动重试",
@@ -226,6 +226,8 @@ export function createImageRunner(config, fetchImpl = fetch) {
         }
         results.push({
           index: i + 1,
+          channel: channel.id || "channel-1",
+          seconds: Math.round((Date.now() - frameStarted) / 1000),
           requestedSize,
           actualSize: `${meta.width}x${meta.height}`,
           sizeMatched: requestedSize === `${meta.width}x${meta.height}`,
@@ -234,13 +236,14 @@ export function createImageRunner(config, fetchImpl = fetch) {
     try {
       let next = 0;
       let failed = null;
-      const worker = async () => {
-        while (!failed && next < p.count) {
+      const worker = async (channel) => {
+        while (!channel.failed && !combined.aborted && next < p.count) {
           const i = next++;
           if (p.reusedFrames?.includes(i)) continue;
           try {
-            await runFrame(i);
+            await runFrame(i, channel);
           } catch (error) {
+            channel.failed = true;
             if (!failed) {
               failed = error;
               failedFrame = i + 1;
@@ -249,7 +252,12 @@ export function createImageRunner(config, fetchImpl = fetch) {
           }
         }
       };
-      await Promise.all(Array.from({ length: Math.min(config.concurrency || 1, p.count) }, worker));
+      const workers = channels.flatMap(c => {
+        const channel = { ...c, failed: false };
+        return Array.from({ length: Math.min(c.concurrency || 1, p.count) }, () => worker(channel));
+      });
+      await Promise.all(workers);
+      combined.throwIfAborted();
       if (failed) throw failed;
       results.sort((a, b) => a.index - b.index);
       phase = "save-report";
@@ -279,6 +287,7 @@ export function createImageRunner(config, fetchImpl = fetch) {
               frame: failedFrame,
               model: p.imageModel,
               requestedSize,
+              completed: results,
               durationSeconds: Math.round((Date.now() - started) / 1000),
               errorType: safeCode(error.name),
               errorCode: safeCode(error.code),

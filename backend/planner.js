@@ -1,7 +1,7 @@
 import { parseJsonObject } from "./json.js";
 import fs from "node:fs";
 import { SCENES, LAYOUTS, TEXT_MODES, TEXT_ROLES, MAX_TEXTS, SIZE_NAMES } from "../shared/scenes.js";
-import { CATEGORIES, styleFits } from "../shared/styles.js";
+import { CATEGORIES, FARM_CATEGORIES, styleFits } from "../shared/styles.js";
 import { AppError } from "./store.js";
 
 // Skills are knowledge for the planner (Kimi), never text pasted into the image model.
@@ -60,6 +60,16 @@ const HARD_RULES = `硬性规则：
 - 画面可以大胆造景（道具、场景、光影都可以创作），但道具不能被误认为随商品附赠。
 - 文字短而有态度，像品牌文案，不像说明书；简体中文，可配少量英文小标。`;
 
+// 生鲜水产、农副产品带了实拍图：商品来自照片本身，不重新造景。
+export const realPhotoFirst = (category, hasMain) => !!hasMain && FARM_CATEGORIES.includes(category);
+const REAL_RULES = `硬性规则（与上面的指南冲突时，以这里为准）：
+- 这是生鲜/农副产品，买家要看到真货：每张图的主体就是商家实拍照片本身，只做裁切、轻微提亮调色、换掉杂乱背景；不重新造景、不重新摆盘、不换容器。
+- scene 只写实拍图里看得见的东西：数量、容器、手、生熟和冷冻状态按实拍如实写；不编造实拍里没有的盘子、手、动作、热气、水花、蘸料和配菜；不用“油亮、饱满、晶莹”这类美化词。
+- 一套多张时，靠实拍的不同裁切和景别（全景、近景、局部特写）区分，不是换场景。
+- 设计放在照片周围或照片的空白处：底色、画框、标题、标签、印章按视觉系统的色板和字体来做，scene 里写清它们的位置和大小。
+- 不编造参数、认证、销量、功效、价格、日期、地址、电话。商家写的数字和品牌名原样照抄。
+- 文字短而有态度，像品牌文案，不像说明书；简体中文，可配少量英文小标。`;
+
 /* ---------- step 1: look at the product, propose 3 creative directions ---------- */
 export function candidatesFor(styles, skillId) {
   return styles.filter((s) => s.status === "ready" && styleFits(s, skillId));
@@ -75,6 +85,7 @@ ${input.hasReference ? "商家上传了参考图（“照这个感觉做”）�
 ${catalog}
 
 ${HARD_RULES}
+- 商品是生鲜水产或农副产品时，成品会直接用商家实拍照片做主体：三个方向只在底色、画框、字体和版式上拉开差别，props 只写照片周围的装饰，light 和 camera 写“沿用实拍”，不要设计新的摆盘、手和动作。
 
 只输出一个 JSON 对象，不要 Markdown：
 {
@@ -168,15 +179,16 @@ function leanGuide(skillId) {
   return lean.get(skillId);
 }
 export function storyboardMessages(input, result, chosen) {
+  const real = realPhotoFirst(result.analysis?.category, input.hasMain);
   const system = `${leanGuide(input.skillId)}
 
 ---
 你现在按选定的创意方向写分镜。
 创意方向：${chosen.conceptName}——${chosen.story}
-视觉系统：色板 ${chosen.palette.join(" ")}；道具材质：${chosen.props}；光线：${chosen.light}；机位构图：${chosen.camera}；字体排版：${chosen.type}；避免：${chosen.avoid}
+视觉系统：色板 ${chosen.palette.join(" ")}；${real ? "" : `道具材质：${chosen.props}；光线：${chosen.light}；机位构图：${chosen.camera}；`}字体排版：${chosen.type}；避免：${chosen.avoid}
 ${STRUCTURE[input.skillId](input.count)}
 
-${HARD_RULES}
+${real ? REAL_RULES : HARD_RULES}
 
 只输出一个 JSON 对象，不要 Markdown：
 {"frames": [{"title": "这张图的用途", "textMode": "ai|none", "texts": [{"role": "headline|sub|body|point|tag|price|cta|footer", "text": "图上的文字"}], "scene": "这张图的具体画面与排版描述（80-220字）：商品位置与大小、道具摆放、背景、光线方向与质感、文字放在画面哪里、字体大小与方向（如左上竖排细宋体），用五要素写具体"}]}

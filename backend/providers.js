@@ -11,10 +11,18 @@ export function createProviders({
 } = {}) {
   const apiOnly = env.API_ONLY === "1";
   const config = imageConfig(env);
+  const secondary = imageConfig({
+    ...env,
+    IMAGE_API_BASE_URL: env.IMAGE_API_SECONDARY_BASE_URL,
+    IMAGE_API_KEY: env.IMAGE_API_SECONDARY_KEY,
+    IMAGE_API_CONCURRENCY: env.IMAGE_API_SECONDARY_CONCURRENCY || "3",
+  });
+  const channels = [config, secondary].filter(Boolean)
+    .filter((c, i, all) => all.findIndex(x => x.base === c.base && x.key === c.key) === i);
+  let channelStates = [];
   const model2k = config?.model2k || env.IMAGE_API_MODEL_2K || "gpt-image-2.6-sunburst";
-  const model4k = config?.model4k || env.IMAGE_API_MODEL_4K || "gpt-image-2-4K";
-  const imageModels = [model2k, model4k];
-  const apiRun = createImageRunner(config, fetchImpl);
+  const model4k = config?.model4k || env.IMAGE_API_MODEL_4K || "gpt-image-2.6-sunburst";
+  const imageModels = [...new Set([model2k, model4k])];
   const states = {};
   const names = { codex: "本机 Codex", api: "中转生图 API" };
   const validate = (mode) => {
@@ -45,7 +53,17 @@ export function createProviders({
       validate(mode);
       states[mode] =
         mode === "api"
-          ? await checkImageApi(config, fetchImpl)
+          ? await (async () => {
+              channelStates = await Promise.all(channels.map(c => checkImageApi(c, fetchImpl)));
+              const ready = channelStates.filter(s => s.ready);
+              return {
+                ready: ready.length > 0,
+                models: [...new Set(ready.flatMap(s => s.models))],
+                channelCount: ready.length,
+                concurrency: channels.reduce((n, c, i) => n + (channelStates[i].ready ? c.concurrency : 0), 0),
+                message: ready.length ? `已连接 ${ready.length} 个生图通道` : "生图 API 鉴权失败或未配置，请检查通道设置",
+              };
+            })()
           : apiOnly ? { ready: false, message: "工作台已启用纯 API 模式" } : await codexCheck();
       if (
         mode === "api" &&
@@ -55,7 +73,7 @@ export function createProviders({
         states.api = {
           ...states.api,
           ready: false,
-          message: "此密钥没有可选的 2.5 / 2.0 4K 图片模型",
+          message: "已连接的通道没有配置的生图模型",
         };
       return describe(mode);
     },
@@ -79,7 +97,7 @@ export function createProviders({
     },
     upscaleSelection(width, height) {
       if (!states.api?.ready || !states.api.models.includes(model4k))
-        throw new AppError("2.0 4K 生图服务未就绪，请先检查连接", 409);
+        throw new AppError("4K 生图服务未就绪，请先检查连接", 409);
       return {
         providerMode: "api",
         imageModel: model4k,
@@ -94,7 +112,13 @@ export function createProviders({
       const mode = job.params.providerMode || "codex";
       validate(mode);
       if (apiOnly && mode !== "api") throw new AppError("工作台已启用纯 API 模式");
-      await (mode === "api" ? apiRun : codexRun)(job, dir, signal);
+      if (mode === "api") {
+        const available = channels.flatMap((c, i) =>
+          channelStates[i]?.ready && channelStates[i].models.includes(job.params.imageModel)
+            ? [{ ...c, id: `channel-${i + 1}` }] : []);
+        if (!available.length) throw new AppError("没有支持此模型的可用生图通道", 503);
+        await createImageRunner(config || available[0], fetchImpl, available)(job, dir, signal);
+      } else await codexRun(job, dir, signal);
     },
   };
 }

@@ -404,6 +404,132 @@ test("API mode: brief carries the visual system and exact text; covers feed the 
   assert.equal(all.filter((x) => x.source === "builtin" && !x.types.includes("interior") && !x.cover).length, 0);
 });
 
+test("image channels share frames dynamically and respect each credential's concurrency", { timeout: 10000 }, async t => {
+  const gate = Promise.withResolvers();
+  t.after(() => gate.resolve());
+  const active = { primary: 0, secondary: 0 };
+  const peak = { primary: 0, secondary: 0 };
+  const calls = { primary: 0, secondary: 0 };
+  const providers = createProviders({
+    env: {
+      IMAGE_API_BASE_URL: "https://relay.example", IMAGE_API_KEY: "primary",
+      IMAGE_API_SECONDARY_BASE_URL: "https://relay.example", IMAGE_API_SECONDARY_KEY: "secondary",
+      IMAGE_API_CONCURRENCY: "1", IMAGE_API_SECONDARY_CONCURRENCY: "2",
+    },
+    codexCheck: async () => ({ ready: true }),
+    fetchImpl: async (url, init) => {
+      if (url.pathname.endsWith("models")) return Response.json({ data: [{ id: "gpt-image-2.6-sunburst" }] });
+      const key = init.headers.Authorization.split(" ")[1];
+      calls[key]++;
+      active[key]++;
+      peak[key] = Math.max(peak[key], active[key]);
+      if (key === "primary") await gate.promise;
+      else if (calls.secondary === 3) gate.resolve();
+      assert.equal(init.body.get("model"), "gpt-image-2.6-sunburst");
+      active[key]--;
+      return Response.json({ data: [{ b64_json: image.toString("base64") }] });
+    },
+  });
+  const s = await setup(t, null, { providers });
+  const created = await s.submit({ fields: { count: "4" }, extra: { providerMode: "api" } });
+  const job = await s.terminal((await created.json()).id);
+  assert.equal(job.status, "succeeded", job.error);
+  assert.deepEqual(calls, { primary: 1, secondary: 3 });
+  assert(peak.primary <= 1 && peak.secondary <= 2);
+  assert.equal(job.manifest.assets.length, 4);
+  const workspace = (await (await s.request("/api/workspace")).json()).providers.find(p => p.mode === "api");
+  assert.equal(workspace.channelCount, 2);
+  assert.equal(workspace.concurrency, 3);
+  assert.equal(workspace.modelsByResolution["4K"], "gpt-image-2.6-sunburst");
+  const created4k = await s.submit({ fields: { skillId: "poster", size: "16:9" }, extra: { providerMode: "api", resolution: "4K" } });
+  const job4k = await s.terminal((await created4k.json()).id);
+  assert.equal(job4k.status, "succeeded", job4k.error);
+  assert.equal(job4k.params.imageModel, "gpt-image-2.6-sunburst");
+  assert.equal(job4k.params.requestedSize, "3840x2160");
+});
+
+test("a failing image channel stops taking frames while the healthy channel finishes; resume only bills missing frames", async t => {
+  let fail = true;
+  const calls = [];
+  const providers = createProviders({
+    env: {
+      IMAGE_API_BASE_URL: "https://relay.example", IMAGE_API_KEY: "primary",
+      IMAGE_API_SECONDARY_BASE_URL: "https://relay.example", IMAGE_API_SECONDARY_KEY: "secondary",
+      IMAGE_API_CONCURRENCY: "1", IMAGE_API_SECONDARY_CONCURRENCY: "1",
+    },
+    codexCheck: async () => ({ ready: true }),
+    fetchImpl: async (url, init) => {
+      if (url.pathname.endsWith("models")) return Response.json({ data: [{ id: "gpt-image-2.6-sunburst" }] });
+      const key = init.headers.Authorization.split(" ")[1];
+      calls.push(key);
+      if (fail && key === "primary") return new Response(null, { status: 502 });
+      return Response.json({ data: [{ b64_json: image.toString("base64") }] });
+    },
+  });
+  const s = await setup(t, null, { providers });
+  const job = await s.terminal((await (await s.submit({ fields: { count: "4" }, extra: { providerMode: "api" } })).json()).id);
+  assert.equal(job.status, "partial");
+  assert.equal(calls.filter(key => key === "primary").length, 1);
+  assert.equal(calls.filter(key => key === "secondary").length, 3);
+  assert.deepEqual(job.manifest.missing, [0]);
+  assert.deepEqual(job.manifest.assets.map(a => a.frame), [1, 2, 3]);
+  assert.equal(await s.balance(), 470);
+  fail = false;
+  const resumed = await s.terminal((await (await s.post(`/api/jobs/${job.id}/retry`, {}, { "Idempotency-Key": randomUUID() })).json()).id);
+  assert.equal(resumed.status, "succeeded", resumed.error);
+  assert.equal(calls.length, 5);
+  assert.equal(await s.balance(), 460);
+  assert.deepEqual(resumed.manifest.assets.slice(1).map(a => a.sha256), job.manifest.assets.map(a => a.sha256));
+});
+
+test("cancelling a pooled image batch aborts both channels without scheduling more frames", { timeout: 10000 }, async t => {
+  const started = Promise.withResolvers();
+  let requests = 0, aborted = 0;
+  const providers = createProviders({
+    env: {
+      IMAGE_API_BASE_URL: "https://relay.example", IMAGE_API_KEY: "primary",
+      IMAGE_API_SECONDARY_BASE_URL: "https://relay.example", IMAGE_API_SECONDARY_KEY: "secondary",
+      IMAGE_API_CONCURRENCY: "1", IMAGE_API_SECONDARY_CONCURRENCY: "1",
+    },
+    codexCheck: async () => ({ ready: true }),
+    fetchImpl: async (url, init) => {
+      if (url.pathname.endsWith("models")) return Response.json({ data: [{ id: "gpt-image-2.6-sunburst" }] });
+      requests++;
+      if (requests === 2) started.resolve();
+      return new Promise((_, reject) => init.signal.addEventListener("abort", () => {
+        aborted++;
+        reject(init.signal.reason);
+      }, { once: true }));
+    },
+  });
+  const s = await setup(t, null, { providers });
+  const job = await (await s.submit({ fields: { count: "4" }, extra: { providerMode: "api" } })).json();
+  await started.promise;
+  await s.request(`/api/jobs/${job.id}/cancel`, { method: "POST" });
+  assert.equal((await s.terminal(job.id)).status, "cancelled");
+  assert.equal(requests, 2);
+  assert.equal(aborted, 2);
+  assert.equal(await s.balance(), 500);
+});
+
+test("a duplicate image credential does not increase concurrency; the secondary can run while the primary is unavailable", async () => {
+  const env = {
+    IMAGE_API_BASE_URL: "https://relay.example", IMAGE_API_KEY: "primary",
+    IMAGE_API_SECONDARY_BASE_URL: "https://relay.example", IMAGE_API_SECONDARY_KEY: "primary",
+    IMAGE_API_CONCURRENCY: "1",
+  };
+  const fetchImpl = async (_url, init) => init.headers.Authorization === "Bearer unavailable"
+    ? new Response(null, { status: 401 })
+    : Response.json({ data: [{ id: "gpt-image-2.6-sunburst" }] });
+  const same = createProviders({ env, fetchImpl });
+  assert.equal((await same.check("api")).channelCount, 1);
+  assert.equal(same.describe("api").concurrency, 1);
+  const failover = createProviders({ env: { ...env, IMAGE_API_KEY: "unavailable", IMAGE_API_SECONDARY_KEY: "secondary" }, fetchImpl });
+  assert.equal((await failover.check("api")).ready, true);
+  assert.equal(failover.describe("api").channelCount, 1);
+  assert.equal(failover.selection({ providerMode: "api" }).imageModel, "gpt-image-2.6-sunburst");
+});
+
 test("partial batch exports completed frames and a duplicate resume bills and requests only the missing frame", async t => {
   const calls = [];
   const providers = createProviders({

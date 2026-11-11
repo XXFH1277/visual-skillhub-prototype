@@ -12,13 +12,20 @@ const OPENERS = {
 };
 const AREA = { top: "画面上方约四分之一", bottom: "画面下方约四分之一", left: "画面左侧约四成", right: "画面右侧约四成", center: "画面中央" };
 
+// 生鲜水产、农副产品：买家要看到真货。“实拍保真”时商品来自实拍照片本身，
+// 视觉系统只管底色、画框和文字；大片（hero）、菜品（ingredient）、包装等自带用法的图不受影响。
+export const realMode = (params, frame) => params.fidelity === "real" && !frame?.photoUse && params.skillId !== "interior";
+const realPhoto = (n, note = "") =>
+  `图${n}：商家实拍${note}——画面以它为基础：商品和真实场景尽量保留原样（光影、冰碴、反光、鳞片和纹理这些真实细节不要修掉），可以裁切、轻微调色提亮、换掉杂乱的背景、加设计元素；商品/包装的形状、颜色、图案、Logo 和文字保持真实，不重新设计，不要画成 3D 渲染或塑料质感。`;
+
 export function frameInputs(params, index) {
   if (params.operation === "tweak") return [...params.inputs];
   const frame = params.frames[index];
   const files = frame?.photos?.length ? [...frame.photos] : [...params.inputs];
   // A picked reference from the internal library replaces the generic style sample.
   if (frame?.styleRefs?.length) files.push(...frame.styleRefs);
-  else if (params.styleRef && frame?.textMode !== "overlay") files.push(params.styleRef);
+  // An AI-made style sample pulls the product towards a repainted studio look.
+  else if (params.styleRef && frame?.textMode !== "overlay" && !realMode(params, frame)) files.push(params.styleRef);
   return files;
 }
 
@@ -47,6 +54,7 @@ export function framePrompt(params, index) {
   const d = params.direction || {};
   const texts = textsForImage(params.skillId, frame);
   const files = frameInputs(params, index);
+  const real = realMode(params, frame);
   const lines = [(params.opener || OPENERS[params.skillId]) + `画幅 ${SIZE_NAMES[params.size] || params.size}。只输出一张图片。`];
 
   const roles = [];
@@ -63,13 +71,15 @@ export function framePrompt(params, index) {
               ? `图${n}：商家实拍${note}——只用来确定商品长什么样（品种、外形、颜色、鳞片/纹理、大小比例），画面里的商品必须是它；场景完全重新构图（手托出水、水花、海面渔船、戏剧光），不要照搬它的背景、容器和摆放。`
             : frame.photoUse === "artwork"
               ? `图${n}：包装平面设计稿${note}——效果图里包装上的图案、文字、颜色、版式必须和它完全一致，只是贴到立体盒子上，不要重新设计。`
-              : `图${n}：商家实拍${note}——画面以它为基础：商品和真实场景尽量保留原样（光影、冰碴、反光、鳞片和纹理这些真实细节不要修掉），可以裁切、轻微调色提亮、换掉杂乱的背景、加设计元素；商品/包装的形状、颜色、图案、Logo 和文字保持真实，不重新设计，不要画成 3D 渲染或塑料质感。`,
+              : realPhoto(n, note),
       );
       n++;
     });
   } else if (params.hasMainImage) {
     roles.push(
-      params.skillId === "interior"
+      real
+        ? realPhoto(n)
+        : params.skillId === "interior"
         ? `图${n}：现场照片——保持同一机位、视角、透视、墙体、门窗位置与数量、梁柱和固定设施，只改造软装、饰面与配色。`
         : `图${n}：商品原图——商品的形状、比例、颜色、材质、Logo、标签文字必须完全一致；可以换角度摆放进新场景，但不能重新设计商品、不添加配件、不复制多个（除非画面要求多个）。`,
     );
@@ -89,11 +99,20 @@ export function framePrompt(params, index) {
   if (roles.length) lines.push("【附件】\n" + roles.join("\n"));
 
   const white = frame.ref === "white" || frame.cutout === true;
-  if (!white && d.conceptName)
+  if (!white && d.conceptName && real)
+    lines.push(
+      `【视觉系统 · ${d.conceptName}】只用于底色、画框、标题和标签；商品本身的光线、色泽、容器和摆放以实拍为准。\n色板：${(d.palette || []).join(" ")}\n字体排版：${d.type}${d.layout ? `\n版式元素：${d.layout}` : ""}${d.avoid ? `\n避免：${d.avoid}` : ""}`,
+    );
+  else if (!white && d.conceptName)
     lines.push(
       `【视觉系统 · ${d.conceptName}】${d.story || ""}\n色板：${(d.palette || []).join(" ")}\n道具与材质：${d.props}\n光线：${d.light}\n机位构图：${d.camera}\n字体排版：${d.type}${d.layout ? `\n版式元素：${d.layout}` : ""}${d.avoid ? `\n避免：${d.avoid}` : ""}${d.core ? `\nStyle: ${d.core}` : ""}`,
     );
   lines.push("【这一张】" + frame.title + "\n" + (white ? (frame.scene || "").replaceAll("透明背景抠图（之后自动铺纯白）", "纯白背景商品摄影") + "。直接生成不透明的纯白背景，只保留商品本体，无包装、道具、文字或装饰。" : frame.scene));
+
+  if (real && !white)
+    lines.push(
+      "【真实度】买家要看到真货：商品部分必须就是实拍照片里的样子，不重画、不美化、不磨皮、不加油光，不增减数量；不添加实拍里没有的手、动作、热气、水花和容器。上面的画面描述如果和实拍对不上，以实拍为准。底色、画框、标题、标签这些设计放在照片周围或照片的空白处。",
+    );
 
   if (texts.length) {
     const list = texts.map((t, i) => `${i + 1}. ${TEXT_ROLES[t.role]?.name || "文字"}："${t.text}"`).join("\n");

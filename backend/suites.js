@@ -495,6 +495,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       inputs: [...new Set(frames.flatMap((f) => f.photos))],
       suiteId: s.id,
       brandColor: direction(s).palette[1] || "#e8541e",
+      ...(FARM_CATEGORIES.includes(s.profile.category) ? { fidelity: "real" } : {}),
     };
     // Reference images live in the internal library, not with the product's photos.
     const extra = {};

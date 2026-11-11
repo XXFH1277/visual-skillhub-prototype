@@ -12,7 +12,7 @@ import { setUsageSink, withUsage } from "./usage.js";
 import { JobQueue } from "./queue.js";
 import { createProviders } from "./providers.js";
 import { createTextAI, compareTexts } from "./text-ai.js";
-import { sanitizeFrames, candidatesFor } from "./planner.js";
+import { sanitizeFrames, candidatesFor, realPhotoFirst } from "./planner.js";
 import { StyleLibrary } from "./styles.js";
 import { ADMIN_ID } from "./users.js";
 import { registerSuites, SUITE_FILE_MB } from "./suites.js";
@@ -737,6 +737,7 @@ export async function createWorkspace({
       refCount: d.refCount,
       inputs: [...d.inputs],
       planVia: d.via,
+      ...(d.input.skillId !== "interior" && realPhotoFirst(d.result.analysis?.category, d.hasMainImage) ? { fidelity: "real" } : {}),
     };
     await createJob(req, res, params, d.dir);
   });
