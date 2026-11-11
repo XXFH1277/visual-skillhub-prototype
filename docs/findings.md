@@ -1,0 +1,3 @@
+Existing job queue processes one group at a time. Image runner already has three workers per channel but only one credential. Frame success is atomically persisted. Errors stop new work and partialDelivery exports completed frames. New credentials have seven visible models and both required resolutions tested successfully. Model aliases do not establish independent upstream quotas.
+User changes in worktree must be preserved.
+Design uses one work queue per group and channel-owned worker slots. Fast slots take the next unassigned frame. A failed channel stops taking new frames while other channels continue. Requests are never duplicated for fallback. Secondary credentials remain in ignored .env.
