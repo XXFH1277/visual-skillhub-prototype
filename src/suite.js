@@ -372,7 +372,7 @@ export function initSuite(ctx) {
     return n ? `<p class="muted">有 ${n} 张图的文字还没核对上（校对 AI 当时没响应）。<button class="link" data-recheck="${job.id}">重新核对文字（免费）</button></p>` : "";
   }
   function partialResults(job, showImages = true) {
-    return `<section class="card warn"><b>部分完成</b><p>${esc(job.error)}</p><button class="btn primary" data-resume="${job.id}">只补缺少的 ${job.manifest.missing.length} 张 · ${job.manifest.missing.length * (getWorkspace().skills[job.skillId]?.cost || (job.manifest.assets[0]?.role === "module" ? 30 : 10))} 积分</button></section>
+    return `<section class="card warn"><b>部分完成</b><p>${esc(job.error)}</p><button class="btn primary" data-resume="${job.id}">只补缺少的 ${job.manifest.missing.length} 张 · ${job.manifest.missing.length * (getWorkspace().skills[job.skillId]?.cost || 10)} 积分</button></section>
       ${showImages ? `<div class="results">${job.manifest.assets.map(a => `<article class="card result"><a href="${fileUrl(job,a.name)}" target="_blank" rel="noopener"><img src="${preview(fileUrl(job,a.name))}" loading="lazy" alt=""></a><b>${esc(job.frames[a.frame]?.title)}</b> <a href="${fileUrl(job,a.name,true)}">下载</a></article>`).join("")}</div>` : ""}`;
   }
   function bindResume(box, suiteId) {

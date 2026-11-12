@@ -16,6 +16,7 @@ import { withUsage } from "./usage.js";
 import { createRefs, REF_USES } from "./refs.js";
 import { noteDocx } from "./docx-note.js";
 import { caseById, CASES } from "../shared/cases.js";
+import { FREE_DAILY_PRODUCTS } from "../shared/pricing.js";
 import { SECTION_TYPES, SECTION_MODES, PHOTO_ROLES, QUICK, scanRisky, paletteRoles } from "../shared/suite.js";
 
 // "商品全套": one product → profile → note → product images → detail page.
@@ -299,6 +300,12 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     }),
   );
   app.post("/api/suites", upload, async (req, res) => {
+    // Profiles and notes cost model calls but no credits: accounts that never topped up get a few a day.
+    if (req.user.role !== "admin" && !store.users.paid(req.user.id)) {
+      const since = new Date(Date.now() - 86400000).toISOString();
+      const n = store.db.prepare("SELECT count(*) AS n FROM suites WHERE user_id=? AND created_at > ?").get(req.user.id, since).n;
+      if (n >= FREE_DAILY_PRODUCTS) throw new AppError(`体验账号每天最多新建 ${FREE_DAILY_PRODUCTS} 个商品，充值后不限`, 429);
+    }
     const photos = req.files?.photos || [];
     const noteFile = req.files?.note?.[0];
     const pasted = typeof req.body?.text === "string" ? req.body.text.slice(0, 20000) : "";

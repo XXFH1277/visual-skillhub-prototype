@@ -211,3 +211,61 @@ test("admin can list every relay image model and probe one (merchants can't)", a
   const guest = browser();
   assert.equal((await guest.post("/api/admin/image-probe", { model: "x-model" })).status, 401);
 });
+
+test("daily check-in: 10/5/10/5/10/5/5 by streak day, once a day, a missed day restarts; unspent check-in credits lapse after 30 days", async (t) => {
+  const { Store } = await import("../backend/store.js");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "skillhub-checkin-"));
+  const store = new Store(path.join(dir, "w.sqlite"));
+  t.after(async () => {
+    store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  const users = store.users;
+  const u = users.register({ phone: "13900000001", password: "secret1", invite: users.createInvite({ credits: 0 }) });
+  const day = (n, hour = 4) => new Date(Date.UTC(2026, 10, n, hour)); // 12:00 Beijing time
+  assert.deepEqual([users.checkin(u.id, day(1)).today, users.checkin(u.id, day(1)).amount], [false, 10]);
+  const got = [];
+  for (let n = 1; n <= 8; n++) got.push(users.doCheckin(u.id, day(n)).got);
+  assert.deepEqual(got, [10, 5, 10, 5, 10, 5, 5, 10]); // day 8 starts the next round
+  assert.throws(() => users.doCheckin(u.id, day(8, 10)), /已经签到/);
+  // 17:00 UTC on the 8th is already the 9th in Beijing.
+  assert.equal(users.doCheckin(u.id, day(8, 17)).got, 5);
+  assert.equal(users.checkin(u.id, day(9)).streak, 9);
+  // Skipping the 10th restarts the streak.
+  assert.equal(users.checkin(u.id, day(11)).streak, 0);
+  assert.equal(users.doCheckin(u.id, day(11)).got, 10);
+  assert.equal(users.get(u.id).balance, 75);
+  // 31 days after the 1st: the first day's 10 lapses, the rest stays.
+  assert.equal(users.expire(u.id, new Date(Date.UTC(2026, 11, 2, 3))), 10);
+  assert.equal(users.get(u.id).balance, 65);
+  assert.equal(users.expire(u.id, new Date(Date.UTC(2026, 11, 2, 3, 30))), 0); // not twice
+  // Credits that were spent in the meantime don't lapse again: spending uses check-in credits first.
+  store.db.prepare("INSERT INTO ledger(job_id,kind,amount,created_at,user_id) VALUES('j1','reserve',-20,?,?)").run(day(12).toISOString(), u.id);
+  store.db.prepare("UPDATE users SET balance=balance-20 WHERE id=?").run(u.id);
+  // By the 5th, check-ins of the 1st–4th are old: 30 earned, 10 already lapsed, 20 spent → nothing more to take.
+  assert.equal(users.expire(u.id, new Date(Date.UTC(2026, 11, 5, 3))), 0);
+  assert.equal(users.get(u.id).balance, 45);
+  // A top-up never lapses and marks the account as paid.
+  assert.equal(users.paid(u.id), false);
+  users.grant(u.id, 600, "¥39 套餐");
+  assert.equal(users.paid(u.id), true);
+  assert.equal(users.expire(u.id, new Date(Date.UTC(2027, 5, 1))), 45); // only what check-ins gave and nobody spent
+  assert.equal(users.get(u.id).balance, 600);
+});
+
+test("check-in over the API shows up in the workspace and the ledger", async (t) => {
+  const { browser } = await setup(t);
+  const admin = browser();
+  await admin.post("/api/login", { code: ACCESS });
+  const before = await admin.json("/api/workspace");
+  assert.equal(before.checkin.today, false);
+  assert.deepEqual(before.pricing.packages.map((p) => [p.price, p.credits]), [[39, 600], [99, 1800], [299, 6600], [999, 30000]]);
+  assert.equal(before.skills.detail.cost, 10);
+  const r = await (await admin.post("/api/me/checkin", {})).json();
+  assert.equal(r.got, 10);
+  assert.equal((await admin.post("/api/me/checkin", {})).status, 409);
+  const after = await admin.json("/api/workspace");
+  assert.equal(after.checkin.today, true);
+  assert.equal(after.account.balance, before.account.balance + 10);
+  assert.deepEqual([after.account.ledger[0].kind, after.account.ledger[0].note], ["checkin", "连续第 1 天"]);
+});

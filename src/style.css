@@ -691,6 +691,28 @@ dd { margin: 0; line-height: 1.5; }
 .sb-toc button { grid-template-columns: 22px minmax(0, 1fr) auto; }
 .looks { grid-template-columns: repeat(auto-fill, minmax(150px, 180px)); }
 
+/* 积分：签到、套餐 */
+#nav .balance.todo { position: relative; }
+#nav .balance.todo::after { content: ""; position: absolute; right: 4px; top: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg); }
+.checkin, .packages { margin-bottom: 16px; }
+.checkin h2, .packages h2 { margin-bottom: 4px; }
+.week { list-style: none; margin: 14px 0 0; padding: 0; display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.week li { display: grid; justify-items: center; gap: 2px; padding: 10px 2px; border-radius: 10px; background: var(--fill); color: var(--muted); }
+.week li b { font-family: var(--num); font-size: 17px; color: var(--ink); }
+.week li small { font-size: 11px; }
+.week li.done { background: #e2f3ec; }
+.week li.done b { color: var(--ok); }
+.week li.next { background: #fff; box-shadow: inset 0 0 0 2px var(--accent); }
+.week li.next b { color: var(--accent); }
+.pack-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 12px; }
+.pack { display: grid; gap: 2px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; }
+.pack b { font-family: var(--num); font-size: 24px; color: var(--navy); }
+.pack span { font-weight: 600; }
+.pack small { color: var(--muted); font-size: 12px; }
+.pack.plain { background: var(--fill); border-color: transparent; }
+.pack.plain b { font-size: 18px; line-height: 32px; }
+.admin-table .grant select { width: 120px; flex: none; padding: 6px; font-size: 13px; border-radius: 9px; }
+
 /* ---------- 手机 ---------- */
 @media (max-width: 900px) {
   .sb-layout { grid-template-columns: 1fr; }
@@ -776,6 +798,9 @@ dd { margin: 0; line-height: 1.5; }
   .style-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 10px; }
   .style-meta .tags { display: none; }
   .task-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .pack-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .week { gap: 4px; }
+  .week li b { font-size: 15px; }
   .task-meta { padding: 8px 10px; }
   .modal { padding: 0; place-items: end center; }
   .modal-box { max-height: 92vh; border-radius: 18px 18px 0 0; width: 100%; }

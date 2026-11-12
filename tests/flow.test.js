@@ -176,7 +176,7 @@ test("detail pages: vertical screens stitched into one long image", async (t) =>
   assert.equal(modules.length, 4);
   assert.ok(modules.every((m) => m.width === 750 && m.height === 1000));
   assert.equal(long.height, 4000);
-  assert.equal(await s.balance(), 500 - 120);
+  assert.equal(await s.balance(), 500 - 40); // a detail screen costs the same as any picture: 10
 });
 
 test("posters work without images; product requires one; invalid edits never charge", async (t) => {

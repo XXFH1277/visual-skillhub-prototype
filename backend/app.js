@@ -11,6 +11,7 @@ import { normalizeUpload, regularFile, deliver, partialDelivery } from "./media.
 import { setUsageSink, withUsage } from "./usage.js";
 import { JobQueue } from "./queue.js";
 import { createProviders } from "./providers.js";
+import { CREDITS_PER_YUAN, PACKAGES } from "../shared/pricing.js";
 import { createTextAI, compareTexts, confirmProblems } from "./text-ai.js";
 import { sanitizeFrames, candidatesFor, realPhotoFirst } from "./planner.js";
 import { StyleLibrary } from "./styles.js";
@@ -296,12 +297,15 @@ export async function createWorkspace({
       user: users.view(req.user),
       account: store.account(req.user.id),
       skills: SKILLS,
+      pricing: { perYuan: CREDITS_PER_YUAN, packages: PACKAGES },
+      checkin: users.checkin(req.user.id),
       provider: registry.describe(providerMode),
       providers: registry.list(),
       textAI: textAI.describe(),
       mode: "accounts",
     }),
   );
+  app.post("/api/me/checkin", (req, res) => res.json(users.doCheckin(req.user.id)));
   app.post("/api/me/password", (req, res) => {
     limit("password:" + req.user.id, 5, 10 * 60_000);
     if (req.user.pass) users.verify(req.user.phone, req.body?.old);

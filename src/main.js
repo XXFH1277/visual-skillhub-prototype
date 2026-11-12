@@ -72,7 +72,7 @@ function header() {
     ["#/tasks", "我的作品", ["tasks", "job"], "works"],
   ];
   nav.innerHTML = workspace
-    ? `${main.map(([href, name, r]) => `<a href="${href}" class="main ${on(r)}">${name}</a>`).join("")}${isAdmin() ? `<a href="#/admin" class="${on(["admin"])}">管理</a>` : ""}<a class="balance ${on(["credits"])}" href="#/credits" title="${esc(workspace.user.name)}"><b>${workspace.account.balance}</b> 积分</a><button class="link" id="logout">退出</button>`
+    ? `${main.map(([href, name, r]) => `<a href="${href}" class="main ${on(r)}">${name}</a>`).join("")}${isAdmin() ? `<a href="#/admin" class="${on(["admin"])}">管理</a>` : ""}<a class="balance ${on(["credits"])} ${workspace.checkin && !workspace.checkin.today ? "todo" : ""}" href="#/credits" title="${esc(workspace.user.name)}${workspace.checkin && !workspace.checkin.today ? "（今天还没签到）" : ""}"><b>${workspace.account.balance}</b> 积分</a><button class="link" id="logout">退出</button>`
     : "";
   // Phones get the four main places as a bottom bar; the top keeps only credits.
   tabbar.innerHTML = workspace ? main.map(([href, name, r, icon]) => `<a href="${href}" class="${on(r)}">${ICON[icon]}<span>${name}</span></a>`).join("") : "";
@@ -865,10 +865,19 @@ function bindJob(job) {
 
 /* ---------------- credits ---------------- */
 function creditsPage() {
-  const kinds = { reserve: "出图预扣", refund: "失败 / 取消退回", grant: "充值", signup: "注册赠送" };
+  const kinds = { reserve: "出图预扣", refund: "失败 / 取消退回", grant: "充值", signup: "注册赠送", checkin: "签到", expire: "签到积分过期" };
+  const c = workspace.checkin;
+  const pr = workspace.pricing;
+  const per = (p) => (p.price / (p.credits / 10)).toFixed(2);
   const u = workspace.user;
   app.innerHTML = `<div class="page-head"><div><h1>我的账号</h1><p class="muted">${esc(u.name)}${u.phone ? ` · ${esc(u.phone)}` : ""}</p></div></div>
-  <section class="card balance-card"><b>${workspace.account.balance}</b><span class="muted">可用积分 · 出图时预扣，失败或取消自动退回 · 充值请联系管理员</span></section>
+  <section class="card balance-card"><b>${workspace.account.balance}</b><span class="muted">可用积分。一张图 10 积分，出图时预扣，失败或取消自动退回。</span></section>
+  ${c ? `<section class="card checkin"><div class="row spread wrap"><div><h2>每日签到</h2><p class="muted">${c.today ? `今天已签到，已连续 ${c.streak} 天。` : c.streak ? `已连续 ${c.streak} 天，今天签到领 ${c.amount} 积分。` : `今天签到领 ${c.amount} 积分。`}签到积分 ${c.expireDays} 天内有效，出图时优先使用。</p></div>
+      <button class="btn primary" id="checkin" ${c.today ? "disabled" : ""}>${c.today ? "今天已签到" : `签到 +${c.amount}`}</button></div>
+    <ol class="week">${c.week.map((n, i) => `<li class="${i + 1 < c.position || (c.today && i + 1 === c.position) ? "done" : i + 1 === c.position ? "next" : ""}"><b>+${n}</b><small>第 ${i + 1} 天</small></li>`).join("")}</ol></section>` : ""}
+  ${pr ? `<section class="card packages"><h2>充值套餐</h2><p class="muted">套餐越大，每张图越便宜。充值请联系管理员，到账后一年内有效。</p>
+    <div class="pack-grid">${pr.packages.map((p) => `<div class="pack"><b>¥${p.price}</b><span>${p.credits} 积分</span><small>可出 ${p.credits / 10} 张，约 ¥${per(p)} 一张</small></div>`).join("")}
+      <div class="pack plain"><b>单买</b><span>1 元 = ${pr.perYuan} 积分</span><small>¥1.00 一张</small></div></div></section>` : ""}
   <section class="card ledger">${workspace.account.ledger.length ? workspace.account.ledger.map((l) => `<div class="ledger-row"><div><b>${kinds[l.kind] || l.kind}</b><small class="muted">${date(l.createdAt)}${l.note ? ` · ${esc(l.note)}` : ""}${l.jobId ? ` · <a href="#/job/${l.jobId}">查看</a>` : ""}</small></div><b class="${l.amount > 0 ? "plus" : ""}">${l.amount > 0 ? "+" : ""}${l.amount}</b></div>`).join("") : `<p class="muted">还没有积分记录。</p>`}</section>
   <section class="card account-form"><h2>${u.phone ? "修改密码" : "设置手机号登录"}</h2>
     <form id="pw-form" class="row wrap">
@@ -878,6 +887,14 @@ function creditsPage() {
     </form></section>
   <p class="center-row"><button class="btn" id="logout2">退出登录</button></p>`;
   $("#logout2").onclick = () => $("#logout").click();
+  $("#checkin")?.addEventListener("click", (e) =>
+    busy(e.currentTarget, async () => {
+      const r = await api("/me/checkin", json({}));
+      await refresh();
+      toast(`签到成功，+${r.got} 积分`);
+      creditsPage();
+    }),
+  );
   $("#pw-form").onsubmit = (e) => {
     e.preventDefault();
     const form = e.currentTarget;
@@ -903,17 +920,17 @@ async function adminPage() {
       <td><b>${esc(u.name)}</b>${u.role === "admin" ? ` <i class="tag">管理员</i>` : ""}<small class="muted">${esc(u.phone || "访问码登录")}</small></td>
       <td><b>${u.balance}</b></td><td>${u.jobs} 次 / ${u.spent} 分</td>
       <td class="muted">${u.lastLogin ? date(u.lastLogin) : "—"}</td>
-      <td><form class="row grant" data-user="${esc(u.id)}"><input name="amount" type="number" step="1" placeholder="+100" required><input name="note" maxlength="40" placeholder="备注（如：转账 50 元）"><button class="btn small">加积分</button></form>
+      <td><form class="row grant" data-user="${esc(u.id)}"><select name="pack" aria-label="套餐"><option value="">自定义</option>${(workspace.pricing?.packages || []).map((p) => `<option value="${p.credits}|¥${p.price} 套餐">¥${p.price} · ${p.credits}</option>`).join("")}</select><input name="amount" type="number" step="1" placeholder="+100" required><input name="note" maxlength="40" placeholder="备注（如：转账 50 元）"><button class="btn small">加积分</button></form>
         ${u.role === "admin" ? "" : `<button class="link" data-reset="${esc(u.id)}" data-name="${esc(u.name)}">重置密码</button>`}</td></tr>`;
   app.innerHTML = `<div class="page-head"><div><h1>管理</h1><p class="muted">发邀请码给要体验的人；他们转账后在这里加积分。</p></div></div>
   <section class="card admin-block"><h2>新建邀请码</h2>
     <form id="invite-form" class="row wrap">
-      <label class="inline">送积分<input name="credits" type="number" min="0" max="10000" value="100" required></label>
+      <label class="inline">送积分<input name="credits" type="number" min="0" max="10000" value="40" required></label>
       <label class="inline">可注册人数<input name="maxUses" type="number" min="1" max="1000" value="5" required></label>
       <input name="note" maxlength="40" placeholder="备注：发给谁 / 哪个群">
       <button class="btn primary">生成</button>
     </form>
-    <p class="muted">每张图 10 积分起，详情页一屏 30 积分。邀请码不区分大小写，一个码可以发给多人。</p>
+    <p class="muted">商品图和详情页一屏都是 10 积分一张，送 40 积分够新用户出 4 张图。邀请码不区分大小写，一个码可以发给多人。</p>
     <div class="table-wrap"><table class="admin-table"><thead><tr><th>邀请码</th><th>送积分</th><th>已用</th><th>备注</th><th></th></tr></thead>
     <tbody>${data.invites.map(invite).join("") || `<tr><td colspan="5" class="muted">还没有邀请码</td></tr>`}</tbody></table></div>
   </section>
@@ -945,6 +962,13 @@ async function adminPage() {
     await api(`/admin/invites/${encodeURIComponent(b.dataset.revoke)}/revoke`, json({}));
     await adminPage();
   })));
+  // Picking a package fills in its credits and a note, so the ledger says what was bought.
+  $$(".grant [name=pack]").forEach((sel) => (sel.onchange = () => {
+    if (!sel.value) return;
+    const [credits, note] = sel.value.split("|");
+    sel.form.amount.value = credits;
+    sel.form.note.value = note;
+  }));
   $$(".grant").forEach((form) => (form.onsubmit = (e) => {
     e.preventDefault();
     busy(form.querySelector("button"), async () => {

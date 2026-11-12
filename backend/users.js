@@ -1,8 +1,11 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { AppError } from "./errors.js";
+import { CHECKIN_WEEK, CHECKIN_EXPIRE_DAYS, SIGNUP_CREDITS } from "../shared/pricing.js";
 
 export const ADMIN_ID = "admin";
 const now = () => new Date().toISOString();
+// Check-in days roll over at midnight Beijing time, where the merchants are.
+const dayOf = (at) => new Date(at.getTime() + 8 * 3600000).toISOString().slice(0, 10);
 const hashPassword = (password, salt = randomBytes(16)) =>
   `${salt.toString("hex")}:${scryptSync(password, salt, 32).toString("hex")}`;
 const checkPassword = (password, stored) => {
@@ -37,7 +40,10 @@ export class Users {
       CREATE TABLE IF NOT EXISTS invites (
         code TEXT PRIMARY KEY, credits INTEGER NOT NULL, max_uses INTEGER NOT NULL,
         used INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '',
-        revoked INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);`);
+        revoked INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS checkins (
+        user_id TEXT NOT NULL, day TEXT NOT NULL, streak INTEGER NOT NULL, amount INTEGER NOT NULL,
+        PRIMARY KEY(user_id, day));`);
     // The original single-workspace wallet and everything made before accounts belong to the admin.
     if (!this.get(ADMIN_ID)) {
       const legacy = db.prepare("SELECT balance FROM wallet WHERE id=1").get()?.balance ?? 500;
@@ -123,13 +129,59 @@ export class Users {
       return this.view(this.get(id));
     });
   }
+  /* ---- daily check-in ---- */
+  // Where the account stands today: checked in or not, the streak, and what the next check-in gives.
+  checkin(id, at = new Date()) {
+    const today = dayOf(at);
+    const last = this.db.prepare("SELECT day, streak FROM checkins WHERE user_id=? ORDER BY day DESC LIMIT 1").get(id);
+    const done = last?.day === today;
+    const alive = last && (done || last.day === dayOf(new Date(at.getTime() - 86400000)));
+    const streak = alive ? last.streak : 0;
+    const next = done ? streak : streak + 1;
+    return { today: done, streak, amount: CHECKIN_WEEK[(next - 1) % 7], position: ((next - 1) % 7) + 1, week: CHECKIN_WEEK, expireDays: CHECKIN_EXPIRE_DAYS };
+  }
+  doCheckin(id, at = new Date()) {
+    return this.store.transaction(() => {
+      const state = this.checkin(id, at);
+      if (state.today) throw new AppError("今天已经签到过了", 409);
+      const today = dayOf(at);
+      const streak = state.streak + 1;
+      this.db.prepare("INSERT INTO checkins(user_id,day,streak,amount) VALUES(?,?,?,?)").run(id, today, streak, state.amount);
+      this.db.prepare("UPDATE users SET balance=balance+? WHERE id=?").run(state.amount, id);
+      this.db.prepare("INSERT INTO ledger(job_id,kind,amount,created_at,user_id) VALUES(?,?,?,?,?)").run(`连续第 ${streak} 天·${today}·${id}`, "checkin", state.amount, at.toISOString(), id);
+      return { got: state.amount, ...this.checkin(id, at), balance: this.get(id).balance };
+    });
+  }
+  // Check-in credits lapse after 30 days. Spending uses them first (oldest first), so only what
+  // was never spent lapses: old check-in credits − everything spent since the first check-in − already lapsed.
+  expire(id, at = new Date()) {
+    const first = this.db.prepare("SELECT min(created_at) AS t FROM ledger WHERE user_id=? AND kind='checkin'").get(id)?.t;
+    if (!first) return 0;
+    const cutoff = new Date(at.getTime() - CHECKIN_EXPIRE_DAYS * 86400000).toISOString();
+    const sum = (where, ...args) => this.db.prepare(`SELECT coalesce(sum(amount),0) AS n FROM ledger WHERE user_id=? AND ${where}`).get(id, ...args).n;
+    const old = sum("kind='checkin' AND created_at < ?", cutoff);
+    if (!old) return 0;
+    const spent = Math.max(0, -sum("kind IN ('reserve','refund') AND created_at >= ?", first));
+    const lapsed = -sum("kind='expire'");
+    const due = Math.min(old - spent - lapsed, this.get(id)?.balance ?? 0);
+    if (due <= 0) return 0;
+    return this.store.transaction(() => {
+      this.db.prepare("UPDATE users SET balance=balance-? WHERE id=?").run(due, id);
+      this.db.prepare("INSERT OR REPLACE INTO ledger(job_id,kind,amount,created_at,user_id) VALUES(?,?,?,?,?)").run(`签到积分满 ${CHECKIN_EXPIRE_DAYS} 天·${at.toISOString()}·${id}`, "expire", -due, at.toISOString(), id);
+      return due;
+    });
+  }
+  // Has this account ever been topped up (a package or any positive grant)?
+  paid(id) {
+    return !!this.db.prepare("SELECT 1 FROM ledger WHERE user_id=? AND kind='grant' AND amount>0 LIMIT 1").get(id);
+  }
   invites() {
     return this.db
       .prepare("SELECT * FROM invites ORDER BY created_at DESC")
       .all()
       .map((i) => ({ code: i.code, credits: i.credits, maxUses: i.max_uses, used: i.used, note: i.note, revoked: !!i.revoked, createdAt: i.created_at }));
   }
-  createInvite({ credits = 100, maxUses = 10, note = "" } = {}) {
+  createInvite({ credits = SIGNUP_CREDITS, maxUses = 10, note = "" } = {}) {
     credits = Number(credits);
     maxUses = Number(maxUses);
     if (!Number.isInteger(credits) || credits < 0 || credits > 10000) throw new AppError("赠送积分 0–10000");

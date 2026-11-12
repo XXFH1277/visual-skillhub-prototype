@@ -6,7 +6,7 @@ import { Users } from "./users.js";
 export const SKILLS = {
   upscale: { name: "4K 清晰度提升", cost: 10 },
   product: { name: "电商产品图", cost: 10 },
-  detail: { name: "详情页模块", cost: 30 },
+  detail: { name: "详情页模块", cost: 10 },
   poster: { name: "海报 / 菜单", cost: 15 },
   interior: { name: "装修效果图", cost: 25 },
 };
@@ -32,7 +32,9 @@ export class Store {
     this.users = new Users(this);
   }
   transaction(fn) {
+    if (this.inTransaction) return fn(); // already inside one: join it
     this.db.exec("BEGIN IMMEDIATE");
+    this.inTransaction = true;
     try {
       const value = fn();
       this.db.exec("COMMIT");
@@ -40,12 +42,15 @@ export class Store {
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
+    } finally {
+      this.inTransaction = false;
     }
   }
   balance(userId) {
     return this.db.prepare("SELECT balance FROM users WHERE id=?").get(userId)?.balance ?? 0;
   }
   account(userId) {
+    this.users.expire(userId);
     return {
       balance: this.balance(userId),
       ledger: this.db
@@ -53,7 +58,7 @@ export class Store {
           "SELECT job_id AS jobId,kind,amount,created_at AS createdAt FROM ledger WHERE user_id=? ORDER BY id DESC LIMIT 100",
         )
         .all(userId)
-        .map((l) => (l.kind === "grant" ? { ...l, note: l.jobId, jobId: null } : l)),
+        .map((l) => (l.kind === "grant" ? { ...l, note: l.jobId, jobId: null } : ["checkin", "expire"].includes(l.kind) ? { ...l, note: String(l.jobId || "").split("·")[0], jobId: null } : l)),
     };
   }
   decode(row) {
@@ -150,6 +155,7 @@ export class Store {
         throw new AppError("你已有 3 个任务在排队，请等它们完成后再提交", 429);
       // Style-library covers are workspace maintenance, not a merchant generation.
       const cost = params.operation === "cover" ? 0 : SKILLS[params.skillId].cost * (count - (params.reusedFrames?.length || 0));
+      this.users.expire(userId);
       if (this.balance(userId) < cost)
         throw new AppError("积分不足，请联系管理员充值", 402);
       const now = new Date().toISOString();
