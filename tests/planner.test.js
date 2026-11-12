@@ -6,7 +6,7 @@ import path from "node:path";
 import sharp from "sharp";
 import { normalizeAnalysis, normalizeStoryboard, sanitizeFrames, analyzeMessages, storyboardMessages, sceneGuide, candidatesFor } from "../backend/planner.js";
 import { STYLES } from "../shared/styles.js";
-import { compareTexts, createTextAI } from "../backend/text-ai.js";
+import { compareTexts, confirmProblems, createTextAI } from "../backend/text-ai.js";
 import { framePrompt, frameInputs } from "../backend/prompts.js";
 import { renderLayoutSketch, overlayTexts, wrap } from "../backend/render.js";
 const lib = STYLES.map((x) => ({ ...x, status: "ready" }));
@@ -227,4 +227,22 @@ test("fresh seafood and farm produce keep the merchant's real photo as the produ
   const hero = { ...real, hasMainImage: false, frames: [{ ...base.frames[0], photos: ["p.png"], photoUse: "hero" }] };
   assert.match(framePrompt(hero, 0), /场景完全重新构图/);
   assert.doesNotMatch(framePrompt(hero, 0), /【真实度】/);
+});
+
+test("a line is only called wrong when two reads agree; one good read clears it, unreadable lettering is 'unsure'", () => {
+  const want = [{ role: "headline", text: "源头产地" }, { role: "point", text: "舟山直发" }, { role: "point", text: "顺丰冷链" }];
+  const read = (lines) => compareTexts(want, lines);
+  // Both reads see the same typo → wrong, with what the picture seems to say.
+  const typo = confirmProblems(read(["源头产地", "丹山直发", "顺丰冷链"]), read(["源头产地", "丹山直发", "顺丰冷链"]));
+  assert.equal(typo.ok, false);
+  assert.deepEqual(typo.problems.map((p) => [p.text, p.kind, p.near]), [["舟山直发", "typo", "丹山直发"]]);
+  // The second read gets it right → the first was a misread.
+  assert.equal(confirmProblems(read(["源头产地", "丹山直发", "顺丰冷链"]), read(["源头产地", "舟山直发", "顺丰冷链"])).ok, true);
+  // Brush-lettered headline neither read can make out → unsure, not an error.
+  const brush = confirmProblems(read(["舟山直发", "顺丰冷链"]), read(["舟山直发", "顺丰冷链", "乱"]));
+  assert.equal(brush.ok, null);
+  assert.deepEqual(brush.unsure.map((p) => p.text), ["源头产地"]);
+  // A selling point missing from both reads → wrong.
+  const missing = confirmProblems(read(["源头产地", "舟山直发"]), read(["源头产地", "舟山直发"]));
+  assert.deepEqual(missing.problems.map((p) => [p.text, p.kind]), [["顺丰冷链", "missing"]]);
 });

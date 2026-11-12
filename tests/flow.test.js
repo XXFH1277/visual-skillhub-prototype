@@ -145,8 +145,9 @@ test("upload → directions → choose → storyboard → confirm → generate �
   assert.equal(job.params.frames[0].layout, "free");
   const done = await s.terminal(job.id);
   assert.equal(done.status, "succeeded", done.error);
-  assert.equal(ai.calls.read, 1);
+  assert.equal(ai.calls.read, 2); // a flagged picture is read a second time before it is called wrong
   assert.deepEqual(done.manifest.textCheck[0].problems.map((p) => p.text), ["一键开盖"]);
+  assert.equal(done.manifest.textCheck[0].ok, false);
   assert.equal(await s.balance(), 480);
   assert.equal((await s.request(`/api/jobs/${job.id}/source/input-0.png`)).status, 200);
   assert.equal((await s.request(`/api/jobs/${job.id}/source/text-check.json`)).status, 404);
@@ -448,8 +449,8 @@ test("image channels share frames dynamically and respect each credential's conc
   assert.equal(job4k.params.requestedSize, "3840x2160");
 });
 
-test("a failing image channel stops taking frames while the healthy channel finishes; resume only bills missing frames", async t => {
-  let fail = true;
+test("a frame that fails on one channel is retried once on the other; a rejected request is not retried and resume only bills missing frames", async t => {
+  let status = 502;
   const calls = [];
   const providers = createProviders({
     env: {
@@ -462,23 +463,32 @@ test("a failing image channel stops taking frames while the healthy channel fini
       if (url.pathname.endsWith("models")) return Response.json({ data: [{ id: "gpt-image-2.6-sunburst" }] });
       const key = init.headers.Authorization.split(" ")[1];
       calls.push(key);
-      if (fail && key === "primary") return new Response(null, { status: 502 });
+      if (status && key === "primary") return new Response(null, { status });
       return Response.json({ data: [{ b64_json: image.toString("base64") }] });
     },
   });
   const s = await setup(t, null, { providers });
+  // 502: the relay hiccuped, so the other channel picks the frame up and the merchant sees a finished set.
+  const healed = await s.terminal((await (await s.submit({ fields: { count: "4" }, extra: { providerMode: "api" } })).json()).id);
+  assert.equal(healed.status, "succeeded", healed.error);
+  assert.equal(calls.filter(key => key === "primary").length, 1);
+  assert.equal(calls.filter(key => key === "secondary").length, 4);
+  assert.equal(await s.balance(), 460);
+  // 400: the request itself was refused; trying it again elsewhere would only bill twice.
+  status = 400;
+  calls.length = 0;
   const job = await s.terminal((await (await s.submit({ fields: { count: "4" }, extra: { providerMode: "api" } })).json()).id);
   assert.equal(job.status, "partial");
   assert.equal(calls.filter(key => key === "primary").length, 1);
   assert.equal(calls.filter(key => key === "secondary").length, 3);
   assert.deepEqual(job.manifest.missing, [0]);
   assert.deepEqual(job.manifest.assets.map(a => a.frame), [1, 2, 3]);
-  assert.equal(await s.balance(), 470);
-  fail = false;
+  assert.equal(await s.balance(), 430);
+  status = 0;
   const resumed = await s.terminal((await (await s.post(`/api/jobs/${job.id}/retry`, {}, { "Idempotency-Key": randomUUID() })).json()).id);
   assert.equal(resumed.status, "succeeded", resumed.error);
   assert.equal(calls.length, 5);
-  assert.equal(await s.balance(), 460);
+  assert.equal(await s.balance(), 420);
   assert.deepEqual(resumed.manifest.assets.slice(1).map(a => a.sha256), job.manifest.assets.map(a => a.sha256));
 });
 
@@ -540,7 +550,7 @@ test("partial batch exports completed frames and a duplicate resume bills and re
       calls.push(init.body.get("prompt"));
       assert.equal(init.body.get("model"),"test-model");
       assert.equal(init.body.has("background"),false);
-      if(calls.length===2) return new Response(null,{status:502});
+      if(calls.length===2) return new Response(null,{status:400}); // refused outright: not retried
       return Response.json({data:[{b64_json:image.toString("base64")}]});
     }
   });

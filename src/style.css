@@ -680,6 +680,7 @@ dd { margin: 0; line-height: 1.5; }
 .ledger-row b:last-child { font-family: var(--num); font-size: 16px; }
 
 [hidden] { display: none !important; }
+.problem-list { margin: 0; padding: 6px 10px 6px 24px; font-size: 12px; line-height: 1.6; color: var(--bad); background: var(--accent-soft); border-radius: 8px; }
 .seg button { white-space: nowrap; }
 .shot-toolbar .seg { flex: none; }
 .shot-toolbar .seg button { padding: 7px 16px; }

@@ -27,6 +27,7 @@ export function imageConfig(env = process.env) {
     model2k: env.IMAGE_API_MODEL_2K || "gpt-image-2.6-sunburst",
     model4k: env.IMAGE_API_MODEL_4K || "gpt-image-2.6-sunburst",
     timeoutMs: Number(env.GENERATION_TIMEOUT_MS) || 900000,
+    frameTimeoutMs: Number(env.IMAGE_FRAME_TIMEOUT_MS) || 420000,
     concurrency: Math.min(Math.max(Number(env.IMAGE_API_CONCURRENCY) || 3, 1), 6),
   };
 }
@@ -135,7 +136,7 @@ export function createImageRunner(config, fetchImpl = fetch, channels = [config]
             name,
           );
         }
-        // No automatic retries: a timeout does not prove the upstream did not bill.
+        // One frame is retried at most once, on another channel (see the retry pass below).
         const textOnly = files.length === 0;
         if (textOnly && p.skillId !== "poster" && p.operation !== "cover")
           throw new Error("生图任务缺少参考素材");
@@ -149,6 +150,8 @@ export function createImageRunner(config, fetchImpl = fetch, channels = [config]
             })
           : form;
         framePhases.set(i, "request");
+        // A hung request gives up on its own, so the frame can move to the other channel.
+        const frameTimeout = AbortSignal.timeout(config.frameTimeoutMs || 420000);
         const response = await fetchImpl(
           new URL(
             textOnly ? "images/generations" : "images/edits",
@@ -162,13 +165,18 @@ export function createImageRunner(config, fetchImpl = fetch, channels = [config]
             },
             body: requestBody,
             redirect: "error",
-            signal: combined,
+            signal: AbortSignal.any([combined, frameTimeout]),
           },
-        );
+        ).catch((error) => {
+          // Network drop or a hung request (not a cancel or the whole-job timeout): worth one more try elsewhere.
+          if (!combined.aborted) error.retryable = true;
+          throw error;
+        });
         if (!response.ok) {
           await response.body?.cancel();
-          throw new Error(
-            `生图 API 返回 HTTP ${response.status}；未自动重试，请检查中转站状态与账单`,
+          throw Object.assign(
+            new Error(`生图 API 返回 HTTP ${response.status}；请检查中转站状态与账单`),
+            { retryable: response.status >= 500 || response.status === 429 || response.status === 408 },
           );
         }
         framePhases.set(i, "read-response");
@@ -236,6 +244,13 @@ export function createImageRunner(config, fetchImpl = fetch, channels = [config]
     try {
       let next = 0;
       let failed = null;
+      const retry = []; // frames worth one more attempt, on a channel other than the one that failed
+      const note = (error, i) => {
+        if (failed) return;
+        failed = error;
+        failedFrame = i + 1;
+        phase = framePhases.get(i) || "prepare";
+      };
       const worker = async (channel) => {
         while (!channel.failed && !combined.aborted && next < p.count) {
           const i = next++;
@@ -244,19 +259,29 @@ export function createImageRunner(config, fetchImpl = fetch, channels = [config]
             await runFrame(i, channel);
           } catch (error) {
             channel.failed = true;
-            if (!failed) {
-              failed = error;
-              failedFrame = i + 1;
-              phase = framePhases.get(i) || "prepare";
-            }
+            if (error.retryable && !combined.aborted) retry.push({ i, from: channel, error });
+            else note(error, i);
           }
         }
       };
-      const workers = channels.flatMap(c => {
-        const channel = { ...c, failed: false };
-        return Array.from({ length: Math.min(c.concurrency || 1, p.count) }, () => worker(channel));
-      });
-      await Promise.all(workers);
+      const live = channels.map(c => ({ ...c, failed: false }));
+      await Promise.all(live.flatMap(channel => Array.from({ length: Math.min(channel.concurrency || 1, p.count) }, () => worker(channel))));
+      // Retry pass: each failed frame gets one more go on a healthy channel. A lone channel retries itself once.
+      const again = async (channel) => {
+        while (!combined.aborted && retry.length) {
+          const at = retry.findIndex(r => r.from !== channel || live.length === 1);
+          if (at < 0 || (channel.failed && live.length > 1)) return;
+          const [{ i }] = retry.splice(at, 1);
+          try {
+            await runFrame(i, channel);
+          } catch (error) {
+            channel.failed = true;
+            note(error, i);
+          }
+        }
+      };
+      await Promise.all(live.flatMap(channel => Array.from({ length: Math.min(channel.concurrency || 1, retry.length) }, () => again(channel))));
+      for (const r of retry) note(r.error, r.i);
       combined.throwIfAborted();
       if (failed) throw failed;
       results.sort((a, b) => a.index - b.index);
@@ -300,14 +325,14 @@ export function createImageRunner(config, fetchImpl = fetch, channels = [config]
         .catch(() => {});
       if (signal?.aborted) throw new Error("任务已取消；中转站可能仍计费");
       if (timeout.aborted)
-        throw new Error("生图 API 超时；未自动重试，中转站可能仍计费");
+        throw new Error("生图 API 超时；中转站可能仍计费");
       if (
         error.message.startsWith("生图") ||
         error.message.startsWith("图片服务")
       )
         throw error;
       throw new Error(
-        "生图 API 请求中断或响应处理失败；未自动重试，任务诊断已保存在本机",
+        "生图 API 请求中断或响应处理失败（已换通道重试过一次）；任务诊断已保存在本机",
       );
     }
   };

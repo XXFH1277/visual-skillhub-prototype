@@ -6,7 +6,7 @@ const bigSize = (t) => { const n = [...String(t)].length; return n > 5 ? "xs" : 
 
 // 商品全套：资料 → 档案 → 笔记 → 商品图 → 详情页
 export function initSuite(ctx) {
-  const { app, api, json, toast, busy, esc, $, $$, key, refresh, getWorkspace, setCleanup, tweak } = ctx;
+  const { app, api, json, toast, busy, esc, $, $$, key, refresh, getWorkspace, setCleanup, tweak, problemText } = ctx;
   let meta = null;
   const loadMeta = async () => (meta ||= await api("/suite-meta"));
   const photoUrl = (s, file) => `/api/suites/${s.id}/photo/${encodeURIComponent(file)}`;
@@ -363,12 +363,12 @@ export function initSuite(ctx) {
   function detailCheck(job) {
     const bad = (job.manifest?.textCheck || []).filter((c) => c.ok === false);
     if (!bad.length) return "";
-    return `<details class="badge-detail"><summary class="badge bad">⚠ ${bad.length} 屏文字可能不一致</summary><ul>${bad
-      .map((c) => `<li>${esc(job.frames?.[c.frame]?.title || `第 ${c.frame + 1} 屏`)}：应为${c.problems.map((p) => `“${esc(p.text)}”`).join("、")}</li>`)
+    return `<details class="badge-detail"><summary class="badge bad">${bad.length} 屏文字有误</summary><ul>${bad
+      .map((c) => `<li>${esc(job.frames?.[c.frame]?.title || `第 ${c.frame + 1} 屏`)}：${c.problems.map(problemText).join("；")}</li>`)
       .join("")}</ul><p class="muted">不对的屏可以点“✕”去掉，或在“我的作品”里一句话微调。</p></details>`;
   }
   function recheckLink(job) {
-    const n = job?.manifest?.textCheck?.filter((c) => c.ok === null).length;
+    const n = job?.manifest?.textCheck?.filter((c) => c.ok === null && !c.unsure?.length).length;
     return n ? `<p class="muted">有 ${n} 张图的文字还没核对上（校对 AI 当时没响应）。<button class="link" data-recheck="${job.id}">重新核对文字（免费）</button></p>` : "";
   }
   function partialResults(job, showImages = true) {
@@ -398,7 +398,8 @@ export function initSuite(ctx) {
         const src = latest ? `/api/jobs/${latest.id}/files/${encodeURIComponent(latest.asset)}` : fileUrl(job, a.name);
         const count = job.tweaks?.filter((t) => t.frame === i && t.status === "succeeded").length || 0;
         return `<article class="card result" id="shot-result-${i}" tabindex="-1">
-          <header class="result-bar"><h3><span class="no">${i + 1}</span>${esc(title)}</h3>${latest ? `<a class="badge" href="#/job/${latest.id}">已微调 ${count} 次</a>` : check ? (check.ok ? `<span class="badge ok">✓ 文字已校对</span>` : check.ok === false ? `<span class="badge bad">⚠ 文字可能有误</span>` : "") : ""}</header>
+          <header class="result-bar"><h3><span class="no">${i + 1}</span>${esc(title)}</h3>${latest ? `<a class="badge" href="#/job/${latest.id}">已微调 ${count} 次</a>` : check ? (check.ok ? `<span class="badge ok">✓ 文字已核对</span>` : check.ok === false ? `<span class="badge bad">文字有误</span>` : check.unsure?.length ? `<span class="badge muted-badge" title="AI 没读清图上的艺术字或小字，不一定有错">有字没读清</span>` : "") : ""}</header>
+          ${check?.ok === false ? `<ul class="problem-list">${check.problems.map((p) => `<li>${problemText(p)}</li>`).join("")}</ul>` : ""}
           <a href="${src}" target="_blank" rel="noopener"><img loading="lazy" decoding="async" src="${preview(src)}" alt="${esc(title)}，查看原图"></a>
           ${pending ? `<p class="hint"><a href="#/job/${pending.id}">正在微调…</a></p>` : ""}
           <div class="result-actions"><button class="btn small navy" data-tweak="${latest ? `${latest.id}:0` : `${job.id}:${i}`}">修改</button><a class="btn small" href="${latest ? src + "?download=1" : fileUrl(job, a.name, true)}">下载</a><button class="link" data-redo="${job.id}:${i}">重出 · ${getWorkspace().skills.product.cost} 积分</button></div></article>`;

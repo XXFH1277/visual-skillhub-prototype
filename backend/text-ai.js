@@ -109,13 +109,23 @@ export function compareTexts(expected, seen) {
     if (splitRead(want, items)) continue;
     // best-matching window of the same length
     let best = 0;
+    let near = "";
+    let nearScore = 0;
     const h = Array.from(haystack);
     const n = Array.from(want).length;
-    for (let i = 0; i <= Math.max(0, h.length - n); i++)
+    for (let i = 0; i <= Math.max(0, h.length - n); i++) {
       best = Math.max(best, lcs(want, h.slice(i, i + n + 2).join("")));
+      // What the picture seems to say instead: the same-length stretch that matches best.
+      const exact = h.slice(i, i + n).join("");
+      const got = lcs(want, exact);
+      if (got > nearScore) {
+        nearScore = got;
+        near = exact;
+      }
+    }
     const score = best / n;
     if (score < 0.999)
-      problems.push({ text: t.text, role: t.role, score: Math.round(score * 100) / 100 });
+      problems.push({ text: t.text, role: t.role, score: Math.round(score * 100) / 100, near });
   }
   // The same line printed twice (a pill and again under the title) looks careless.
   for (const t of expected) {
@@ -125,6 +135,28 @@ export function compareTexts(expected, seen) {
     if (times > 1 && !problems.some((p) => p.text === t.text)) problems.push({ text: t.text, role: t.role, repeated: times });
   }
   return { ok: problems.length === 0, problems, seen };
+}
+
+// Two independent reads of the same picture. A line counts as wrong only when both
+// reads agree on how it is wrong; a line one read got right is fine; the rest is
+// "couldn't read it clearly" (brush lettering, tiny print), which is not an error.
+export function confirmProblems(first, second) {
+  const problems = [];
+  const unsure = [];
+  for (const p of first.problems) {
+    const q = second.problems.find((x) => x.text === p.text && !!x.repeated === !!p.repeated);
+    if (!q) continue;
+    if (p.repeated) {
+      problems.push({ ...p, kind: "repeated" });
+      continue;
+    }
+    const typo = p.score >= 0.5 && q.score >= 0.5 && p.near === q.near;
+    // Display headlines are often drawn as lettering no reader gets right: not found ≠ missing.
+    const missing = p.score < 0.5 && q.score < 0.5 && p.role !== "headline";
+    if (typo || missing) problems.push({ ...p, kind: typo ? "typo" : "missing" });
+    else unsure.push({ text: p.text, role: p.role });
+  }
+  return { ok: problems.length ? false : unsure.length ? null : true, problems, unsure, seen: first.seen };
 }
 
 export function createTextAI({

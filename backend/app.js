@@ -11,7 +11,7 @@ import { normalizeUpload, regularFile, deliver, partialDelivery } from "./media.
 import { setUsageSink, withUsage } from "./usage.js";
 import { JobQueue } from "./queue.js";
 import { createProviders } from "./providers.js";
-import { createTextAI, compareTexts } from "./text-ai.js";
+import { createTextAI, compareTexts, confirmProblems } from "./text-ai.js";
 import { sanitizeFrames, candidatesFor, realPhotoFirst } from "./planner.js";
 import { StyleLibrary } from "./styles.js";
 import { ADMIN_ID } from "./users.js";
@@ -126,8 +126,19 @@ export async function createWorkspace({
     const check = async ([i, expected]) => {
       for (let attempt = 0; ; attempt++) {
         try {
-          const seen = await textAI.readTexts(path.join(dir, `result-${i + 1}.png`), { signal });
-          return { frame: i, ...compareTexts(expected, seen) };
+          const file = path.join(dir, `result-${i + 1}.png`);
+          const first = compareTexts(expected, await textAI.readTexts(file, { signal }));
+          if (first.ok) return { frame: i, ...first };
+          // Something looked off: read once more before telling the merchant it is wrong.
+          const second = await textAI.readTexts(file, { signal }).then(
+            (seen) => compareTexts(expected, seen),
+            (error) => {
+              if (signal.aborted) throw error;
+              return null;
+            },
+          );
+          if (!second) return { frame: i, ok: null, problems: [], unsure: first.problems.map((x) => ({ text: x.text, role: x.role })), seen: first.seen };
+          return { frame: i, ...confirmProblems(first, second) };
         } catch (error) {
           if (signal.aborted) throw error;
           if (attempt >= 1) {

@@ -747,9 +747,18 @@ function tasksPage(jobs) {
 function checkBadge(job, i) {
   const c = job.manifest?.textCheck?.find((x) => x.frame === i);
   if (!c) return "";
-  if (c.ok === null) return `<span class="badge muted-badge">文字未校对</span>`;
-  if (c.ok) return `<span class="badge ok">✓ 文字已校对</span>`;
-  return `<details class="badge-detail"><summary class="badge bad">⚠ ${c.problems.length} 处文字可能不一致</summary><ul>${c.problems.map((p) => `<li>应为“${esc(p.text)}”</li>`).join("")}</ul><p class="muted">AI 读到：${esc((c.seen || []).join(" / ") || "无")}</p></details>`;
+  if (c.ok) return `<span class="badge ok">✓ 文字已核对</span>`;
+  if (c.ok === null)
+    return c.unsure?.length
+      ? `<details class="badge-detail"><summary class="badge muted-badge">${c.unsure.length} 处没读清</summary><p class="muted">AI 没能读清${c.unsure.map((p) => `“${esc(p.text)}”`).join("、")}（艺术字、小字常见），不一定有错，放大看一眼就行。</p></details>`
+      : `<span class="badge muted-badge">文字未核对</span>`;
+  return `<details class="badge-detail" open><summary class="badge bad">${c.problems.length} 处文字有误</summary><ul>${c.problems.map((p) => `<li>${problemText(p)}</li>`).join("")}</ul></details>`;
+}
+// One proofreading finding, in the merchant's words.
+function problemText(p) {
+  if (p.kind === "repeated" || p.repeated) return `“${esc(p.text)}”在图上出现了 ${p.repeated} 次`;
+  if (p.kind === "missing") return `图上没找到“${esc(p.text)}”`;
+  return `应为“${esc(p.text)}”${p.near ? `，图上像是“${esc(p.near)}”` : ""}`;
 }
 function textEditor(job, i) {
   const f = job.params.frames?.[i];
@@ -1016,6 +1025,7 @@ const suite = initSuite({
   refresh,
   getWorkspace: () => workspace,
   tweak: async (jobId, i) => tweakModal(await api("/jobs/" + jobId), i),
+  problemText,
   setCleanup: (fn) => (cleanup = fn),
 });
 addEventListener("hashchange", () => {
