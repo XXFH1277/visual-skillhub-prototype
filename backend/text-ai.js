@@ -167,13 +167,16 @@ export function createTextAI({
   execute = runProcess,
 } = {}) {
   const config = textConfig(env);
+  // A second key to try out before switching to it (admin probe only): TEXT_PROBE_API_KEY [+ TEXT_PROBE_BASE_URL].
+  const trial = env.TEXT_PROBE_API_KEY ? textConfig({ KIMI_API_KEY: env.TEXT_PROBE_API_KEY, KIMI_API_BASE_URL: env.TEXT_PROBE_BASE_URL || env.KIMI_API_BASE_URL || env.TEXT_API_BASE_URL }) : null;
   const isDeepSeek = /^deepseek-/i.test(config?.model || "");
   const providerName = isDeepSeek ? "DeepSeek" : "Kimi";
   let lastError = null;
   let available = null;
   const recent = [];
 
-  async function viaApi({ system, text, images = [], json = false, model }, signal) {
+  async function viaApi({ system, text, images = [], json = false, model, useTrial = false }, signal) {
+    const target = useTrial && trial ? trial : config;
     const content = [
       ...(await Promise.all(images.map(async (f) => ({ type: "image_url", image_url: { url: await dataUrl(f) } })))),
       { type: "text", text },
@@ -181,9 +184,9 @@ export function createTextAI({
     const started = Date.now();
     const send = async (withJson) => {
       const timeout = AbortSignal.timeout(config.timeoutMs);
-      return fetchImpl(new URL("chat/completions", config.base), {
+      return fetchImpl(new URL("chat/completions", target.base), {
         method: "POST",
-        headers: { Authorization: `Bearer ${config.key}`, "Content-Type": "application/json" },
+        headers: { Authorization: `Bearer ${target.key}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           model: model || config.model,
           messages: [
@@ -366,6 +369,14 @@ export function createTextAI({
       );
       return parseJsonObject(answer);
     },
+    // Admin: which models the trial key (or the main key) can use.
+    async probeModels() {
+      const target = trial || config;
+      if (!target) throw new Error("未配置 Kimi");
+      const response = await fetchImpl(new URL("models", target.base), { headers: { Authorization: `Bearer ${target.key}` }, redirect: "error", signal: AbortSignal.timeout(15000) });
+      if (!response.ok) throw new Error(`模型列表 HTTP ${response.status}`);
+      return { trialKey: !!trial, models: ((await response.json())?.data || []).map((m) => m?.id).filter((id) => typeof id === "string") };
+    },
     // Admin: try another model on the same key (does it answer, read images, how fast, how many tokens).
     async probe(model, { image, signal } = {}) {
       if (!config) throw new Error("未配置 Kimi");
@@ -373,6 +384,7 @@ export function createTextAI({
       const answer = await viaApi(
         {
           model,
+          useTrial: true,
           system: image ? "你是严格的文字校对员。逐行列出图片里能看到的全部文字，并用一句话说这张图拍的是什么。只输出 JSON：{\"lines\":[\"...\"],\"what\":\"...\"}" : "只输出 JSON。",
           text: image ? "请看这张图。" : '回答：{"ok":true,"model":"你的模型名"}',
           images: image ? [image] : [],

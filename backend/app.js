@@ -340,6 +340,10 @@ export async function createWorkspace({
     res.json(r);
   });
   // Try another text/vision model on the Kimi key: plain answer, then reading a picture with text.
+  app.get("/api/admin/text-models", async (_req, res) => {
+    if (!textAI.probeModels) throw new AppError("当前文字模型不支持试跑");
+    res.json(await textAI.probeModels());
+  });
   app.post("/api/admin/text-probe", async (req, res) => {
     const model = String(req.body?.model || "");
     if (!/^[\w.\-]{3,60}$/.test(model)) throw new AppError("模型名无效");
