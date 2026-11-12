@@ -691,6 +691,13 @@ dd { margin: 0; line-height: 1.5; }
 .sb-toc button { grid-template-columns: 22px minmax(0, 1fr) auto; }
 .looks { grid-template-columns: repeat(auto-fill, minmax(150px, 180px)); }
 
+.trial { display: grid; grid-template-columns: 200px 1fr; gap: 16px; align-items: center; border-color: #9fc0dc; }
+.trial img { width: 100%; border-radius: 10px; display: block; background: var(--fill); }
+.trial h2 { margin-bottom: 6px; }
+.try-one { justify-self: start; font-size: 13px; }
+.result-more { font-size: 12px; }
+.result-more .link { font-size: 12px; }
+
 /* 积分：签到、套餐 */
 #nav .balance.todo { position: relative; }
 #nav .balance.todo::after { content: ""; position: absolute; right: 4px; top: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg); }
@@ -799,6 +806,8 @@ dd { margin: 0; line-height: 1.5; }
   .style-meta .tags { display: none; }
   .task-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .pack-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .trial { grid-template-columns: 110px 1fr; gap: 12px; }
+  .actionbar .btn { padding: 11px 10px; font-size: 14px; }
   .week { gap: 4px; }
   .week li b { font-size: 15px; }
   .task-meta { padding: 8px 10px; }

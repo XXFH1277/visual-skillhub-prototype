@@ -104,6 +104,15 @@ export class Store {
         createdAt: j.createdAt,
       }));
   }
+  // 4K versions made from this job's pictures (or from their fine-tunes).
+  upscalesOf(jobIds) {
+    if (!jobIds.length) return [];
+    return this.db
+      .prepare(`SELECT * FROM jobs WHERE source_id IN (${jobIds.map(() => "?").join(",")}) AND json_extract(params,'$.operation')='upscale' ORDER BY created_at DESC LIMIT 100`)
+      .all(...jobIds)
+      .map((r) => this.decode(r))
+      .map((j) => ({ id: j.id, status: j.status, sourceId: j.sourceId, sourceAsset: j.params.sourceAsset, asset: j.manifest?.assets?.find((a) => ["image", "original"].includes(a.role))?.name || null }));
+  }
   list(userId) {
     return this.db
       .prepare("SELECT * FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT 100")

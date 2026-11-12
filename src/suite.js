@@ -1,5 +1,5 @@
 import { preview } from "./preview.js";
-import { toPng } from "html-to-image";
+import { upscaleSize } from "../shared/generation.js";
 
 // Stat numbers are set big; longer ones (“48小时”) step down so they stay on one line.
 const bigSize = (t) => { const n = [...String(t)].length; return n > 5 ? "xs" : n > 3 ? "sm" : ""; };
@@ -118,19 +118,29 @@ export function initSuite(ctx) {
   let tab = "profile";
   let current = null;
   let shotView = "results";
-  async function suitePage(id, sub) {
+  let lastSnap = "";
+  const pendingJob = (j) => ["queued", "running"].includes(j?.status);
+  // `quiet` = a background check while something is generating: redraw only when something
+  // actually changed, and never under the merchant's fingers while they are typing.
+  async function suitePage(id, sub, quiet = false) {
     const [, s] = await Promise.all([loadMeta(), api("/suites/" + id)]);
     if (location.hash.split("/")[2] !== id || !location.hash.startsWith("#/suite/")) return;
     if (current?.id !== id) {
       tab = s.jobs?.shots && s.profile ? "shots" : "profile";
       shotView = "results";
+      quiet = false;
     }
     if (sub && tabs[sub]) tab = sub;
-    current = s;
-    render(s);
-    if (anyBusy(s) || ["shots", "detail", "dish", "packArt", "packMock"].some((k) => ["queued", "running"].includes(s.jobs?.[k]?.status))) {
+    const snap = JSON.stringify(s);
+    const typing = !!document.activeElement?.matches?.("#tab input:not([type=checkbox]), #tab textarea");
+    if (!quiet || (snap !== lastSnap && !typing)) {
+      current = s;
+      lastSnap = snap;
+      render(s);
+    }
+    if (snap !== lastSnap || anyBusy(s) || ["shots", "shotTrial", "detail", "dish", "packArt", "packMock"].some((k) => pendingJob(s.jobs?.[k])) || s.jobs?.shots?.upscales?.some(pendingJob)) {
       const t = setTimeout(async () => {
-        if (location.hash.startsWith("#/suite/" + id)) suitePage(id);
+        if (location.hash.startsWith("#/suite/" + id)) suitePage(id, undefined, true);
       }, 3000);
       setCleanup(() => clearTimeout(t));
     }
@@ -387,6 +397,15 @@ export function initSuite(ctx) {
     if (["queued", "running"].includes(job.status)) return spinner(job.phase || "生成中", "一张图 1–3 分钟，可以先离开，稍后回来看");
     if (!["partial","succeeded"].includes(job.status)) return `<section class="card warn"><b>没有成功</b><p>${esc(job.error || "")}</p></section>`;
     const imgs = job.manifest.assets.filter((a) => ["image", "module"].includes(a.role));
+    const ws = getWorkspace();
+    const bigger = (a) => {
+      try {
+        const [w, h] = upscaleSize(a.width, a.height).split("x").map(Number);
+        return a.width < w || a.height < h;
+      } catch {
+        return false;
+      }
+    };
     return `${job.status === "partial" ? partialResults(job, false) : ""}${recheckLink(job)}<div class="results">${imgs
       .map((a, pos) => {
         const i = a.frame ?? pos;
@@ -397,16 +416,39 @@ export function initSuite(ctx) {
         const pending = job.tweaks?.find((t) => t.frame === i && ["queued", "running"].includes(t.status));
         const src = latest ? `/api/jobs/${latest.id}/files/${encodeURIComponent(latest.asset)}` : fileUrl(job, a.name);
         const count = job.tweaks?.filter((t) => t.frame === i && t.status === "succeeded").length || 0;
+        // 4K: made from the picture the merchant is looking at (the fine-tuned one if there is one).
+        const from = latest ? [latest.id, latest.asset] : [job.id, a.name];
+        const up = job.upscales?.find((u) => u.sourceId === from[0] && u.sourceAsset === from[1] && !["failed", "cancelled"].includes(u.status));
+        const canUp = job.status === "succeeded" && a.role === "image" && ws.providers.find((x) => x.mode === "api")?.ready && bigger(a);
+        const upHtml = up
+          ? up.status === "succeeded" && up.asset
+            ? `<a class="link" href="/api/jobs/${up.id}/files/${encodeURIComponent(up.asset)}?download=1">下载 4K 版</a>`
+            : `<a class="link" href="#/job/${up.id}">正在提升到 4K…</a>`
+          : canUp
+            ? `<button class="link" data-up="${from[0]}:${esc(from[1])}">提升到 4K · ${ws.skills.upscale.cost} 积分</button>`
+            : "";
         return `<article class="card result" id="shot-result-${i}" tabindex="-1">
           <header class="result-bar"><h3><span class="no">${i + 1}</span>${esc(title)}</h3>${latest ? `<a class="badge" href="#/job/${latest.id}">已微调 ${count} 次</a>` : check ? (check.ok ? `<span class="badge ok">✓ 文字已核对</span>` : check.ok === false ? `<span class="badge bad">文字有误</span>` : check.unsure?.length ? `<span class="badge muted-badge" title="AI 没读清图上的艺术字或小字，不一定有错">有字没读清</span>` : "") : ""}</header>
-          ${check?.ok === false ? `<ul class="problem-list">${check.problems.map((p) => `<li>${problemText(p)}</li>`).join("")}</ul>` : ""}
           <a href="${src}" target="_blank" rel="noopener"><img loading="lazy" decoding="async" src="${preview(src)}" alt="${esc(title)}，查看原图"></a>
+          ${check?.ok === false && !latest ? `<ul class="problem-list">${check.problems.map((p) => `<li>${problemText(p)}</li>`).join("")}</ul>` : ""}
           ${pending ? `<p class="hint"><a href="#/job/${pending.id}">正在微调…</a></p>` : ""}
-          <div class="result-actions"><button class="btn small navy" data-tweak="${latest ? `${latest.id}:0` : `${job.id}:${i}`}">修改</button><a class="btn small" href="${latest ? src + "?download=1" : fileUrl(job, a.name, true)}">下载</a><button class="link" data-redo="${job.id}:${i}">重出 · ${getWorkspace().skills.product.cost} 积分</button></div></article>`;
+          <div class="result-actions"><button class="btn small navy" data-tweak="${latest ? `${latest.id}:0` : `${job.id}:${i}`}">修改</button><a class="btn small" href="${latest ? src + "?download=1" : fileUrl(job, a.name, true)}">下载</a><button class="link" data-redo="${job.id}:${i}">重出 · ${ws.skills.product.cost} 积分</button></div>
+          ${upHtml ? `<div class="result-more">${upHtml}</div>` : ""}</article>`;
       })
       .join("")}</div>`;
   }
   function bindRedo(box) {
+    $$("[data-up]", box).forEach(
+      (b) =>
+        (b.onclick = () =>
+          busy(b, async () => {
+            const at = b.dataset.up.indexOf(":");
+            await api(`/jobs/${b.dataset.up.slice(0, at)}/upscale`, json({ asset: b.dataset.up.slice(at + 1) }, { "Idempotency-Key": key() }));
+            await refresh();
+            toast("已开始提升到 4K，好了会出现“下载 4K 版”");
+            suitePage(current.id);
+          })),
+    );
     $$("[data-tweak]", box).forEach((b) => (b.onclick = () => busy(b, () => tweak(...b.dataset.tweak.split(":").map((x, j) => (j ? Number(x) : x))))));
     $$("[data-redo]", box).forEach(
       (b) =>
@@ -427,6 +469,24 @@ export function initSuite(ctx) {
     const job = s.jobs?.shots;
     const finished = job?.manifest?.assets.filter(a => a.role === "image" || a.role === "module") || [];
     const showResults = job && shotView === "results";
+    const enabledShots = (shots || []).filter((x) => x.enabled);
+    const firstTry = enabledShots.find((x) => x.photos.length)?.id;
+    const trial = s.jobs?.shotTrial;
+    // The trial matters while deciding; once a newer full set exists it has done its job.
+    const showTrial = trial && shots && (!job || trial.updatedAt > job.updatedAt);
+    const reuse = showTrial && s.trialReuse && enabledShots.length > 1 ? 1 : 0;
+    const making = busyTask(s, "shots") || busyTask(s, "looks") || pendingJob(s.jobs?.shots) || pendingJob(trial);
+    const trialImg = trial?.status === "succeeded" && trial.manifest.assets.find((a) => a.role === "image");
+    const trialHtml = !showTrial
+      ? ""
+      : pendingJob(trial)
+        ? spinner("正在试出 1 张", "1–3 分钟。这段时间可以接着改别的图的文字")
+        : trialImg
+          ? `<section class="card trial"><a href="${fileUrl(trial, trialImg.name)}" target="_blank" rel="noopener"><img src="${preview(fileUrl(trial, trialImg.name))}" alt="试出的图，查看原图"></a>
+              <div><h2>试出的这一张<small class="muted">${esc(trial.frames?.[0]?.title || "")}</small></h2>
+              <p class="muted">${reuse ? "满意就点下面的“生成其余”，这张直接带进整套，不重画、不再扣积分。" : "方案或风格在试出之后改过，这张不会带进整套。"}不满意就换个风格或改改文字，再试一张。</p>
+              <div class="row wrap"><button class="btn small navy" data-tweak="${trial.id}:0">修改这张</button><a class="btn small" href="${fileUrl(trial, trialImg.name, true)}">下载</a></div></div></section>`
+          : `<section class="card warn"><b>试出的这张没有成功</b><p>${esc(trial.error || "")}</p></section>`;
     box.innerHTML = `
       ${job ? `<div class="shot-toolbar"><div class="seg"><button data-panel="results" aria-pressed="${showResults}" class="${showResults ? "on" : ""}">生成结果${finished.length ? `（${finished.length}）` : ""}</button><button data-panel="plan" aria-pressed="${!showResults}" class="${showResults ? "" : "on"}">出图方案</button></div>
         ${finished.length > 1 ? `<select id="find-shot" aria-label="定位到商品图板块" ${showResults ? "" : "hidden"}><option value="">定位到板块…</option>${finished.map((a,pos) => { const i=a.frame ?? pos; return `<option value="${i}">第 ${i+1} 张 · ${esc(job.frames?.[i]?.title || "商品图")}</option>`; }).join("")}</select>` : ""}</div>
@@ -436,10 +496,11 @@ export function initSuite(ctx) {
       ${busyTask(s, "shots") ? spinner("AI 正在规划商品图", "给每张图挑实拍图、写标题和画面（约 1 分钟）") : ""}${failed(s, "shots")}
       ${checklist(s)}
       ${lookCard(s)}
+      ${trialHtml}
       ${
         !shots
           ? `<div class="row"><button class="btn primary" id="plan-shots" ${busyTask(s, "shots") ? "disabled" : ""}>AI 规划商品图</button><span class="muted">不扣积分</span></div>`
-          : `<div class="row spread plan-bar"><h2>出图方案<small class="muted">${shots.filter((x) => x.enabled).length} / ${shots.length} 张要出</small></h2><span class="muted">图上的字在这里改，出图时一字不差</span></div>
+          : `<div class="row spread plan-bar"><h2>出图方案<small class="muted">${shots.filter((x) => x.enabled).length} / ${shots.length} 张要出</small></h2><span class="muted">图上的字在这里改，出图时一字不差。<button class="link" id="replan-shots">重新规划</button></span></div>
             <div class="frames">${shots
               .map(
                 (x, n) => `<article class="card frame shot ${x.enabled ? "" : "dim"}" data-shot="${x.id}">
@@ -450,11 +511,12 @@ export function initSuite(ctx) {
                     <div class="tlines">${x.texts.map((t, j) => `<label class="tline"><span>${ROLE_NAME[t.role] || "文字"}</span><input data-t="${j}" value="${esc(t.text)}"></label>`).join("")}</div>
                   </div>
                   <details class="scene-desc"><summary>画面描述</summary><textarea data-scene rows="4">${esc(x.scene)}</textarea></details>
+                  ${x.photos.length ? `<button class="link try-one" data-try="${x.id}" ${making ? "disabled" : ""}>先出这张试试 · ${cost} 积分</button>` : ""}
                 </article>`,
               )
               .join("")}</div>
-            <div class="actionbar"><div class="actionbar-in"><span class="muted">图上的字改好再出；出图后可单张重出</span>
-              <div class="row"><button class="link" id="replan-shots">重新规划</button><button class="btn primary" id="gen-shots" ${busyTask(s, "shots") || busyTask(s, "looks") || ["queued","running"].includes(s.jobs?.shots?.status) ? "disabled" : ""}>${s.jobs?.shots?.status === "partial" ? "整组重新生成" : "生成"} ${shots.filter((x) => x.enabled).length} 张 · ${shots.filter((x) => x.enabled).length * cost} 积分</button></div></div></div>`
+            <div class="actionbar"><div class="actionbar-in"><span class="muted">拿不准风格？先出 1 张看看，满意再出整套</span>
+              <div class="row">${firstTry ? `<button class="btn" data-try="${firstTry}" ${making ? "disabled" : ""}>${showTrial ? "再试 1 张" : "先出 1 张试试"} · ${cost} 积分</button>` : ""}<button class="btn primary" id="gen-shots" ${making ? "disabled" : ""}>${s.jobs?.shots?.status === "partial" ? "整组重新生成" : reuse ? "生成其余" : "生成"} ${enabledShots.length - reuse} 张 · ${(enabledShots.length - reuse) * cost} 积分</button></div></div></div>`
       }
       </div>`;
     $$("[data-panel]", box).forEach(b => b.onclick = () => {
@@ -483,9 +545,26 @@ export function initSuite(ctx) {
       });
     $("#plan-shots")?.addEventListener("click", (e) => busy(e.currentTarget, async () => (await api(`/suites/${s.id}/shots/plan`, json({})), suitePage(s.id))));
     $("#replan-shots")?.addEventListener("click", (e) => busy(e.currentTarget, async () => (await api(`/suites/${s.id}/shots/plan`, json({})), suitePage(s.id))));
+    $$("[data-try]", box).forEach(
+      (b) =>
+        (b.onclick = () =>
+          busy(b, async () => {
+            await saveSuite({ shots: collect() });
+            await api(`/suites/${s.id}/shots/generate`, json({ only: b.dataset.try }, { "Idempotency-Key": key() }));
+            shotView = "plan";
+            await refresh();
+            await suitePage(s.id);
+            $(".planning", box)?.scrollIntoView({ block: "center" });
+          })),
+    );
     $("#gen-shots")?.addEventListener("click", (e) =>
       busy(e.currentTarget, async () => {
         await saveSuite({ shots: collect() });
+        // The button promised to keep the trial picture; if an edit just ruled that out, show the new count first.
+        if (reuse && !current.trialReuse) {
+          render(current);
+          return toast("试出的那张改过文字或画面，不能直接带进整套了。请看一下新的张数和积分，再点生成。", true);
+        }
         await api(`/suites/${s.id}/shots/generate`, json({}, { "Idempotency-Key": key() }));
         shotView = "results";
         await refresh();
@@ -908,6 +987,7 @@ export function initSuite(ctx) {
       document.body.append(holder);
       try {
         await Promise.all([...copy.querySelectorAll("img")].map(img => img.decode()));
+        const { toPng } = await import("html-to-image"); // only needed when exporting
         return await toPng(copy, { pixelRatio: 1, filter: n => !n.classList?.contains("dp-dl") });
       } finally { holder.remove(); }
     }

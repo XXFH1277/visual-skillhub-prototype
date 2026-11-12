@@ -64,8 +64,22 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     risky: scanRisky([s.note?.text, s.profile?.copy, JSON.stringify(s.profile || {})].join("\n")),
     packaging: s.packaging ? packState(s) : null,
     jobs: Object.fromEntries(Object.entries(s.jobs || {}).map(([k, id]) => [k, id && store.get(id) ? summary(store.get(id)) : null])),
+    trialReuse: s.profile && s.shots ? trialFor(s)?.shot.id || null : null,
   });
-  const summary = (j) => ({ id: j.id, skillId: j.params.skillId, status: j.status, phase: j.phase, error: j.error, cost: j.cost, manifest: j.manifest, updatedAt: j.updatedAt, frames: j.params.frames, tweaks: store.tweaksOf(j.id) });
+  const summary = (j) => {
+    const tweaks = store.tweaksOf(j.id);
+    return { id: j.id, skillId: j.params.skillId, status: j.status, phase: j.phase, error: j.error, cost: j.cost, manifest: j.manifest, updatedAt: j.updatedAt, frames: j.params.frames, tweaks, upscales: j.params.skillId === "product" ? store.upscalesOf([j.id, ...tweaks.map((t) => t.id)]) : [] };
+  };
+  // A trial shot can be taken over by the full set when nothing about that picture changed since.
+  const sameList = (a, b) => JSON.stringify(a || []) === JSON.stringify(b || []);
+  function trialFor(s) {
+    const job = s.jobs?.shotTrial && store.get(s.jobs.shotTrial);
+    const f = job?.status === "succeeded" && job.params.frames?.[0];
+    const shot = f && (s.shots || []).find((x) => x.id === f.ref && x.enabled);
+    if (!shot || f.scene !== shot.scene || !sameList(f.photos, shot.photos) || !sameList(f.texts.filter((t) => t.text !== AI_LABEL).map((t) => [t.role, t.text]), shot.texts.map((t) => [t.role, t.text]))) return null;
+    if (JSON.stringify(job.params.direction) !== JSON.stringify(direction(s))) return null;
+    return { job, shot };
+  }
 
   // Run one AI step in the background and record its state on the suite.
   let running = 0;
@@ -460,9 +474,12 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     core: "photorealistic e-commerce product photography based on the merchant's real photos, clean premium Chinese typography, warm natural light",
   });
   async function generate(req, res, s, kind) {
+    // "先出一张试试": one shot on its own, so the look can be judged before paying for the set.
+    const only = kind === "shots" && typeof req.body?.only === "string" ? req.body.only : null;
     const frames = kind === "shots"
-      ? (s.shots || []).filter((x) => x.enabled)
+      ? (s.shots || []).filter((x) => (only ? x.id === only && x.photos.length : x.enabled))
       : s.sections.filter((x) => x.mode === "ai" || x.mode === "bg");
+    if (only && !frames.length) throw new AppError("这张图缺少实拍图，先试别的一张");
     if (!frames.length) throw new AppError(kind === "shots" ? "请先规划商品图" : "详情页没有需要 AI 出图的屏");
     if (frames.some((f) => !f.scene)) throw new AppError("请先让 AI 规划画面");
     const refTaken = new Map();
@@ -508,10 +525,23 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     const extra = {};
     for (const f of params.frames) for (const r of f.styleRefs || []) extra[r] = refs.file(r);
     params.inputs = [...new Set([...params.inputs, ...Object.keys(extra)])];
+    // The full set takes over a still-valid trial picture instead of drawing (and charging) it again.
+    const trial = kind === "shots" && !only && params.size === "1:1" ? trialFor(s) : null;
+    const reuse = {};
+    if (trial && trial.job.params.size === params.size) {
+      const at = frames.findIndex((f) => f.id === trial.shot.id);
+      const asset = trial.job.manifest?.assets?.find((a) => a.role === "image");
+      const file = asset && path.join(jobsDir, trial.job.id, trial.job.manifest.exportId, asset.name);
+      if (at >= 0 && frames.length > 1 && file && fs.existsSync(file)) {
+        params.frames[at] = { ...trial.job.params.frames[0] };
+        params.reusedFrames = [at];
+        reuse[at] = file;
+      }
+    }
     const holder = { status: (code) => ({ json: (job) => (holder.result = { code, job }) }) };
-    await createJob(req, holder, params, dirOf(s.id), null, extra);
+    await createJob(req, holder, params, dirOf(s.id), null, extra, reuse);
     const latest = read(s.id);
-    latest.jobs = { ...(latest.jobs || {}), [kind]: holder.result.job.id };
+    latest.jobs = { ...(latest.jobs || {}), [only ? "shotTrial" : kind]: holder.result.job.id };
     save(latest);
     res.status(holder.result.code).json(holder.result.job);
   }

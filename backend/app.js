@@ -4,6 +4,7 @@ import multer from "multer";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { Store, SKILLS, AppError } from "./store.js";
@@ -178,6 +179,17 @@ export async function createWorkspace({
     "[::1]",
     ...(publicURL ? [publicURL.hostname] : []),
   ]);
+  // Larger JSON answers (a product with its jobs, the style list) travel gzipped.
+  app.use((req, res, next) => {
+    const plain = res.json.bind(res);
+    res.json = (body) => {
+      const text = JSON.stringify(body);
+      if (text === undefined || text.length < 2048 || !/\bgzip\b/.test(req.get("Accept-Encoding") || "")) return plain(body);
+      res.set({ "Content-Type": "application/json; charset=utf-8", "Content-Encoding": "gzip", Vary: "Accept-Encoding" });
+      return res.end(zlib.gzipSync(text));
+    };
+    next();
+  });
   app.use((req, res, next) => {
     res.set({
       "X-Content-Type-Options": "nosniff",
@@ -702,7 +714,8 @@ export async function createWorkspace({
       } else params.styleRef = null;
     }
   }
-  async function createJob(req, res, params, sourceDir, sourceId = null, extra = {}) {
+  // `reuse` maps a frame index to a finished picture elsewhere (a trial shot) that this job takes over as is.
+  async function createJob(req, res, params, sourceDir, sourceId = null, extra = {}, reuse = {}) {
     Object.assign(
       params,
       params.operation === "cover"
@@ -721,7 +734,7 @@ export async function createWorkspace({
       await prepareJob(dir, params, sourceDir, extra);
       for (const i of params.reusedFrames || []) {
         const name = `result-${i+1}.png`;
-        await fsp.copyFile(await regularFile(sourceDir,name),path.join(dir,name));
+        await fsp.copyFile(reuse[i] || await regularFile(sourceDir,name),path.join(dir,name));
       }
       const job = store.create(params, req.get("Idempotency-Key"), { id, sourceId, userId: req.user.id });
       if (job.id !== id) await fsp.rm(dir, { recursive: true, force: true });
@@ -968,7 +981,27 @@ export async function createWorkspace({
     res.sendFile(await regularFile(path.join(jobsDir, job.id), name), { dotfiles: "allow" });
   });
   app.use("/api", (_req, res) => res.status(404).json({ error: "接口不存在" }));
-  app.use(express.static(path.join(ROOT, "dist"), { index: "index.html" }));
+  // Built script and style files have a hash in their name: cache them for good and send them compressed.
+  const packed = new Map();
+  app.use("/assets", async (req, res, next) => {
+    res.set("Cache-Control", "public, max-age=31536000, immutable");
+    const accepts = req.get("Accept-Encoding") || "";
+    const encoding = /\bbr\b/.test(accepts) ? "br" : /\bgzip\b/.test(accepts) ? "gzip" : null;
+    const kind = req.path.match(/^\/[\w.-]+\.(js|css)$/)?.[1];
+    if (!encoding || !kind || req.method !== "GET") return next();
+    try {
+      const key = encoding + req.path;
+      if (!packed.has(key)) {
+        const raw = await fsp.readFile(path.join(ROOT, "dist", "assets", req.path.slice(1)));
+        packed.set(key, encoding === "br" ? zlib.brotliCompressSync(raw) : zlib.gzipSync(raw));
+      }
+      res.set({ "Content-Encoding": encoding, Vary: "Accept-Encoding", "Content-Type": kind === "js" ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8" });
+      res.end(packed.get(key));
+    } catch {
+      next();
+    }
+  });
+  app.use(express.static(path.join(ROOT, "dist"), { index: "index.html", setHeaders: (res, file) => file.endsWith(".html") && res.set("Cache-Control", "no-cache") }));
   app.use((_req, res) =>
     res.status(404).send("页面不存在。首次运行请先执行 npm run build。"),
   );

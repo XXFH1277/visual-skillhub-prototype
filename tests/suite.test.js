@@ -156,11 +156,27 @@ test("merchant with a PDF note: import text + photos → profile → note/Word �
   const enabled = suite.shots.filter((x) => x.enabled);
   assert.ok(enabled.length >= 4);
   assert.ok(enabled.every((x) => x.photos.length && (x.id === "white" || x.scene.startsWith("画面"))), JSON.stringify(enabled.map((x) => [x.id, x.photos.length, x.scene.slice(0, 20)])));
+  // 先出一张试试: one picture, one picture's price; the full set then takes it over instead of redrawing it.
+  const tried = await s.terminal((await (await s.post(`/api/suites/${id}/shots/generate`, { only: enabled[0].id }, { "Idempotency-Key": randomUUID() })).json()).id);
+  assert.equal(tried.status, "succeeded", tried.error);
+  assert.deepEqual([tried.params.frames.length, tried.cost], [1, 10]);
+  suite = await (await s.request(`/api/suites/${id}`)).json();
+  assert.equal(suite.jobs.shotTrial.status, "succeeded");
+  assert.equal(suite.jobs.shots, undefined);
+  assert.equal(suite.trialReuse, enabled[0].id);
+  // Switching that picture off (or changing it) means the trial no longer stands in for it.
+  const toggle = (on) => s.post(`/api/suites/${id}`, { shots: suite.shots.map((x) => ({ id: x.id, enabled: x.id === enabled[0].id ? on : x.enabled, scene: x.scene, texts: x.texts })) }).then((r) => r.json());
+  assert.equal((await toggle(false)).trialReuse, null);
+  assert.equal((await toggle(true)).trialReuse, enabled[0].id);
   const gen = await s.post(`/api/suites/${id}/shots/generate`, {}, { "Idempotency-Key": randomUUID() });
   assert.equal(gen.status, 202, await gen.clone().text());
   const job = await s.terminal((await gen.json()).id);
   assert.equal(job.status, "succeeded", job.error);
   assert.equal(job.params.frames[0].photos.length > 0, true);
+  assert.deepEqual(job.params.reusedFrames, [0]);
+  assert.equal(job.cost, (enabled.length - 1) * 10);
+  assert.equal(job.manifest.assets.filter((a) => a.role === "image").length, enabled.length);
+  assert.equal(job.manifest.assets[0].sha256, tried.manifest.assets[0].sha256);
   suite = await (await s.request(`/api/suites/${id}`)).json();
   assert.equal(suite.jobs.shots.status, "succeeded");
   // detail: only AI sections become images; switch one section off
