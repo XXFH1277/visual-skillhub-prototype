@@ -6,6 +6,7 @@ import { initSuite } from "./suite.js";
 
 const app = document.querySelector("#app");
 const nav = document.querySelector("#nav");
+const tabbar = document.querySelector("#tabbar");
 let workspace = null;
 let view = 0;
 let cleanup = () => {};
@@ -55,12 +56,27 @@ async function busy(button, fn) {
     button.disabled = false;
   }
 }
+const ICON = {
+  goods: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5 12 4l8 4.5v7L12 20l-8-4.5z"/><path d="M4 8.5l8 4.5 8-4.5M12 13v7"/></svg>`,
+  single: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m5 17 5-4.5 3.5 3 2.5-2 4 3.5"/></svg>`,
+  styles: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="9" rx="2"/><rect x="13" y="4" width="7" height="5" rx="2"/><rect x="13" y="11" width="7" height="9" rx="2"/><rect x="4" y="15" width="7" height="5" rx="2"/></svg>`,
+  works: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h9"/></svg>`,
+};
 function header() {
   const route = location.hash.replace(/^#\/?/, "").split("/")[0];
   const on = (r) => (r.includes(route) ? "on" : "");
+  const main = [
+    ["#/", "商品", ["", "suite"], "goods"],
+    ["#/new/product", "单张出图", ["new"], "single"],
+    ["#/styles", "风格库", ["styles"], "styles"],
+    ["#/tasks", "我的作品", ["tasks", "job"], "works"],
+  ];
   nav.innerHTML = workspace
-    ? `<a href="#/" class="${on(["", "suite"])}">商品</a><a href="#/new/product" class="${on(["new"])}">单张出图</a><a href="#/styles" class="${on(["styles"])}">风格库</a><a href="#/tasks" class="${on(["tasks", "job"])}">我的作品</a>${isAdmin() ? `<a href="#/admin" class="${on(["admin"])}">管理</a>` : ""}<a class="balance ${on(["credits"])}" href="#/credits" title="${esc(workspace.user.name)}">${workspace.account.balance} 积分</a><button class="link" id="logout">退出</button>`
+    ? `${main.map(([href, name, r]) => `<a href="${href}" class="main ${on(r)}">${name}</a>`).join("")}${isAdmin() ? `<a href="#/admin" class="${on(["admin"])}">管理</a>` : ""}<a class="balance ${on(["credits"])}" href="#/credits" title="${esc(workspace.user.name)}"><b>${workspace.account.balance}</b> 积分</a><button class="link" id="logout">退出</button>`
     : "";
+  // Phones get the four main places as a bottom bar; the top keeps only credits.
+  tabbar.innerHTML = workspace ? main.map(([href, name, r, icon]) => `<a href="${href}" class="${on(r)}">${ICON[icon]}<span>${name}</span></a>`).join("") : "";
+  document.body.classList.toggle("signed-in", !!workspace);
   $("#logout")?.addEventListener("click", () =>
     busy($("#logout"), async () => {
       await api("/logout", { method: "POST" });
@@ -79,6 +95,8 @@ const isAdmin = () => workspace?.user?.role === "admin";
 // Login / sign-up. A shared link #/join/<邀请码> opens sign-up with the code filled in.
 function login(mode, invite = "") {
   nav.innerHTML = "";
+  tabbar.innerHTML = "";
+  document.body.classList.remove("signed-in");
   const [route, code] = location.hash.replace(/^#\/?/, "").split("/");
   if (!mode) mode = route === "join" ? "register" : "login";
   if (route === "join" && code) invite = decodeURIComponent(code);
@@ -518,23 +536,28 @@ function renderStyleFilters(all) {
       (!lib.tone || s.tone === lib.tone) &&
       (!lib.mine || (s.source === "upload" && (s.mine || isAdmin()))),
   );
-  const chips = (field, items, label) =>
-    `<div class="filter"><span>${label}</span><button class="chip ${!lib[field] ? "on" : ""}" data-f="${field}" data-v="">全部</button>${items
+  const chips = (field, items) =>
+    `<button class="chip ${!lib[field] ? "on" : ""}" data-f="${field}" data-v="">全部</button>${items
       .map(([v, n]) => `<button class="chip ${lib[field] === v ? "on" : ""}" data-f="${field}" data-v="${esc(v)}">${esc(n)}</button>`)
-      .join("")}</div>`;
-  app.innerHTML = `<div class="page-head"><div><h1>风格库</h1><p class="muted">挑一个样子直接用；看到好图就传上来，AI 会拆成可复用的配方。</p></div><div class="row wrap">${isAdmin() && all.some((s) => s.source === "builtin" && !s.cover && !s.types.includes("interior")) ? `<button class="btn" id="all-covers">批量生成缺失样图</button>` : ""}<button class="btn primary" id="upload-style">＋ 上传好图</button></div></div>
-  <section class="filters card">
-    ${chips("cat", CATEGORIES.map((c) => [c, c]), "品类")}
-    ${chips("type", Object.entries(IMAGE_TYPES), "类型")}
-    ${chips("tone", TONES.map((t) => [t, t]), "调性")}
+      .join("")}`;
+  const extra = [lib.type, lib.tone, lib.mine].filter(Boolean).length;
+  app.innerHTML = `<div class="page-head"><div><h1>风格库</h1><p class="muted">挑一个样子直接用；看到好图就传上来，AI 会拆成可复用的配方。</p></div><div class="row wrap">${isAdmin() && all.some((s) => s.source === "builtin" && !s.cover && !s.types.includes("interior")) ? `<button class="btn" id="all-covers">批量生成缺失样图</button>` : ""}<button class="btn primary" id="upload-style">上传好图</button></div></div>
+  <div class="lib-bar">
+    <div class="lib-cats" role="group" aria-label="品类">${chips("cat", CATEGORIES.map((c) => [c, c]))}</div>
+    <button class="btn small lib-toggle ${extra ? "has" : ""}" id="lib-more" aria-expanded="${!!lib.open}">筛选${extra ? ` ${extra}` : ""}</button>
+  </div>
+  <section class="filters card" id="lib-filters" ${lib.open ? "" : "hidden"}>
+    <div class="filter"><span>类型</span>${chips("type", Object.entries(IMAGE_TYPES))}</div>
+    <div class="filter"><span>调性</span>${chips("tone", TONES.map((t) => [t, t]))}</div>
     <div class="filter"><span>来源</span><button class="chip ${!lib.mine ? "on" : ""}" data-mine="0">全部</button><button class="chip ${lib.mine ? "on" : ""}" data-mine="1">我上传的</button></div>
   </section>
-  <p class="muted">${list.length} 个风格</p>
+  <p class="muted lib-count">${list.length} 个风格${lib.cat || extra ? ` <button class="link" id="lib-clear">清空筛选</button>` : ""}</p>
+  ${list.length ? "" : `<section class="card empty"><h2>这个组合下还没有风格</h2><p class="muted">换一个品类，或者把筛选清空看看。</p></section>`}
   <div class="style-grid">${list
     .map(
-      (s) => `<button class="style-card card" data-style="${esc(s.id)}">
+      (s) => `<button class="style-card" data-style="${esc(s.id)}">
         <div class="style-cover">${coverHtml(s)}${s.status === "analyzing" ? `<span class="badge-on">AI 拆解中…</span>` : s.status === "failed" ? `<span class="badge-on bad">拆解失败</span>` : ""}</div>
-        <div class="style-meta"><b>${esc(s.name)}</b><small>${esc(s.tagline || "")}</small><span class="tags">${[s.tone, ...(s.types || []).map((t) => IMAGE_TYPES[t])].filter(Boolean).slice(0, 4).map((t) => `<i>${esc(t)}</i>`).join("")}</span></div>
+        <div class="style-meta"><b>${esc(s.name)}</b><small>${esc(s.tagline || "")}</small><span class="tags">${[s.tone, ...(s.types || []).map((t) => IMAGE_TYPES[t])].filter(Boolean).slice(0, 3).map((t) => `<i>${esc(t)}</i>`).join("")}</span></div>
       </button>`,
     )
     .join("")}</div>`;
@@ -542,6 +565,9 @@ function renderStyleFilters(all) {
   $$("[data-f]").forEach((b) => (b.onclick = () => ((lib[b.dataset.f] = b.dataset.v), renderStyleFilters(all))));
   $$("[data-mine]").forEach((b) => (b.onclick = () => ((lib.mine = b.dataset.mine === "1"), renderStyleFilters(all))));
   $$("[data-style]").forEach((b) => (b.onclick = () => styleModal(b.dataset.style)));
+  $("#lib-more").onclick = () => ((lib.open = !lib.open), renderStyleFilters(all));
+  $("#lib-clear")?.addEventListener("click", () => (Object.assign(lib, { cat: "", type: "", tone: "", mine: false }), renderStyleFilters(all)));
+  $(".lib-cats .chip.on")?.scrollIntoView({ block: "nearest", inline: "center" });
   $("#upload-style").onclick = uploadModal;
   $("#all-covers")?.addEventListener("click", (e) =>
     busy(e.currentTarget, async () => {

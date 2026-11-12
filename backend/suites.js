@@ -294,7 +294,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         .all(req.user.id)
         .map((r) => {
           const d = JSON.parse(r.data);
-          return { id: r.id, name: d.profile?.name || d.name || "未命名商品", cover: d.photos?.[0]?.file || null, updatedAt: r.updated_at, tasks: d.tasks };
+          return { id: r.id, name: d.profile?.name || d.name || "未命名商品", cover: d.photos?.[0]?.file || null, updatedAt: r.updated_at, tasks: d.tasks, steps: { profile: !!d.profile, note: !!d.note, shots: !!d.jobs?.shots, detail: !!d.jobs?.detail } };
         }),
     }),
   );
