@@ -728,6 +728,28 @@ dd { margin: 0; line-height: 1.5; }
 .result-more { font-size: 12px; }
 .result-more .link { font-size: 12px; }
 
+/* 详情页：拖动排序、总览、更紧凑的逐屏编辑 */
+.toc-tip { margin: -6px 0 -4px; font-size: 12px; }
+.sb-toc li { touch-action: pan-y; -webkit-touch-callout: none; user-select: none; }
+.sb-toc button { grid-template-columns: 10px 22px minmax(0, 1fr) auto; cursor: grab; }
+.grip { width: 6px; height: 14px; opacity: 0.35; background: radial-gradient(circle, var(--ink) 1.2px, transparent 1.6px) 0 0 / 6px 5px repeat-y; }
+.sb-toc button:hover .grip { opacity: 0.8; }
+.dragging { opacity: 0.9; background: #fff; box-shadow: 0 6px 22px #0f243833; border-radius: 10px; position: relative; z-index: 5; cursor: grabbing !important; }
+.dragging button { cursor: grabbing; }
+.sorting { cursor: grabbing; }
+.sorting * { user-select: none; }
+.sb-card { grid-template-columns: 200px minmax(0, 1fr); }
+.sb-phone { width: 200px; border-width: 4px; border-radius: 16px; max-height: 440px; }
+.sb-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; }
+.sb-main.grid .sb-list { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; align-items: start; }
+.sb-main.grid .sb-card { display: grid; grid-template-columns: 1fr; gap: 6px; padding: 8px; cursor: grab; touch-action: pan-y; -webkit-touch-callout: none; user-select: none; }
+.sb-main.grid .sb-card.off { display: none; }
+.sb-main.grid .sb-phone { width: 100%; max-height: none; border-width: 3px; border-radius: 12px; order: 2; cursor: pointer; }
+.sb-main.grid .sb-info { order: 1; gap: 0; }
+.sb-main.grid .sb-info > :not(header), .sb-main.grid .sec-move { display: none; }
+.sb-main.grid .sb-info header b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-main.long .sb-list { max-width: 400px; }
+
 /* 点了就有反应：按钮变灰并转圈 */
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading { opacity: 0.6; cursor: progress !important; pointer-events: none; }
@@ -771,6 +793,8 @@ dd { margin: 0; line-height: 1.5; }
   .sb-toc::-webkit-scrollbar { display: none; }
   .sb-toc li { flex: none; }
   .sb-toc button { display: flex; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 5px 10px; }
+  .sb-toc li { touch-action: pan-x; }
+  .sb-toc .grip { display: none; }
   .sb-toc em { display: none; }
   .sb-main.long .sb-list { max-width: none; }
 }
@@ -832,6 +856,10 @@ dd { margin: 0; line-height: 1.5; }
   .look { flex: none; width: 138px; align-content: start; }
 
   .sb-card { grid-template-columns: 124px minmax(0, 1fr); gap: 12px; padding: 12px; }
+  .sb-fields { grid-template-columns: 1fr; }
+  .sb-main.grid .sb-list { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .sb-main.grid .sb-card { padding: 6px; }
+  .toc-tip { display: none; }
   .sb-phone { width: 124px; border-width: 3px; border-radius: 12px; max-height: 300px; }
   .sb-info header b { font-size: 15px; }
   .sb-card.off .sb-info { grid-template-columns: 1fr; }

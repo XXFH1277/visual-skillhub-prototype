@@ -977,7 +977,65 @@ export function initSuite(ctx) {
   const RISKY = [["没有之一", ""], ["最好吃", "口碑好"], ["最好", "很好"], ["最佳", "很适合"], ["最香", "很香"], ["最肥", "正当季"], ["最厚", "很厚"], ["最新鲜", "很新鲜"], ["第一", "领先"], ["唯一", "独特"], ["顶级", "高品质"], ["极品", "精选"], ["全网最低", "实惠"]];
   const safeText = (x) => RISKY.reduce((acc, [w, r]) => acc.split(w).join(r), String(x || "")).replace(/，，/g, "，");
   let safeMode = true;
-  let detailView = "board";
+  // Drag to reorder the children of `list` that match `itemSel`. Mouse: press and move.
+  // Touch: press and hold, then move (a quick swipe still scrolls). The item moves in place as you drag.
+  function sortable(list, itemSel, onDone, enabled = () => true) {
+    if (!list) return;
+    let dragging = null;
+    // Stops the page from scrolling under a finger that is dragging an item.
+    list.addEventListener("touchmove", (e) => dragging && e.preventDefault(), { passive: false });
+    list.addEventListener("contextmenu", (e) => e.target.closest(itemSel) && e.preventDefault());
+    list.addEventListener("pointerdown", (e) => {
+      const item = e.target.closest(itemSel);
+      if (!item || !enabled() || item.parentElement !== list || e.button || e.target.closest("input, select, textarea, a, [data-nodrag]")) return;
+      const touch = e.pointerType !== "mouse";
+      const from = [...list.children].indexOf(item);
+      const sx = e.clientX, sy = e.clientY;
+      let lastOver = null;
+      const start = () => {
+        dragging = item;
+        item.classList.add("dragging");
+        list.classList.add("sorting");
+        navigator.vibrate?.(8);
+      };
+      const hold = touch ? setTimeout(start, 320) : null;
+      const move = (ev) => {
+        if (!dragging) {
+          const far = Math.hypot(ev.clientX - sx, ev.clientY - sy) > 6;
+          if (touch) return void (far && stop()); // moved before the hold elapsed: that's a scroll
+          if (!far) return;
+          start();
+        }
+        ev.preventDefault();
+        const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(itemSel);
+        if (!over || over === item || over.parentElement !== list) return void (lastOver = null);
+        if (over === lastOver) return; // already swapped with this one; wait until the pointer leaves it
+        lastOver = over;
+        const all = [...list.children];
+        if (all.indexOf(over) > all.indexOf(item)) over.after(item);
+        else over.before(item);
+      };
+      const stop = () => {
+        clearTimeout(hold);
+        removeEventListener("pointermove", move);
+        removeEventListener("pointerup", stop);
+        removeEventListener("pointercancel", stop);
+        if (!dragging) return;
+        dragging = null;
+        item.classList.remove("dragging");
+        list.classList.remove("sorting");
+        // The release must not count as a click on the item.
+        const swallow = (c) => (c.stopPropagation(), c.preventDefault());
+        addEventListener("click", swallow, { capture: true, once: true });
+        setTimeout(() => removeEventListener("click", swallow, true), 60);
+        if ([...list.children].indexOf(item) !== from) onDone([...list.querySelectorAll(":scope > " + itemSel)]);
+      };
+      addEventListener("pointermove", move, { passive: false });
+      addEventListener("pointerup", stop);
+      addEventListener("pointercancel", stop);
+    });
+  }
+  let detailView = "grid"; // open on the overview: every screen at a glance, then into one to edit
   let addOpen = false;
   let fitDetail = () => {};
   addEventListener("resize", () => fitDetail());
@@ -1019,10 +1077,11 @@ export function initSuite(ctx) {
       <div class="sb-layout">
         <aside class="card sb-rail">
           <h2>详情页分镜<small class="muted">${live.length} 屏</small></h2>
+          <p class="muted toc-tip">按住拖动可以调整顺序</p>
           <ol class="sb-toc">${s.sections
-            .map((x) => `<li class="${x.mode === "off" ? "off" : ""}"><button data-goto="${x.id}"><i>${x.mode === "off" ? "–" : no(x)}</i><span>${esc(secName(x))}</span><em class="m-${x.mode}">${MODE_SHORT[x.mode]}</em></button></li>`)
+            .map((x) => `<li class="${x.mode === "off" ? "off" : ""}" data-id="${x.id}"><button data-goto="${x.id}"><b class="grip" aria-hidden="true"></b><i>${x.mode === "off" ? "–" : no(x)}</i><span>${esc(secName(x))}</span><em class="m-${x.mode}">${MODE_SHORT[x.mode]}</em></button></li>`)
             .join("")}</ol>
-          ${addable.length ? `<details class="sb-add" ${addOpen ? "open" : ""}><summary>＋ 把商品图放进详情页</summary><p class="muted">点一张就加到详情页末尾，再用 ↑↓ 挪到想要的位置。不花积分。</p>
+          ${addable.length ? `<details class="sb-add" ${addOpen ? "open" : ""}><summary>＋ 把商品图放进详情页</summary><p class="muted">点一张就加到详情页末尾，再在上面的目录里拖到想要的位置。不花积分。</p>
             <div class="add-grid">${addable.map((a) => `<button class="add-shot ${a.sec ? "in" : ""}" data-add="${a.id}" title="${esc(a.title)}"><img loading="lazy" src="${preview(a.url, 320)}" alt="${esc(a.title)}"><span>${a.sec ? "已放入" : esc(a.title)}</span></button>`).join("")}</div></details>` : ""}
           ${s.look !== undefined ? `<p class="muted look-line">风格：<b>${esc(s.look?.conceptName || "实拍精修")}</b>，在“商品图”里换</p>` : ""}
           <label class="mini"><input type="checkbox" id="safe" ${safeMode ? "checked" : ""}>淘宝合规（自动替换“最、第一”等极限词）</label>
@@ -1037,8 +1096,8 @@ export function initSuite(ctx) {
           ${job?.status === "succeeded" ? recheckLink(job) + detailCheck(job) : ""}
           <details class="sb-help"><summary>三种做法怎么选</summary><p class="muted">“AI 出图”整屏由 AI 画。字多、要一字不错的屏（答疑、商品信息、须知）用“AI 底图+排字”：AI 只画背景，字由程序排，改字免费。哪屏不满意点“不要这屏”，长图里就不拼它，不扣积分。</p><button class="link" id="all-ai">全部改成 AI 出图</button></details>
         </aside>
-        <div class="sb-main ${detailView === "long" ? "long" : ""}">
-          <div class="sb-top"><div class="seg small"><button data-dview="board" class="${detailView === "long" ? "" : "on"}">分镜编辑</button><button data-dview="long" class="${detailView === "long" ? "on" : ""}">长图预览</button></div><span class="muted sb-tip">点左边的小图可以看大图</span></div>
+        <div class="sb-main ${detailView === "board" ? "" : detailView}">
+          <div class="sb-top"><div class="seg small">${[["grid", "总览"], ["board", "逐屏编辑"], ["long", "长图预览"]].map(([k, n]) => `<button data-dview="${k}" class="${detailView === k ? "on" : ""}">${n}</button>`).join("")}</div><span class="muted sb-tip" data-tip></span></div>
           <div class="sb-list">${s.sections
             .map((x, i) => {
               if (x.type === "shot")
@@ -1059,8 +1118,9 @@ export function initSuite(ctx) {
                 <div class="sb-info">
                   <header><span class="no">${no(x)}</span><b>${esc(m.name)}</b><div class="sec-move"><button data-up="${i}" aria-label="上移">↑</button><button data-down="${i}" aria-label="下移">↓</button></div></header>
                   <p class="sb-why">${SECTION_WHY[x.type] || ""}</p>
-                  <label class="tline"><span>做法</span>${modes}</label>
-                  ${x.mode === "ai" ? x.texts.map((t, j) => `<label class="tline"><span>${ROLE_NAME[t.role] || "文字"}</span><input data-tx="${j}" value="${esc(t.text)}"></label>`).join("") : `<p class="hint">${x.mode === "photo" ? "直接用实拍图，不花积分。" : "文字来自“商品档案”，在那里改，这里自动更新。"}</p>`}
+                  <div class="sb-fields"><label class="tline"><span>做法</span>${modes}</label>
+                  ${x.mode === "ai" ? x.texts.map((t, j) => `<label class="tline"><span>${ROLE_NAME[t.role] || "文字"}</span><input data-tx="${j}" value="${esc(t.text)}"></label>`).join("") : ""}</div>
+                  ${x.mode === "ai" ? "" : `<p class="hint">${x.mode === "photo" ? "直接用实拍图，不花积分。" : "文字来自“商品档案”，在那里改，这里自动更新。"}</p>`}
                   ${x.scene ? `<details class="scene-desc"><summary>画面描述</summary><textarea data-scene rows="5">${esc(x.scene)}</textarea></details>` : ""}
                   ${photos.length ? `<div class="shot-refs">${photos.map((f) => `<img loading="lazy" src="${preview(photoUrl(s, f), 320)}" alt="用到的实拍图">`).join("")}</div>` : ""}
                   ${frameNo(x) >= 0 && pendingOf(x) ? `<p class="hint working"><i class="spin"></i>${pendingOf(x).redo ? "正在重出这一屏" : "正在修改这一屏"}，好了会直接替换。</p>` : ""}
@@ -1083,16 +1143,21 @@ export function initSuite(ctx) {
     const fit = () => $$(".sb-phone", box).forEach((ph) => ($(".dp", ph).style.zoom = String(ph.clientWidth / 750)));
     fitDetail = fit;
     fit();
+    const TIPS = { grid: "所有屏一眼看完。按住拖动调顺序，点一屏进去编辑", board: "点左边的小图看这一屏的大图", long: "买家在手机上看到的样子。点任意一屏回到编辑" };
     const setView = (v, goto) => {
       detailView = v;
-      main.classList.toggle("long", v === "long");
+      main.classList.remove("long", "grid");
+      if (v !== "board") main.classList.add(v);
       $$("[data-dview]", box).forEach((b) => b.classList.toggle("on", b.dataset.dview === v));
+      $("[data-tip]", box).textContent = TIPS[v];
       fit();
-      if (goto) $("#sec-" + goto, box)?.scrollIntoView({ block: "start" });
+      if (goto) $("#sec-" + goto, box)?.scrollIntoView({ block: v === "board" ? "start" : "center" });
     };
+    $("[data-tip]", box).textContent = TIPS[detailView];
     $$("[data-dview]", box).forEach((b) => (b.onclick = () => setView(b.dataset.dview)));
-    $$("[data-zoom]", box).forEach((b) => (b.onclick = () => setView(detailView === "long" ? "board" : "long", b.dataset.zoom)));
-    $$("[data-goto]", box).forEach((b) => (b.onclick = () => $("#sec-" + b.dataset.goto, box)?.scrollIntoView({ block: "start", behavior: "smooth" })));
+    // A click on a screen: from the overview or the long image into the editor; from the editor to the long image.
+    $$("[data-zoom]", box).forEach((b) => (b.onclick = () => setView(detailView === "board" ? "long" : "board", b.dataset.zoom)));
+    $$("[data-goto]", box).forEach((b) => (b.onclick = () => $("#sec-" + b.dataset.goto, box)?.scrollIntoView({ block: detailView === "board" ? "start" : "center", behavior: "smooth" })));
     // AI backgrounds behind the typeset screens (CSP: set through CSSOM, not inline styles).
     for (const x of s.sections.filter((y) => y.mode === "bg")) {
       const url = aiImage(s, x);
@@ -1139,6 +1204,13 @@ export function initSuite(ctx) {
       [list[i], list[j]] = [list[j], list[i]];
       persist(list);
     };
+    const reorder = (ids) => {
+      const list = collect();
+      const rest = list.filter((x) => !ids.includes(x.id)); // screens not shown where the drag happened keep their place at the end
+      persist([...ids.map((id) => list.find((x) => x.id === id)).filter(Boolean), ...rest]);
+    };
+    sortable($(".sb-toc", box), "li", (items) => reorder(items.map((li) => li.dataset.id)));
+    sortable($(".sb-list", box), ".sb-card", (items) => reorder(items.map((el) => el.dataset.sec)), () => detailView === "grid");
     $$("[data-up]", box).forEach((b) => (b.onclick = () => move(+b.dataset.up, -1)));
     $$("[data-down]", box).forEach((b) => (b.onclick = () => move(+b.dataset.down, 1)));
     $("#all-ai").onclick = () =>
