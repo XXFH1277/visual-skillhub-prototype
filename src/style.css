@@ -229,6 +229,17 @@ label.inline select { width: auto; flex: 1; }
 .detail-result { display: grid; grid-template-columns: minmax(0, 420px) 1fr; gap: 20px; align-items: start; margin-bottom: 16px; }
 .long-view { padding: 0; overflow: auto; max-height: 80vh; }
 .long-view img { width: 100%; display: block; }
+.long-export h2 { margin: 0; }
+.long-export p { margin: 6px 0 12px; }
+.long-export-list { list-style: none; padding: 0; margin: 0; display: grid; }
+.long-export-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-top: 1px solid var(--line); }
+.long-export-list label { display: flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; }
+.long-export-list input { width: 17px; height: 17px; margin: 0; flex: none; }
+.long-export-list img { width: 32px; height: 42px; object-fit: cover; background: var(--fill); border-radius: 4px; }
+.long-export-list small { display: block; font-weight: 400; }
+.long-export-list .sec-move { flex: none; }
+.long-export-list .sec-move button { width: 32px; height: 32px; }
+.long-export-actions { justify-content: space-between; margin-top: 10px; }
 .side { display: grid; gap: 16px; }
 .dl-list { display: grid; gap: 8px; margin-top: 12px; }
 .screen { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
@@ -263,7 +274,9 @@ label.inline select { width: auto; flex: 1; }
 /* ---- style-first flow ---- */
 .row.spread { justify-content: space-between; }
 .note-label { margin-top: 18px; }
-.specs { margin-top: 14px; }
+.specs { display: grid; gap: 12px; margin-top: 14px; }
+.aspect-options { display: grid; gap: 5px; font-size: 13px; font-weight: 600; }
+.resolution-label { margin-top: 14px; width: fit-content; max-width: 100%; }
 .chosen-style { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; margin-top: 4px; }
 .swatches { display: inline-flex; gap: 4px; vertical-align: middle; }
 .swatches i { width: 18px; height: 18px; border-radius: 50%; border: 1px solid #0001; display: inline-block; }
@@ -657,6 +670,9 @@ dd { margin: 0; line-height: 1.5; }
 .sb-main.long .sb-list { gap: 0; max-width: 620px; margin: 0 auto; border-radius: var(--radius); overflow: hidden; box-shadow: 0 8px 30px #0f243814; }
 .sb-main.long .sb-card { display: block; padding: 0; border: 0; border-radius: 0; }
 .sb-main.long .sb-card.off, .sb-main.long .sb-info, .sb-main.long .sb-tip { display: none; }
+.sb-long-export { display: none; scroll-margin-top: calc(var(--top-h) + 16px); }
+.sb-main.long .sb-long-export { display: block; max-width: 620px; margin: 0 auto 12px; }
+.sb-main.long .sb-card.omitted-from-long { display: none; }
 .sb-main.long .sb-phone { width: 100%; border: 0; border-radius: 0; max-height: none; cursor: zoom-out; }
 
 /* 风格库 */

@@ -69,18 +69,21 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
   const summary = (j) => {
     const tweaks = store.tweaksOf(j.id);
     const ahead = j.status === "queued" ? store.ahead(j) : 0;
-    return { id: j.id, skillId: j.params.skillId, status: j.status, phase: j.status === "queued" ? (ahead ? `排队中，前面还有 ${ahead} 个任务` : "排队中，马上开始") : j.phase, error: j.error, cost: j.cost, manifest: j.manifest, updatedAt: j.updatedAt, frames: j.params.frames, tweaks, upscales: j.params.skillId === "product" ? store.upscalesOf([j.id, ...tweaks.map((t) => t.id)]) : [] };
+    return { id: j.id, skillId: j.params.skillId, resolution: j.params.resolution, status: j.status, phase: j.status === "queued" ? (ahead ? `排队中，前面还有 ${ahead} 个任务` : "排队中，马上开始") : j.phase, error: j.error, cost: j.cost, manifest: j.manifest, updatedAt: j.updatedAt, frames: j.params.frames, tweaks, upscales: j.params.skillId === "product" ? store.upscalesOf([j.id, ...tweaks.map((t) => t.id)]) : [] };
   };
   // Pictures made one at a time (“单独出这张”). The full set takes each of them over as long as
   // nothing about that picture changed since: same words, scene, photos and look.
   const sameList = (a, b) => JSON.stringify(a || []) === JSON.stringify(b || []);
   const tryKey = (shotId) => "try:" + shotId;
-  function madeShots(s) {
+  function madeShots(s, resolution = "2K") {
     const made = [];
+    const legacy = s.jobs?.shotTrial && store.get(s.jobs.shotTrial);
     for (const shot of (s.shots || []).filter((x) => x.enabled)) {
-      const job = s.jobs?.[tryKey(shot.id)] && store.get(s.jobs[tryKey(shot.id)]);
+      const id = s.jobs?.[tryKey(shot.id)];
+      const job = id ? store.get(id) : legacy;
       const f = job?.status === "succeeded" && job.params.frames?.[0];
       if (!f || f.ref !== shot.id || f.scene !== shot.scene || !sameList(f.photos, shot.photos)) continue;
+      if ((job.params.resolution || "2K") !== resolution) continue;
       if (!sameList(f.texts.filter((t) => t.text !== AI_LABEL).map((t) => [t.role, t.text]), shot.texts.map((t) => [t.role, t.text]))) continue;
       if (JSON.stringify(job.params.direction) !== JSON.stringify(direction(s))) continue;
       // If the merchant fine-tuned or redrew it, the newest version is the one that counts.
@@ -590,7 +593,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     // The full set takes over the pictures already made one by one instead of drawing (and charging) them again.
     const reuse = {};
     if (kind === "shots" && !only)
-      for (const made of madeShots(s)) {
+      for (const made of madeShots(s, req.body?.resolution || "2K")) {
         const at = frames.findIndex((f) => f.id === made.shot.id);
         if (at < 0 || made.job.params.size !== params.size) continue;
         params.frames[at] = { ...made.job.params.frames[0] };

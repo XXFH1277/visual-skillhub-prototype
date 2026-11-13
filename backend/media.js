@@ -114,34 +114,40 @@ export async function deliver(job, dir, available = null) {
     if (!["png", "jpeg", "webp"].includes(meta.format) || (meta.pages || 1) > 1 || meta.width < 256 || meta.height < 256)
       throw new Error("生成的图片尺寸或格式不符合要求");
     const actual = `${meta.width}x${meta.height}`;
-    if (p.requestedSize && actual !== p.requestedSize && p.operation !== "upscale")
-      warnings.push(`第 ${i + 1} 张请求 ${p.requestedSize}，实际返回 ${actual}，已保留真实像素。`);
-    const frame = p.frames?.[i] || { textMode: "none", texts: [], layout: "none" };
-    const name = `image-${i + 1}.png`;
-    if (p.skillId === "detail") {
-      const width = 750;
-      const height = Math.round((meta.height / meta.width) * width);
-      const base = await sharp(source, OPTIONS).rotate().resize(width, height, { fit: "cover" }).png().toBuffer();
-      const moduleName = `module-${i + 1}.png`;
-      if (frame.textMode === "overlay" && frame.texts.length)
-        await overlayTexts(base, { layout: frame.layout, texts: frame.texts, accent }, path.join(out, moduleName));
-      else await fs.writeFile(path.join(out, moduleName), base);
-      await add(moduleName, "module", i);
-      modules.push({ name: moduleName, height });
-      continue;
+    const native = [meta.width, meta.height];
+    const requested = p.requestedSize?.split("x").map(Number);
+    const finish4K = p.resolution === "4K" && requested && Math.max(...native) > 2048
+      && Math.abs(native[0] * requested[1] / (native[1] * requested[0]) - 1) <= 0.02;
+    if (p.requestedSize && actual !== p.requestedSize) {
+      const from = actual.replace("x", "×");
+      const to = p.requestedSize.replace("x", "×");
+      const adjustment = finish4K && requested.some((value, axis) => value > native[axis]) ? "放大导出" : "导出";
+      warnings.push(finish4K
+        ? `第 ${i + 1} 张原生像素 ${from}，已${adjustment}为 ${to}。`
+        : `第 ${i + 1} 张请求 ${to}，实际返回 ${from}，已保留原始像素。`);
     }
-    const dims = p.providerMode === "api" || p.operation === "upscale" ? [meta.width, meta.height] : canvasSize(p.size);
+    const frame = p.frames?.[i] || { textMode: "none", texts: [], layout: "none" };
+    const detail = p.skillId === "detail";
+    const dims = finish4K ? requested : p.providerMode === "api" ? native
+      : detail ? [750, Math.round(meta.height / meta.width * 750)] : canvasSize(p.size);
+    const name = `${detail ? "module" : "image"}-${i + 1}.png`;
     const base = await sharp(source, OPTIONS).rotate().resize(...dims, { fit: "cover" }).png().toBuffer();
     if (frame.textMode === "overlay" && frame.texts.length)
       await overlayTexts(base, { layout: frame.layout, texts: frame.texts, accent }, path.join(out, name));
     else await fs.writeFile(path.join(out, name), base);
-    await add(name, "image", i);
+    await add(name, detail ? "module" : "image", i);
+    if (detail && !available) {
+      const file = path.join(out, name);
+      const height = Math.round(dims[1] / dims[0] * 750);
+      const input = dims[0] === 750 ? file : await sharp(file, OPTIONS).resize(750, height).png().toBuffer();
+      modules.push({ input, height });
+    }
   }
   if (!available && p.skillId === "detail") {
     const total = modules.reduce((h, m) => h + m.height, 0);
     let top = 0;
     await sharp({ create: { width: 750, height: total, channels: 3, background: "#ffffff" } })
-      .composite(modules.map((m) => { const layer = { input: path.join(out, m.name), left: 0, top }; top += m.height; return layer; }))
+      .composite(modules.map((m) => { const layer = { input: m.input, left: 0, top }; top += m.height; return layer; }))
       .png()
       .toFile(path.join(out, "detail-long.png"));
     await add("detail-long.png", "long", null);

@@ -1,5 +1,6 @@
 import { preview } from "./preview.js";
-import { upscaleSize } from "../shared/generation.js";
+import { imageCredits } from "../shared/pricing.js";
+import { downloadImage, exportLongImage, mountLongExport } from "./long-export.js";
 
 // Stat numbers are set big; longer ones (“48小时”) step down so they stay on one line.
 const bigSize = (t) => { const n = [...String(t)].length; return n > 5 ? "xs" : n > 3 ? "sm" : ""; };
@@ -394,7 +395,7 @@ export function initSuite(ctx) {
     return n ? `<p class="muted">有 ${n} 张图的文字还没核对上（校对 AI 当时没响应）。<button class="link" data-recheck="${job.id}">重新核对文字（免费）</button></p>` : "";
   }
   function partialResults(job, showImages = true) {
-    return `<section class="card warn"><b>部分完成</b><p>${esc(job.error)}</p><button class="btn primary" data-resume="${job.id}">只补缺少的 ${job.manifest.missing.length} 张 · ${job.manifest.missing.length * (getWorkspace().skills[job.skillId]?.cost || 10)} 积分</button></section>
+    return `<section class="card warn"><b>部分完成</b><p>${esc(job.error)}</p><button class="btn primary" data-resume="${job.id}">只补缺少的 ${job.manifest.missing.length} 张 · ${job.manifest.missing.length * imageCredits(job.resolution)} 积分</button></section>
       ${showImages ? `<div class="results">${job.manifest.assets.map(a => `<article class="card result"><a href="${fileUrl(job,a.name)}" target="_blank" rel="noopener"><img src="${preview(fileUrl(job,a.name))}" loading="lazy" alt=""></a><b>${esc(job.frames[a.frame]?.title)}</b> <a href="${fileUrl(job,a.name,true)}">下载</a></article>`).join("")}</div>` : ""}`;
   }
   function bindResume(box, suiteId) {
@@ -412,14 +413,6 @@ export function initSuite(ctx) {
     const ws = getWorkspace();
     // Product pictures of this product can be redrawn from other real photos.
     const swapRef = (i) => (job.id === current?.jobs?.shots?.id && current.shots?.some((x) => x.id === job.frames?.[i]?.ref) ? job.frames[i].ref : null);
-    const bigger = (a) => {
-      try {
-        const [w, h] = upscaleSize(a.width, a.height).split("x").map(Number);
-        return a.width < w || a.height < h;
-      } catch {
-        return false;
-      }
-    };
     return `${job.status === "partial" ? partialResults(job, false) : ""}${recheckLink(job)}<div class="results">${imgs
       .map((a, pos) => {
         const i = a.frame ?? pos;
@@ -433,7 +426,7 @@ export function initSuite(ctx) {
         // 4K: made from the picture the merchant is looking at (the fine-tuned one if there is one).
         const from = latest ? [latest.id, latest.asset] : [job.id, a.name];
         const up = job.upscales?.find((u) => u.sourceId === from[0] && u.sourceAsset === from[1] && !["failed", "cancelled"].includes(u.status));
-        const canUp = job.status === "succeeded" && a.role === "image" && ws.providers.find((x) => x.mode === "api")?.ready && bigger(a);
+        const canUp = job.status === "succeeded" && a.role === "image" && ws.providers.find((x) => x.mode === "api")?.ready && Math.max(a.width, a.height) < 3840;
         const upHtml = up
           ? up.status === "succeeded" && up.asset
             ? `<a class="link" href="/api/jobs/${up.id}/files/${encodeURIComponent(up.asset)}?download=1">下载 4K 版</a>`
@@ -446,7 +439,7 @@ export function initSuite(ctx) {
           <a href="${src}" target="_blank" rel="noopener"><img loading="lazy" decoding="async" src="${preview(src)}" alt="${esc(title)}，查看原图"></a>
           ${check?.ok === false && !latest ? `<ul class="problem-list">${check.problems.map((p) => `<li>${problemText(p)}</li>`).join("")}</ul>` : ""}
           ${pending ? `<p class="hint working"><i class="spin"></i>${pending.redo ? "正在重出这张" : "正在修改这张"}，好了会直接替换。<a href="#/job/${pending.id}">看进度</a></p>` : ""}
-          <div class="result-actions"><button class="btn small navy" data-tweak="${latest ? `${latest.id}:0` : `${job.id}:${i}`}">修改</button><a class="btn small" href="${latest ? src + "?download=1" : fileUrl(job, a.name, true)}">下载</a><button class="link" data-redo="${job.id}:${i}">重出 · ${ws.skills.product.cost} 积分</button></div>
+          <div class="result-actions"><button class="btn small navy" data-tweak="${latest ? `${latest.id}:0` : `${job.id}:${i}`}">修改</button><a class="btn small" href="${latest ? src + "?download=1" : fileUrl(job, a.name, true)}">下载</a><button class="link" data-redo="${job.id}:${i}">重出 · ${imageCredits(job.resolution)} 积分</button></div>
           <div class="result-more">${swapRef(i) ? `<button class="link" data-refs="${swapRef(i)}" data-go="1">换实拍图</button>` : ""}${upHtml}</div></article>`;
       })
       .join("")}</div>`;
@@ -916,11 +909,12 @@ export function initSuite(ctx) {
   /* ---- tab 4: detail page ---- */
   function aiImage(s, sec) {
     const job = s.jobs?.detail;
-    if (job?.status !== "succeeded") return null;
+    if (!["succeeded", "partial"].includes(job?.status)) return null;
     const i = job.frames?.findIndex((f) => f.ref === sec.id);
+    if (i == null || i < 0) return null;
     const latest = job.tweaks?.find((t) => t.frame === i && t.status === "succeeded" && t.asset);
     if (latest) return `/api/jobs/${latest.id}/files/${encodeURIComponent(latest.asset)}`;
-    const asset = job.manifest.assets.filter((a) => a.role === "module")[i];
+    const asset = job.manifest.assets.find((a) => a.role === "module" && (a.frame ?? Number(a.name.match(/^module-(\d+)\.png$/)?.[1]) - 1) === i);
     return asset ? fileUrl(job, asset.name) : null;
   }
   const hi = (body, mark) => {
@@ -1092,12 +1086,13 @@ export function initSuite(ctx) {
           </div>
           ${job && ["queued", "running"].includes(job.status) ? spinner(job.phase || "生成中", `共 ${job.frames?.length || ai.length} 屏，约 ${ai.length * 2} 分钟`) : ""}
           ${job?.status === "partial" ? partialResults(job) : job?.status === "failed" ? `<p class="warn-text">${esc(job.error)}</p>` : ""}
-          ${done ? `<p class="ok-text">AI 图都已生成。去掉某屏或调顺序后直接导出，不用重新生成。</p>` : ""}
+          ${done ? `<p class="ok-text">AI 图都已生成，可直接勾选、排序后导出。</p>` : ""}
           ${job?.status === "succeeded" ? recheckLink(job) + detailCheck(job) : ""}
-          <details class="sb-help"><summary>三种做法怎么选</summary><p class="muted">“AI 出图”整屏由 AI 画。字多、要一字不错的屏（答疑、商品信息、须知）用“AI 底图+排字”：AI 只画背景，字由程序排，改字免费。哪屏不满意点“不要这屏”，长图里就不拼它，不扣积分。</p><button class="link" id="all-ai">全部改成 AI 出图</button></details>
+          <details class="sb-help"><summary>三种做法怎么选</summary><p class="muted">“AI 出图”整屏由 AI 画。字多、要一字不错的屏（答疑、商品信息、须知）用“AI 底图+排字”：AI 只画背景，字由程序排，改字免费。</p><button class="link" id="all-ai">全部改成 AI 出图</button></details>
         </aside>
         <div class="sb-main ${detailView === "board" ? "" : detailView}">
           <div class="sb-top"><div class="seg small">${[["grid", "总览"], ["board", "逐屏编辑"], ["long", "长图预览"]].map(([k, n]) => `<button data-dview="${k}" class="${detailView === k ? "on" : ""}">${n}</button>`).join("")}</div><span class="muted sb-tip" data-tip></span></div>
+          <section class="card long-export sb-long-export"></section>
           <div class="sb-list">${s.sections
             .map((x, i) => {
               if (x.type === "shot")
@@ -1144,13 +1139,19 @@ export function initSuite(ctx) {
     fitDetail = fit;
     fit();
     const TIPS = { grid: "所有屏一眼看完。按住拖动调顺序，点一屏进去编辑", board: "点左边的小图看这一屏的大图", long: "买家在手机上看到的样子。点任意一屏回到编辑" };
+    const exportBox = $(".sb-long-export", box);
+    const applyOrder = () => {
+      for (const row of $$("[data-sec]", box))
+        row.style.order = detailView === "long" ? row.dataset.exportOrder || "" : "";
+      fit();
+    };
     const setView = (v, goto) => {
       detailView = v;
       main.classList.remove("long", "grid");
       if (v !== "board") main.classList.add(v);
       $$("[data-dview]", box).forEach((b) => b.classList.toggle("on", b.dataset.dview === v));
       $("[data-tip]", box).textContent = TIPS[v];
-      fit();
+      applyOrder();
       if (goto) $("#sec-" + goto, box)?.scrollIntoView({ block: v === "board" ? "start" : "center" });
     };
     $("[data-tip]", box).textContent = TIPS[detailView];
@@ -1158,6 +1159,10 @@ export function initSuite(ctx) {
     // A click on a screen: from the overview or the long image into the editor; from the editor to the long image.
     $$("[data-zoom]", box).forEach((b) => (b.onclick = () => setView(detailView === "board" ? "long" : "board", b.dataset.zoom)));
     $$("[data-goto]", box).forEach((b) => (b.onclick = () => $("#sec-" + b.dataset.goto, box)?.scrollIntoView({ block: detailView === "board" ? "start" : "center", behavior: "smooth" })));
+    $("#export").onclick = () => {
+      setView("long");
+      exportBox.scrollIntoView({ block: "start", behavior: "smooth" });
+    };
     // AI backgrounds behind the typeset screens (CSP: set through CSSOM, not inline styles).
     for (const x of s.sections.filter((y) => y.mode === "bg")) {
       const url = aiImage(s, x);
@@ -1257,47 +1262,33 @@ export function initSuite(ctx) {
         (b.onclick = () =>
           persist(collect().map((x) => (x.id === b.dataset.off ? { ...x, mode: "off" } : x)))),
     );
-    const download = (url, name) => {
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = name;
-      a.click();
-    };
     $$("[data-dl]", box).forEach(
       (b) =>
         (b.onclick = () =>
           busy(b, async () => {
             const el = $(`[data-pv="${b.dataset.dl}"]`, box);
-            download(await shoot(el), `${s.profile.name || "详情"}-${b.dataset.dl}.png`);
+            downloadImage(await shoot(el), `${s.profile.name || "详情"}-${b.dataset.dl}.png`);
           })),
     );
-    $("#export").onclick = (e) =>
-      busy(e.currentTarget, async () => {
-        if ($$(".tp-wait", box).length) toast("还有 AI 屏没生成，导出的长图里会是空白占位", true);
-        const parts = [];
-        for (const el of $$(".dp-sec", box)) {
-          const url = await shoot(el);
-          const img = new Image();
-          img.src = url;
-          await img.decode();
-          parts.push(img);
+    mountLongExport(exportBox, {
+      key: `suite:${s.id}`, esc, busy,
+      items: live.map((sec) => {
+        const el = $(`[data-pv="${sec.id}"]`, box);
+        const original = $("img[data-original]", el)?.dataset.original || el.dataset.originalBackground;
+        const unavailable = $(".tp-wait", el) ? "待生成" : sec.mode === "photo" && !original ? "缺少实拍图" : "";
+        return { id: sec.id, title: `${no(sec)}. ${secName(sec)}`, el, unavailable, thumb: original ? preview(original, 320) : "" };
+      }),
+      onChange(picked) {
+        const order = new Map(picked.map((item, i) => [item.id, i]));
+        for (const row of $$("[data-sec]", box)) {
+          const i = order.get(row.dataset.sec);
+          row.dataset.exportOrder = i ?? "";
+          row.classList.toggle("omitted-from-long", i == null);
         }
-        const width = 750;
-        const heights = parts.map((im) => Math.round((im.naturalHeight * width) / im.naturalWidth));
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = heights.reduce((a, b) => a + b, 0);
-        if (canvas.height > 32000) throw new Error("长图太长，请减少几屏或分段导出");
-        const g = canvas.getContext("2d");
-        g.fillStyle = "#ffffff";
-        g.fillRect(0, 0, canvas.width, canvas.height);
-        let y = 0;
-        parts.forEach((im, i) => {
-          g.drawImage(im, 0, y, width, heights[i]);
-          y += heights[i];
-        });
-        download(canvas.toDataURL("image/jpeg", 0.9), `${s.profile.name || "详情页"}-详情长图.jpg`);
-      });
+        applyOrder();
+      },
+      onExport: (picked) => exportLongImage(picked, ({ el }) => shoot(el), `${s.profile.name || "详情页"}-详情长图.jpg`, "image/jpeg"),
+    });
   }
 
   return { homePage, newPage, suitePage };

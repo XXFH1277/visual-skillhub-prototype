@@ -2,13 +2,14 @@ import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { AppError } from "./errors.js";
 import { Users } from "./users.js";
+import { imageCredits } from "../shared/pricing.js";
 
 export const SKILLS = {
-  upscale: { name: "4K 清晰度提升", cost: 10 },
-  product: { name: "电商产品图", cost: 10 },
-  detail: { name: "详情页模块", cost: 10 },
-  poster: { name: "海报 / 菜单", cost: 15 },
-  interior: { name: "装修效果图", cost: 25 },
+  upscale: { name: "4K 清晰度提升", cost: imageCredits("4K") },
+  product: { name: "电商产品图", cost: imageCredits("2K") },
+  detail: { name: "详情页模块", cost: imageCredits("2K") },
+  poster: { name: "海报 / 菜单", cost: imageCredits("2K") },
+  interior: { name: "装修效果图", cost: imageCredits("2K") },
 };
 export { AppError };
 
@@ -184,7 +185,7 @@ export class Store {
       )
         throw new AppError(`你已有 ${this.userLimit} 个任务在进行，请等它们完成后再提交`, 429);
       // Style-library covers are workspace maintenance, not a merchant generation.
-      const cost = params.operation === "cover" ? 0 : SKILLS[params.skillId].cost * (count - (params.reusedFrames?.length || 0));
+      const cost = params.operation === "cover" ? 0 : imageCredits(params.resolution) * (count - (params.reusedFrames?.length || 0));
       this.users.expire(userId);
       if (this.balance(userId) < cost)
         throw new AppError("积分不足，请联系管理员充值", 402);
@@ -252,7 +253,10 @@ export class Store {
       const current = this.get(job.id);
       if (!current || !["running","failed","cancelled"].includes(current.status)) return;
       // Historical failures already received their full refund.
-      const refund = current.status === "running" ? Math.min(job.cost, manifest.missing.length * SKILLS[job.params.skillId].cost) : 0;
+      const reused = current.params.reusedFrames || [];
+      const billed = current.params.count - reused.length;
+      const missingBilled = manifest.missing.filter((i) => !reused.includes(i)).length;
+      const refund = current.status === "running" && billed > 0 ? Math.round(current.cost * missingBilled / billed) : 0;
       const message = `已保留 ${job.params.count - manifest.missing.length}/${job.params.count} 张。待补：第 ${manifest.missing.map(i => i+1).join("、")} 张。` + (refund ? `已退 ${refund} 积分。` : "") + (reason || "");
       const now = new Date().toISOString();
       this.db.prepare("UPDATE jobs SET status='partial', phase='部分完成', error=?, manifest=?, updated_at=? WHERE id=?").run(message, JSON.stringify(manifest),now,job.id);

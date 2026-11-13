@@ -12,7 +12,7 @@ export const SCENES = {
     unit: "张",
     counts: [1, 2, 3, 4],
     defaultCount: 2,
-    sizes: ["1:1", "3:4"],
+    sizes: ["1:1", "3:4", "4:3", "16:9"],
     defaultSize: "1:1",
   },
   detail: {
@@ -40,7 +40,7 @@ export const SCENES = {
     unit: "张",
     counts: [1, 2],
     defaultCount: 1,
-    sizes: ["3:4", "1:1", "16:9"],
+    sizes: ["3:4", "9:16", "1:1", "16:9"],
     defaultSize: "3:4",
   },
   interior: {
@@ -59,7 +59,13 @@ export const SCENES = {
   },
 };
 
-export const SIZE_NAMES = { "1:1": "方形 1:1", "3:4": "竖版 3:4", "4:3": "横版 4:3", "16:9": "横版 16:9" };
+export const SIZE_NAMES = {
+  "1:1": "方形 1:1",
+  "3:4": "竖版 3:4",
+  "4:3": "横版 4:3",
+  "16:9": "宽屏 16:9",
+  "9:16": "全屏竖版 9:16",
+};
 
 // Where text sits in the frame. Boxes are fractions of the canvas: [x, y, w, h].
 export const LAYOUTS = {
@@ -116,7 +122,7 @@ export function layoutBoxes(layout, width, height) {
 }
 
 export function canvasSize(size) {
-  return { "1:1": [1024, 1024], "3:4": [768, 1024], "4:3": [1024, 768], "16:9": [1344, 756] }[size] || [1024, 1024];
+  return { "1:1": [1024, 1024], "3:4": [768, 1024], "4:3": [1024, 768], "16:9": [1344, 756], "9:16": [756, 1344] }[size] || [1024, 1024];
 }
 
 // Text the image model must draw (and Kimi must proofread).

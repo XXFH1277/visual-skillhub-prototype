@@ -1,4 +1,7 @@
-// 定价：一张图（商品图或详情页一屏）10 积分；单买 1 元 = 10 积分，套餐越大单价越低。
+export const IMAGE_CREDITS = { "2K": 10, "4K": 20 };
+export const imageCredits = (resolution) => resolution === "4K" ? IMAGE_CREDITS["4K"] : IMAGE_CREDITS["2K"];
+
+// 单买 1 元 = 10 积分，套餐越大单价越低。
 export const CREDITS_PER_YUAN = 10;
 export const PACKAGES = [
   { price: 39, credits: 600 },
