@@ -15,6 +15,9 @@ export { AppError };
 // SQLite owns all job transitions and per-account credit accounting (wallets live in users).
 export class Store {
   constructor(filename) {
+    // How many jobs may wait or run at once: everyone together, and one account.
+    this.queueLimit = Number(process.env.QUEUE_LIMIT) || 80;
+    this.userLimit = Number(process.env.USER_JOB_LIMIT) || 6;
     this.db = new DatabaseSync(filename);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS wallet (id INTEGER PRIMARY KEY CHECK(id=1), balance INTEGER NOT NULL CHECK(balance>=0));
@@ -129,6 +132,23 @@ export class Store {
         .get(),
     );
   }
+  // The next job to start, given what is running: accounts with fewer running jobs first, then
+  // oldest first. Jobs not on the image API (local Codex) run one at a time.
+  nextFair(running = []) {
+    const queued = this.db.prepare("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at,rowid LIMIT 200").all().map((r) => this.decode(r));
+    const load = new Map();
+    for (const j of running) load.set(j.userId, (load.get(j.userId) || 0) + 1);
+    const api = (j) => j.params.providerMode === "api";
+    const serialBusy = running.some((j) => !api(j));
+    return queued
+      .filter((j) => api(j) || !serialBusy)
+      .map((j, order) => ({ j, order, load: load.get(j.userId) || 0 }))
+      .sort((a, b) => a.load - b.load || a.order - b.order)[0]?.j || null;
+  }
+  // How many queued jobs are ahead of this one.
+  ahead(job) {
+    return this.db.prepare("SELECT count(*) AS n FROM jobs WHERE status='queued' AND (created_at < ? OR (created_at = ? AND rowid < (SELECT rowid FROM jobs WHERE id=?)))").get(job.createdAt, job.createdAt, job.id).n;
+  }
   create(params, requestKey, { id = randomUUID(), sourceId = null, userId } = {}) {
     if (!userId) throw new AppError("请先登录", 401);
     return this.transaction(() => {
@@ -154,15 +174,15 @@ export class Store {
           .prepare(
             "SELECT count(*) AS n FROM jobs WHERE status IN ('queued','running')",
           )
-          .get().n >= 5
+          .get().n >= this.queueLimit
       )
-        throw new AppError("队列已满，请稍后提交", 429);
+        throw new AppError("现在排队的人太多了，请过几分钟再提交", 429);
       if (
         this.db
           .prepare("SELECT count(*) AS n FROM jobs WHERE user_id=? AND status IN ('queued','running')")
-          .get(userId).n >= 3
+          .get(userId).n >= this.userLimit
       )
-        throw new AppError("你已有 3 个任务在排队，请等它们完成后再提交", 429);
+        throw new AppError(`你已有 ${this.userLimit} 个任务在进行，请等它们完成后再提交`, 429);
       // Style-library covers are workspace maintenance, not a merchant generation.
       const cost = params.operation === "cover" ? 0 : SKILLS[params.skillId].cost * (count - (params.reusedFrames?.length || 0));
       this.users.expire(userId);

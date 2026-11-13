@@ -1,5 +1,5 @@
 import { codexRunner, checkCodex } from "./runner.js";
-import { imageConfig, createImageRunner, checkImageApi, probeImageModel } from "./image-api.js";
+import { imageConfig, createImageRunner, checkImageApi, probeImageModel, Gate } from "./image-api.js";
 import { imageSize, upscaleSize } from "../shared/generation.js";
 import { AppError } from "./store.js";
 
@@ -20,6 +20,7 @@ export function createProviders({
   const channels = [config, secondary].filter(Boolean)
     .filter((c, i, all) => all.findIndex(x => x.base === c.base && x.key === c.key) === i);
   let channelStates = [];
+  const gates = [];
   const model2k = config?.model2k || env.IMAGE_API_MODEL_2K || "gpt-image-2.6-sunburst";
   const model4k = config?.model4k || env.IMAGE_API_MODEL_4K || "gpt-image-2.6-sunburst";
   const imageModels = [...new Set([model2k, model4k])];
@@ -108,6 +109,8 @@ export function createProviders({
         sourceHeight: height,
       };
     },
+    // Pictures in flight across all jobs never exceed what the channels take at once.
+    slots: () => channels.reduce((n, c) => n + (c.concurrency || 1), 0),
     async run(job, dir, signal) {
       const mode = job.params.providerMode || "codex";
       validate(mode);
@@ -115,7 +118,7 @@ export function createProviders({
       if (mode === "api") {
         const available = channels.flatMap((c, i) =>
           channelStates[i]?.ready && channelStates[i].models.includes(job.params.imageModel)
-            ? [{ ...c, id: `channel-${i + 1}` }] : []);
+            ? [{ ...c, id: `channel-${i + 1}`, gate: (gates[i] ||= new Gate(c.concurrency)) }] : []);
         if (!available.length) throw new AppError("没有支持此模型的可用生图通道", 503);
         await createImageRunner(config || available[0], fetchImpl, available)(job, dir, signal);
       } else await codexRun(job, dir, signal);

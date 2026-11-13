@@ -68,7 +68,8 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
   });
   const summary = (j) => {
     const tweaks = store.tweaksOf(j.id);
-    return { id: j.id, skillId: j.params.skillId, status: j.status, phase: j.phase, error: j.error, cost: j.cost, manifest: j.manifest, updatedAt: j.updatedAt, frames: j.params.frames, tweaks, upscales: j.params.skillId === "product" ? store.upscalesOf([j.id, ...tweaks.map((t) => t.id)]) : [] };
+    const ahead = j.status === "queued" ? store.ahead(j) : 0;
+    return { id: j.id, skillId: j.params.skillId, status: j.status, phase: j.status === "queued" ? (ahead ? `排队中，前面还有 ${ahead} 个任务` : "排队中，马上开始") : j.phase, error: j.error, cost: j.cost, manifest: j.manifest, updatedAt: j.updatedAt, frames: j.params.frames, tweaks, upscales: j.params.skillId === "product" ? store.upscalesOf([j.id, ...tweaks.map((t) => t.id)]) : [] };
   };
   // A trial shot can be taken over by the full set when nothing about that picture changed since.
   const sameList = (a, b) => JSON.stringify(a || []) === JSON.stringify(b || []);
@@ -83,8 +84,9 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
 
   // Run one AI step in the background and record its state on the suite.
   let running = 0;
+  const TASK_LIMIT = Number(process.env.TEXT_TASK_LIMIT) || 8; // AI planning steps at once, all accounts together
   function task(id, name, fn) {
-    if (running >= 3) throw new AppError("AI 正在处理其他商品，请稍后再试", 429);
+    if (running >= TASK_LIMIT) throw new AppError("现在用的人比较多，AI 正在处理其他商品，请过一会儿再试", 429);
     const s = read(id);
     if (s.tasks?.[name]?.status === "running") return s;
     s.tasks = { ...(s.tasks || {}), [name]: { status: "running", startedAt: Date.now() } };

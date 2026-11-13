@@ -160,7 +160,9 @@ export async function createWorkspace({
     const asset = manifest.assets.find((a) => a.role === "image");
     if (asset) await styles.setCover(job.params.styleId, path.join(dir, manifest.exportId, asset.name));
   };
-  const queue = new JobQueue(store, jobsDir, registry.run, proofread, afterSuccess);
+  // Twice as many jobs at once as the image channels have slots: single-picture jobs (a trial, a redraw,
+  // a 4K version) run side by side, and jobs behind a big set stand in line at the channels and take turns with it.
+  const queue = new JobQueue(store, jobsDir, registry.run, proofread, afterSuccess, { maxActive: Number(process.env.JOB_CONCURRENCY) || Math.max(1, (registry.slots?.() || 0) * 2) });
   for (const row of store.db.prepare("SELECT id FROM jobs WHERE status IN ('failed','cancelled') AND manifest IS NULL AND json_extract(params,'$.count')>1 AND json_extract(params,'$.providerMode')='api'").all()) {
     const job = store.get(row.id);
     const partial = await partialDelivery(job, path.join(jobsDir, row.id));
@@ -432,8 +434,12 @@ export async function createWorkspace({
     next();
   });
   app.get("/api/jobs", (req, res) => res.json({ jobs: store.list(req.user.id) }));
-  app.get("/api/jobs/:id", (req, res) => res.json({ ...store.get(req.params.id), tweaks: store.tweaksOf(req.params.id) }));
+  app.get("/api/jobs/:id", (req, res) => {
+    const job = store.get(req.params.id);
+    res.json({ ...job, ...(job?.status === "queued" ? { phase: waitingText(store.ahead(job)) } : {}), tweaks: store.tweaksOf(req.params.id) });
+  });
   let uploading = 0;
+  const waitingText = (ahead) => (ahead ? `排队中，前面还有 ${ahead} 个任务` : "排队中，马上开始");
   const admission = (req, res, next) => {
     const key = req.get("Idempotency-Key");
     if (!key || !/^[a-zA-Z0-9-]{16,100}$/.test(key))
@@ -1033,6 +1039,23 @@ export async function createWorkspace({
     });
     if (status >= 500) console.error("Request failed:", error.message);
   });
+  // A copy of the database (accounts, credits, products, job records; not the pictures) once a day, last 7 kept.
+  const backupDir = path.join(dataDir, "backups");
+  const backup = async () => {
+    try {
+      await fsp.mkdir(backupDir, { recursive: true });
+      const file = path.join(backupDir, `workspace-${new Date().toISOString().slice(0, 10)}.sqlite`);
+      if (fs.existsSync(file)) return;
+      store.db.exec(`VACUUM INTO '${file.replaceAll("'", "''")}'`);
+      const old = (await fsp.readdir(backupDir)).filter((n) => /^workspace-\d{4}-\d{2}-\d{2}\.sqlite$/.test(n)).sort().slice(0, -7);
+      for (const name of old) await fsp.rm(path.join(backupDir, name), { force: true });
+    } catch (error) {
+      console.error("Backup failed:", error.message);
+    }
+  };
+  const backupTimer = options.backups === false ? null : setInterval(backup, 6 * 60 * 60 * 1000);
+  backupTimer?.unref?.();
+  if (options.backups !== false) backup();
   queue.kick();
   return {
     app,
@@ -1043,6 +1066,7 @@ export async function createWorkspace({
       clearInterval(sweeper);
       clearInterval(coverTimer);
       clearInterval(limitTimer);
+      clearInterval(backupTimer);
       await queue.close();
       store.close();
     },

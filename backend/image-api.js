@@ -102,7 +102,16 @@ export function createImageRunner(config, fetchImpl = fetch, channels = [config]
       throw new Error("生图请求尺寸无效");
     if (p.resolution === "4K" && p.imageModel !== config.model4k)
       throw new Error("生图 4K 请求必须使用配置的 4K 模型");
-    const timeout = AbortSignal.timeout(config.timeoutMs);
+    // Several jobs share the channels, so a job may wait its turn. What must not happen is a job
+    // that stops moving: give up when no picture has started or finished for `timeoutMs`.
+    const stalled = new AbortController();
+    const timeout = stalled.signal;
+    let lastProgress = Date.now();
+    const progress = () => (lastProgress = Date.now());
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastProgress > config.timeoutMs) stalled.abort(new DOMException("stalled", "TimeoutError"));
+    }, Math.max(20, Math.min(1000, config.timeoutMs / 4)));
+    watchdog.unref?.();
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const prompts =
       p.operation === "upscale"
@@ -251,32 +260,55 @@ export function createImageRunner(config, fetchImpl = fetch, channels = [config]
         failedFrame = i + 1;
         phase = framePhases.get(i) || "prepare";
       };
+      const take = () => {
+        while (next < p.count && p.reusedFrames?.includes(next)) next++;
+        return next < p.count;
+      };
       const worker = async (channel) => {
-        while (!channel.failed && !combined.aborted && next < p.count) {
+        while (!channel.failed && !combined.aborted && take()) {
+          // Wait for a free slot on this channel (other jobs may hold them), then claim a picture.
+          const release = await channel.gate.acquire(combined).catch(() => null);
+          if (!release) return;
+          if (channel.failed || combined.aborted || !take()) {
+            release();
+            return;
+          }
           const i = next++;
-          if (p.reusedFrames?.includes(i)) continue;
+          progress();
           try {
             await runFrame(i, channel);
           } catch (error) {
             channel.failed = true;
             if (error.retryable && !combined.aborted) retry.push({ i, from: channel, error });
             else note(error, i);
+          } finally {
+            progress();
+            release();
           }
         }
       };
-      const live = channels.map(c => ({ ...c, failed: false }));
+      const live = channels.map(c => ({ ...c, failed: false, gate: c.gate || new Gate(c.concurrency) }));
       await Promise.all(live.flatMap(channel => Array.from({ length: Math.min(channel.concurrency || 1, p.count) }, () => worker(channel))));
       // Retry pass: each failed frame gets one more go on a healthy channel. A lone channel retries itself once.
       const again = async (channel) => {
         while (!combined.aborted && retry.length) {
           const at = retry.findIndex(r => r.from !== channel || live.length === 1);
           if (at < 0 || (channel.failed && live.length > 1)) return;
-          const [{ i }] = retry.splice(at, 1);
+          const [item] = retry.splice(at, 1);
+          const release = await channel.gate.acquire(combined).catch(() => null);
+          if (!release) {
+            retry.push(item);
+            return;
+          }
+          progress();
           try {
-            await runFrame(i, channel);
+            await runFrame(item.i, channel);
           } catch (error) {
             channel.failed = true;
-            note(error, i);
+            note(error, item.i);
+          } finally {
+            progress();
+            release();
           }
         }
       };
@@ -334,8 +366,50 @@ export function createImageRunner(config, fetchImpl = fetch, channels = [config]
       throw new Error(
         "生图 API 请求中断或响应处理失败（已换通道重试过一次）；任务诊断已保存在本机",
       );
+    } finally {
+      clearInterval(watchdog);
     }
   };
+}
+
+// How many requests one channel takes at once, shared by every job that is running.
+// Waiters are served in order, so jobs take turns picture by picture instead of one job hogging the channel.
+export class Gate {
+  constructor(size) {
+    this.free = Math.max(1, size || 1);
+    this.waiting = [];
+  }
+  #pass() {
+    let used = false;
+    return () => {
+      if (used) return;
+      used = true;
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.free++;
+    };
+  }
+  // Resolves with a release function; rejects if `signal` aborts while still waiting.
+  acquire(signal) {
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    if (this.free > 0) {
+      this.free--;
+      return Promise.resolve(this.#pass());
+    }
+    return new Promise((resolve, reject) => {
+      const turn = () => {
+        signal?.removeEventListener("abort", quit);
+        resolve(this.#pass());
+      };
+      const quit = () => {
+        const at = this.waiting.indexOf(turn);
+        if (at >= 0) this.waiting.splice(at, 1);
+        reject(signal.reason);
+      };
+      this.waiting.push(turn);
+      signal?.addEventListener("abort", quit, { once: true });
+    });
+  }
 }
 
 // Admin probe: try one model on the relay (e.g. a new gpt-image-2.6, SVG output,

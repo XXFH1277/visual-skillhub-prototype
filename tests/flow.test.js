@@ -449,6 +449,46 @@ test("image channels share frames dynamically and respect each credential's conc
   assert.equal(job4k.params.requestedSize, "3840x2160");
 });
 
+test("several jobs run at once and take turns on the channels; pictures in flight never exceed the channels' slots", { timeout: 20000 }, async t => {
+  const active = { primary: 0, secondary: 0 };
+  const peak = { primary: 0, secondary: 0, total: 0 };
+  let requests = 0;
+  const submitted = Promise.withResolvers(); // the first round is held until every job is in the queue
+  t.after(() => submitted.resolve());
+  const providers = createProviders({
+    env: {
+      IMAGE_API_BASE_URL: "https://relay.example", IMAGE_API_KEY: "primary",
+      IMAGE_API_SECONDARY_BASE_URL: "https://relay.example", IMAGE_API_SECONDARY_KEY: "secondary",
+      IMAGE_API_CONCURRENCY: "1", IMAGE_API_SECONDARY_CONCURRENCY: "2",
+    },
+    codexCheck: async () => ({ ready: true }),
+    fetchImpl: async (url, init) => {
+      if (url.pathname.endsWith("models")) return Response.json({ data: [{ id: "gpt-image-2.6-sunburst" }] });
+      const key = init.headers.Authorization.split(" ")[1];
+      active[key]++;
+      peak[key] = Math.max(peak[key], active[key]);
+      peak.total = Math.max(peak.total, active.primary + active.secondary);
+      if (++requests <= 3) await submitted.promise;
+      await new Promise(r => setTimeout(r, 40));
+      active[key]--;
+      return Response.json({ data: [{ b64_json: image.toString("base64") }] });
+    },
+  });
+  const s = await setup(t, null, { providers });
+  // One 4-picture job, then three single pictures (a trial, a redraw…) submitted right behind it.
+  const big = (await (await s.submit({ fields: { count: "4", productName: "大批量" }, extra: { providerMode: "api" } })).json()).id;
+  const small = [];
+  for (let i = 0; i < 3; i++) small.push((await (await s.submit({ fields: { productName: "单张" + i }, extra: { providerMode: "api" } })).json()).id);
+  await new Promise(r => setTimeout(r, 100)); // let the single jobs start and line up at the channels
+  submitted.resolve();
+  const jobs = await Promise.all([big, ...small].map(id => s.terminal(id)));
+  assert.deepEqual(jobs.map(j => j.status), ["succeeded", "succeeded", "succeeded", "succeeded"], jobs.map(j => j.error).join());
+  assert.equal(requests, 7);
+  assert.ok(peak.primary <= 1 && peak.secondary <= 2 && peak.total === 3, JSON.stringify(peak));
+  // The single pictures did not wait for all four of the big job: they got in between, so the big one finishes last.
+  assert.ok(jobs.slice(1).every(j => j.updatedAt <= jobs[0].updatedAt), jobs.map(j => j.updatedAt).join());
+});
+
 test("a frame that fails on one channel is retried once on the other; a rejected request is not retried and resume only bills missing frames", async t => {
   let status = 502;
   const calls = [];
