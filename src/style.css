@@ -689,7 +689,7 @@ dd { margin: 0; line-height: 1.5; }
 .sb-rail .btn, .sb-rail .mini { white-space: normal; }
 .sb-rail .mini { align-items: flex-start; }
 .sb-toc button { grid-template-columns: 22px minmax(0, 1fr) auto; }
-.looks { grid-template-columns: repeat(auto-fill, minmax(150px, 180px)); }
+.looks { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 
 .trial { display: grid; grid-template-columns: 200px 1fr; gap: 16px; align-items: center; border-color: #9fc0dc; }
 .trial img { width: 100%; border-radius: 10px; display: block; background: var(--fill); }
@@ -697,6 +697,19 @@ dd { margin: 0; line-height: 1.5; }
 .try-one { justify-self: start; font-size: 13px; }
 .result-more { font-size: 12px; }
 .result-more .link { font-size: 12px; }
+
+/* 点了就有反应：按钮变灰并转圈 */
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading { opacity: 0.6; cursor: progress !important; pointer-events: none; }
+.look.loading, .style-card.loading { position: relative; }
+.btn.loading::before { margin-right: 0; }
+.btn.loading::before, .link.loading::before, .chip.loading::before, .spin { content: ""; display: inline-block; flex: none; width: 13px; height: 13px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -2px; margin-right: 6px; }
+.look.loading::after, .style-card.loading::after { content: ""; position: absolute; right: 10px; top: 10px; width: 16px; height: 16px; border: 2px solid var(--navy); border-right-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; background: #fff; box-shadow: 0 0 0 3px #fff; }
+.hint.working { display: flex; align-items: center; flex-wrap: wrap; color: var(--navy); }
+.shot { transition: opacity 0.15s; }
+.own-tag { font-style: normal; font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); justify-self: start; }
+.upload-look { cursor: pointer; border-style: dashed; }
+.upload-look:hover { border-color: var(--navy); }
 
 /* 积分：签到、套餐 */
 #nav .balance.todo { position: relative; }

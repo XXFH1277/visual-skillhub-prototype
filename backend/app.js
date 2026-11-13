@@ -789,16 +789,29 @@ export async function createWorkspace({
         frame.textMode = "overlay";
         frame.layout = ["top", "bottom", "left", "right", "center"].includes(frame.layout) ? frame.layout : "top";
       }
+      // Redrawing one picture can take the words and scene as they stand now (edited after the set was made).
+      const sceneIn = typeof req.body?.scene === "string" ? req.body.scene.trim().slice(0, 800) : "";
+      if (Array.isArray(req.body?.texts) && frame.texts.length) {
+        const keep = frame.texts.filter((t) => t.role === "tag" && t.text.endsWith("仅供参考")); // the "AI dish" label stays
+        const want = [...req.body.texts.filter((t) => !keep.some((k) => k.text === t?.text)), ...keep];
+        Object.assign(frame, sanitizeFrames([{ ...frame, texts: want, scene: sceneIn || String(frame.scene).slice(0, 800) }], source.params.skillId, 1, { strict: true })[0]);
+      } else if (sceneIn) frame.scene = sceneIn;
       frames = [frame];
     }
     const params = { ...source.params, frames, count: frames.length };
+    if (index != null) {
+      // Like a fine-tune, a redraw is a newer version of that picture: products show the latest one.
+      params.tweakOf = source.params.tweakOf || { jobId: source.id, frame: index };
+      params.rootName = source.params.tweakOf ? source.params.rootName : source.params.productName;
+      params.redo = true;
+    }
     delete params.reusedFrames;
     if (source.status === "partial" && index == null) {
       params.reusedFrames = source.manifest.assets.filter(a => ["image","module"].includes(a.role)).map(a => a.frame);
       req.body = { providerMode: "api", resolution: source.params.resolution };
     }
     for (const k of ["imageModel", "resolution", "requestedSize"]) delete params[k];
-    if (index != null) params.productName = `${source.params.productName.slice(0, 30)} · 第${index + 1}张重出`;
+    if (index != null) params.productName = `${String(params.rootName).slice(0, 30)} · 第${params.tweakOf.frame + 1}张重出`;
     req.body = { providerMode: source.params.providerMode, resolution: source.params.resolution, ...req.body };
     await createJob(req, res, params, path.join(jobsDir, source.id), source.id);
   });

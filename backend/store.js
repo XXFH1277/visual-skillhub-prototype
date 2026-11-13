@@ -99,7 +99,8 @@ export class Store {
         phase: j.phase,
         error: j.error,
         frame: j.params.tweakOf.frame,
-        instruction: j.params.instruction,
+        instruction: j.params.redo ? "重新出了一张" : j.params.instruction,
+        redo: !!j.params.redo,
         asset: j.manifest?.assets?.find((a) => ["image", "module"].includes(a.role))?.name || null,
         createdAt: j.createdAt,
       }));

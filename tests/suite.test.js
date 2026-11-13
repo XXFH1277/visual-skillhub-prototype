@@ -29,6 +29,9 @@ function fakeAI() {
   return {
     calls,
     describe: () => ({ ready: true, via: "kimi", label: "test" }),
+    async extractStyle() {
+      return { name: "墨绿鎏金", tagline: "深绿底配金色书法", palette: ["#0f3d2e", "#c9a45c", "#f3ead7"], props: "松枝、粗陶", light: "低角度暖光", camera: "斜俯拍", type: "金色书法大字", core: "dark green and gold" };
+    },
     async complete({ system, text, images }) {
       calls.push({ step: system.slice(0, 12), images: images?.length || 0, text, system });
       if (system.includes("美术指导")) {
@@ -199,7 +202,30 @@ test("merchant with a PDF note: import text + photos → profile → note/Word �
   assert.ok(djob.params.frames.filter((f) => bgs.some((x) => x.id === f.ref)).every((f) => f.textMode === "overlay" && f.layout === "center" && !f.texts.length));
   // AI screens get the facts for that screen.
   const detailCall = s.ai.calls.findLast((c) => c.system.includes("电商美工") && c.text.includes('"content"'));
-  assert.ok(detailCall, "detail planning sends each screen's content");
+  assert.ok(detailCall, "detail planning sends each screen's content");  // Redrawing one picture with edited words: the product shows the new one in place of the old.
+  const redo = await s.terminal((await (await s.post(`/api/jobs/${job.id}/retry`, { frame: 1, texts: [{ role: "headline", text: "改过的标题" }], scene: "画面：换个角度" }, { "Idempotency-Key": randomUUID() })).json()).id);
+  assert.equal(redo.status, "succeeded", redo.error);
+  assert.deepEqual([redo.params.tweakOf, redo.params.redo, redo.params.frames[0].texts[0].text, redo.params.frames[0].scene], [{ jobId: job.id, frame: 1 }, true, "改过的标题", "画面：换个角度"]);
+  assert.ok(redo.params.frames[0].photos.length, "a redraw still starts from the real photos");
+  suite = await (await s.request(`/api/suites/${id}`)).json();
+  assert.deepEqual(suite.jobs.shots.tweaks.map((t) => [t.frame, t.redo, t.status, !!t.asset]), [[1, true, "succeeded", true]]);
+  // The merchant uploads a picture they like: it becomes the look, and each picture gets it as a design reference.
+  const liked = new FormData();
+  liked.append("image", new Blob([await photo("#0f3d2e")], { type: "image/jpeg" }), "liked.jpg");
+  assert.equal((await s.request(`/api/suites/${id}/look/upload`, { method: "POST", body: liked })).status, 200);
+  suite = await s.waitTask(id, "looks");
+  assert.deepEqual([suite.look.own, suite.look.conceptName, suite.looks[0].own], [true, "墨绿鎏金", true]);
+  assert.equal(suite.trialReuse, null, "a new look means the earlier trial no longer stands in");
+  const own = await s.terminal((await (await s.post(`/api/suites/${id}/shots/generate`, { only: enabled[0].id }, { "Idempotency-Key": randomUUID() })).json()).id);
+  assert.equal(own.status, "succeeded", own.error);
+  assert.match(own.params.frames[0].styleRefs[0], /^own-style-u-/);
+  assert.ok(own.params.inputs.includes(own.params.frames[0].styleRefs[0]));
+  assert.equal(own.params.direction.conceptName, "墨绿鎏金");
+  // "换一批" brings new AI suggestions and keeps the merchant's own reference.
+  await s.post(`/api/suites/${id}/looks`, {});
+  suite = await s.waitTask(id, "looks");
+  assert.equal(suite.looks.filter((l) => l.own).length, 1);
+  assert.ok(suite.looks.length > 1);
 });
 
 test("merchant without a note: Word import, quick answers, photo role edits, validation", async (t) => {

@@ -145,8 +145,11 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
   }
   const steps = {
     async looks(s) {
+      // "换一批" replaces the AI's suggestions; a reference the merchant uploaded stays.
+      const own = (s.looks || []).filter((l) => l.own);
       s.looks = null;
       await ensureLooks(s);
+      s.looks = [...own, ...s.looks];
     },
     async profile(s) {
       // AI dish pictures keep their own label; only real photos are (re)read.
@@ -483,6 +486,9 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     if (!frames.length) throw new AppError(kind === "shots" ? "请先规划商品图" : "详情页没有需要 AI 出图的屏");
     if (frames.some((f) => !f.scene)) throw new AppError("请先让 AI 规划画面");
     const refTaken = new Map();
+    // A look the merchant uploaded: that picture is the design reference for every frame.
+    const ownFile = s.look?.own ? styles.coverFile(s.look.styleId) : null;
+    const ownRef = ownFile ? `own-style-${s.look.styleId}.png` : null;
     const params = {
       version: 3,
       skillId: kind === "shots" ? "product" : "detail",
@@ -495,7 +501,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         const usesAI = f.photos.some((file) => s.photos.find((p) => p.file === file)?.ai);
         const texts = bg ? [] : usesAI && s.aiLabel !== false ? [...f.texts, { role: "tag", text: AI_LABEL }] : f.texts;
         const kindId = f.type || f.id;
-        const ref = bg || f.id === "white" ? null : refs.pick(s.profile.category, kindId, refTaken);
+        const ref = bg || f.id === "white" ? null : ownRef || refs.pick(s.profile.category, kindId, refTaken);
         return {
         ...(ref ? { styleRefs: [ref] } : {}),
         ...(f.cinematic ? { photoUse: "hero" } : {}),
@@ -523,7 +529,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     };
     // Reference images live in the internal library, not with the product's photos.
     const extra = {};
-    for (const f of params.frames) for (const r of f.styleRefs || []) extra[r] = refs.file(r);
+    for (const f of params.frames) for (const r of f.styleRefs || []) extra[r] = r === ownRef ? ownFile : refs.file(r);
     params.inputs = [...new Set([...params.inputs, ...Object.keys(extra)])];
     // The full set takes over a still-valid trial picture instead of drawing (and charging) it again.
     const trial = kind === "shots" && !only && params.size === "1:1" ? trialFor(s) : null;
@@ -552,6 +558,35 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     const s = read(req.params.id);
     needProfile(s);
     res.json(view(task(s.id, "looks", steps.looks)));
+  });
+  // The merchant's own reference picture as the look: AI breaks it down into a recipe,
+  // and every picture gets the upload itself as a design reference.
+  const lookUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: SUITE_FILE_MB * 1024 * 1024, files: 1 } }).single("image");
+  app.post("/api/suites/:id/look/upload", lookUpload, async (req, res) => {
+    const s = read(req.params.id);
+    needProfile(s);
+    if (!req.file) throw new AppError("请选一张你喜欢的风格图");
+    if (s.tasks?.looks?.status === "running") throw new AppError("AI 正在挑风格，稍等一下再传", 409);
+    const styleId = styles.create({ name: "我的参考", prompt: "" }, req.user.id);
+    const file = path.join(styles.dir, `${styleId}.png`);
+    try {
+      await normalizeUpload(req.file.buffer, file);
+    } catch (error) {
+      await styles.remove(styleId, req.user).catch(() => {});
+      throw error;
+    }
+    res.json(view(task(s.id, "looks", async (s) => {
+      try {
+        styles.finish(styleId, await textAI.extractStyle(file, ""));
+      } catch (error) {
+        styles.finish(styleId, null, "风格拆解失败：" + error.message);
+        throw new Error("这张图没能拆解出风格，换一张更清楚的再试：" + error.message);
+      }
+      const r = styles.get(styleId);
+      const look = { styleId, conceptName: r.name, story: r.tagline, palette: r.palette, props: r.props, light: r.light, camera: r.camera, type: r.type, layout: "", why: "照你上传的这张图来做", own: true };
+      s.looks = [look, ...(s.looks || []).filter((l) => !l.own)];
+      s.look = look;
+    })));
   });
   app.post("/api/suites/:id/look", (req, res) => {
     const s = read(req.params.id);

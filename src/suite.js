@@ -138,7 +138,7 @@ export function initSuite(ctx) {
       lastSnap = snap;
       render(s);
     }
-    if (snap !== lastSnap || anyBusy(s) || ["shots", "shotTrial", "detail", "dish", "packArt", "packMock"].some((k) => pendingJob(s.jobs?.[k])) || s.jobs?.shots?.upscales?.some(pendingJob)) {
+    if (snap !== lastSnap || anyBusy(s) || ["shots", "shotTrial", "detail", "dish", "packArt", "packMock"].some((k) => pendingJob(s.jobs?.[k])) || s.jobs?.shots?.upscales?.some(pendingJob) || ["shots", "shotTrial", "detail"].some((k) => s.jobs?.[k]?.tweaks?.some(pendingJob))) {
       const t = setTimeout(async () => {
         if (location.hash.startsWith("#/suite/" + id)) suitePage(id, undefined, true);
       }, 3000);
@@ -167,7 +167,7 @@ export function initSuite(ctx) {
       const b = e.target.closest("[data-recheck]");
       if (b)
         busy(b, async () => {
-          await api(`/jobs/${b.dataset.recheck}/recheck`, json({}));
+          await api(`/jobs/${b.dataset.recheck}/recheck`, { ...json({}), timeout: 600000 });
           toast("文字已重新核对");
           suitePage(s.id);
         });
@@ -428,10 +428,10 @@ export function initSuite(ctx) {
             ? `<button class="link" data-up="${from[0]}:${esc(from[1])}">提升到 4K · ${ws.skills.upscale.cost} 积分</button>`
             : "";
         return `<article class="card result" id="shot-result-${i}" tabindex="-1">
-          <header class="result-bar"><h3><span class="no">${i + 1}</span>${esc(title)}</h3>${latest ? `<a class="badge" href="#/job/${latest.id}">已微调 ${count} 次</a>` : check ? (check.ok ? `<span class="badge ok">✓ 文字已核对</span>` : check.ok === false ? `<span class="badge bad">文字有误</span>` : check.unsure?.length ? `<span class="badge muted-badge" title="AI 没读清图上的艺术字或小字，不一定有错">有字没读清</span>` : "") : ""}</header>
+          <header class="result-bar"><h3><span class="no">${i + 1}</span>${esc(title)}</h3>${latest ? `<a class="badge" href="#/job/${latest.id}">已改 ${count} 次</a>` : check ? (check.ok ? `<span class="badge ok">✓ 文字已核对</span>` : check.ok === false ? `<span class="badge bad">文字有误</span>` : check.unsure?.length ? `<span class="badge muted-badge" title="AI 没读清图上的艺术字或小字，不一定有错">有字没读清</span>` : "") : ""}</header>
           <a href="${src}" target="_blank" rel="noopener"><img loading="lazy" decoding="async" src="${preview(src)}" alt="${esc(title)}，查看原图"></a>
           ${check?.ok === false && !latest ? `<ul class="problem-list">${check.problems.map((p) => `<li>${problemText(p)}</li>`).join("")}</ul>` : ""}
-          ${pending ? `<p class="hint"><a href="#/job/${pending.id}">正在微调…</a></p>` : ""}
+          ${pending ? `<p class="hint working"><i class="spin"></i>${pending.redo ? "正在重出这张" : "正在修改这张"}，好了会直接替换。<a href="#/job/${pending.id}">看进度</a></p>` : ""}
           <div class="result-actions"><button class="btn small navy" data-tweak="${latest ? `${latest.id}:0` : `${job.id}:${i}`}">修改</button><a class="btn small" href="${latest ? src + "?download=1" : fileUrl(job, a.name, true)}">下载</a><button class="link" data-redo="${job.id}:${i}">重出 · ${ws.skills.product.cost} 积分</button></div>
           ${upHtml ? `<div class="result-more">${upHtml}</div>` : ""}</article>`;
       })
@@ -455,9 +455,14 @@ export function initSuite(ctx) {
         (b.onclick = () =>
           busy(b, async () => {
             const [jobId, i] = b.dataset.redo.split(":");
-            const next = await api(`/jobs/${jobId}/retry`, json({ frame: Number(i) }, { "Idempotency-Key": key() }));
+            // Redraw with the words and scene as they are now in the plan, not as they were when the set was made.
+            const ref = Object.values(current.jobs || {}).find((j) => j?.id === jobId)?.frames?.[Number(i)]?.ref;
+            const now = (current.shots || []).find((x) => x.id === ref) || (current.sections || []).find((x) => x.id === ref && (x.mode === "ai" || x.mode === "bg"));
+            const body = { frame: Number(i), ...(now?.scene ? { scene: now.scene } : {}), ...(now?.texts?.length && now.mode !== "bg" ? { texts: now.texts.map((t) => ({ role: t.role, text: t.text })) } : {}) };
+            await api(`/jobs/${jobId}/retry`, json(body, { "Idempotency-Key": key() }));
             await refresh();
-            location.hash = "#/job/" + next.id;
+            toast("正在重出，好了会直接替换这张图");
+            await suitePage(current.id);
           })),
     );
   }
@@ -543,8 +548,24 @@ export function initSuite(ctx) {
         const card = $(`[data-shot="${x.id}"]`, box);
         return { id: x.id, enabled: $("[data-en]", card).checked, scene: $("[data-scene]", card).value, texts: x.texts.map((t, j) => ({ role: t.role, text: $(`[data-t="${j}"]`, card).value })) };
       });
+    // Ticking "出这张" shows at once: the card lights up or dims, and the count and price follow.
+    $$("[data-en]", box).forEach(
+      (el) =>
+        (el.onchange = async () => {
+          el.closest("[data-shot]").classList.toggle("dim", !el.checked);
+          const want = el.checked;
+          try {
+            await saveSuite({ shots: collect() });
+            shotsTab(box, current);
+          } catch (error) {
+            el.checked = !want;
+            el.closest("[data-shot]").classList.toggle("dim", want);
+            toast("没保存上：" + error.message, true);
+          }
+        }),
+    );
     $("#plan-shots")?.addEventListener("click", (e) => busy(e.currentTarget, async () => (await api(`/suites/${s.id}/shots/plan`, json({})), suitePage(s.id))));
-    $("#replan-shots")?.addEventListener("click", (e) => busy(e.currentTarget, async () => (await api(`/suites/${s.id}/shots/plan`, json({})), suitePage(s.id))));
+    $("#replan-shots")?.addEventListener("click", (e) => busy(e.currentTarget, async () => (await api(`/suites/${s.id}/shots/plan`, json({})), (lookChangedFor = null), suitePage(s.id))));
     $$("[data-try]", box).forEach(
       (b) =>
         (b.onclick = () =>
@@ -677,20 +698,24 @@ export function initSuite(ctx) {
   }
 
   // Visual direction: 3 suggestions from the style library, or plain retouch of the real photos.
+  let lookChangedFor = null; // the product whose look changed since its plan was made
   function lookCard(s) {
     const looks = s.looks || [];
-    if (busyTask(s, "looks")) return spinner("AI 正在挑风格", "从风格库里找 3 个适合这件商品的方向");
-    if (!looks.length) return `<section class="card look-card"><h2>风格</h2><p class="muted">点“AI 规划商品图”时，AI 会先从风格库挑 3 个适合这件商品的方向，挑好后可以换。</p></section>`;
+    if (busyTask(s, "looks")) return spinner("AI 正在准备风格", "挑选或拆解风格，约半分钟");
+    const lookFailed = s.tasks?.looks?.status === "failed" ? `<p class="warn-text">${esc(s.tasks.looks.error)}</p>` : "";
+    const ownLookTile = `<label class="look plain upload-look" tabindex="0"><input type="file" id="own-look" accept="image/png,image/jpeg,image/webp" hidden><span class="plain-ico">＋</span><b>上传我喜欢的风格</b><small>传一张你觉得好看的图，整套照它的感觉做</small></label>`;
+    if (!looks.length) return `<section class="card look-card"><h2>风格</h2><p class="muted">点“AI 规划商品图”时，AI 会先从风格库挑 3 个适合这件商品的方向，挑好后可以换。也可以直接传一张你喜欢的图。</p>${lookFailed}<div class="looks">${ownLookTile}</div></section>`;
     const on = (l) => s.look && s.look.styleId === l.styleId && s.look.conceptName === l.conceptName;
     return `<section class="card look-card"><div class="row spread"><h2>风格 <small class="muted">商品图和详情页用同一套</small></h2><button class="link" id="more-looks">换一批</button></div>
       <div class="looks">${looks
         .map(
           (l, i) => `<button class="look ${on(l) ? "on" : ""}" data-look="${i}"><img src="/api/styles/${encodeURIComponent(l.styleId)}/cover?thumb=320" alt="" loading="lazy">
-            <b>${esc(l.conceptName)}</b><span class="swatches">${(l.palette || []).map((c) => `<i data-c="${esc(c)}"></i>`).join("")}</span><small>${esc(l.why || l.story)}</small></button>`,
+            <b>${esc(l.conceptName)}</b>${l.own ? `<em class="own-tag">我上传的</em>` : ""}<span class="swatches">${(l.palette || []).map((c) => `<i data-c="${esc(c)}"></i>`).join("")}</span><small>${esc(l.why || l.story)}</small></button>`,
         )
         .join("")}
-        <button class="look plain ${s.look ? "" : "on"}" data-look="plain"><span class="plain-ico">📷</span><b>实拍精修</b><small>不套风格，在实拍基础上重新布光排版</small></button></div>
-      ${s.shots && s.lookChanged ? `<p class="hint">换了风格，点下面“重新规划”让标题和画面跟着变（免费）</p>` : ""}</section>`;
+        <button class="look plain ${s.look ? "" : "on"}" data-look="plain"><span class="plain-ico">📷</span><b>实拍精修</b><small>不套风格，在实拍基础上重新布光排版</small></button>
+        ${ownLookTile}</div>
+      ${lookFailed}${s.shots && lookChangedFor === s.id ? `<p class="hint">换了风格，点“重新规划”让标题和画面跟着变（免费）</p>` : ""}</section>`;
   }
   function bindLooks(box, s) {
     $$(".swatches i", box).forEach((i) => (i.style.background = i.dataset.c));
@@ -699,10 +724,24 @@ export function initSuite(ctx) {
         (b.onclick = () =>
           busy(b, async () => {
             current = await api(`/suites/${s.id}/look`, json({ index: b.dataset.look === "plain" ? null : Number(b.dataset.look) }));
-            current.lookChanged = true;
+            lookChangedFor = s.id;
             render(current);
           })),
     );
+    const own = $("#own-look", box);
+    if (own)
+      own.onchange = () => {
+        const file = own.files[0];
+        if (!file) return;
+        busy(own.closest("label"), async () => {
+          const form = new FormData();
+          form.set("image", file);
+          await api(`/suites/${s.id}/look/upload`, { method: "POST", body: form });
+          lookChangedFor = s.id;
+          toast("已收到，AI 正在拆解这张图的风格（约半分钟）");
+          await suitePage(s.id);
+        });
+      };
     $("#more-looks", box)?.addEventListener("click", (e) => busy(e.currentTarget, async () => (await api(`/suites/${s.id}/looks`, json({})), suitePage(s.id))));
   }
 
@@ -851,6 +890,10 @@ export function initSuite(ctx) {
     const job = s.jobs?.detail;
     // Every AI screen still in the page already has a picture: removing screens needs no new run.
     const done = job?.status === "succeeded" && ai.every((x) => aiImage(s, x));
+    // One screen of a finished set can be redrawn or fine-tuned on its own.
+    const frameNo = (x) => (job?.status === "succeeded" && (x.mode === "ai" || x.mode === "bg") ? job.frames?.findIndex((f) => f.ref === x.id) ?? -1 : -1);
+    const pendingOf = (x) => job?.tweaks?.find((t) => t.frame === frameNo(x) && pendingJob(t));
+    const latestOf = (x) => job?.tweaks?.find((t) => t.frame === frameNo(x) && t.status === "succeeded" && t.asset);
     const live = s.sections.filter((x) => x.mode !== "off");
     const no = (x) => String(live.indexOf(x) + 1).padStart(2, "0");
     const running = busyTask(s, "detail") || ["queued", "running"].includes(job?.status);
@@ -892,7 +935,8 @@ export function initSuite(ctx) {
                   ${x.mode === "ai" ? x.texts.map((t, j) => `<label class="tline"><span>${ROLE_NAME[t.role] || "文字"}</span><input data-tx="${j}" value="${esc(t.text)}"></label>`).join("") : `<p class="hint">${x.mode === "photo" ? "直接用实拍图，不花积分。" : "文字来自“商品档案”，在那里改，这里自动更新。"}</p>`}
                   ${x.scene ? `<details class="scene-desc"><summary>画面描述</summary><textarea data-scene rows="5">${esc(x.scene)}</textarea></details>` : ""}
                   ${photos.length ? `<div class="shot-refs">${photos.map((f) => `<img loading="lazy" src="${preview(photoUrl(s, f), 320)}" alt="用到的实拍图">`).join("")}</div>` : ""}
-                  <div class="sb-foot"><button class="link" data-dl="${x.id}">导出这一屏</button><button class="link danger" data-off="${x.id}">不要这屏</button></div>
+                  ${frameNo(x) >= 0 && pendingOf(x) ? `<p class="hint working"><i class="spin"></i>${pendingOf(x).redo ? "正在重出这一屏" : "正在修改这一屏"}，好了会直接替换。</p>` : ""}
+                  <div class="sb-foot">${frameNo(x) >= 0 && !pendingOf(x) ? `<button class="link" data-redo="${job.id}:${frameNo(x)}">重出这一屏 · ${cost} 积分</button><button class="link" data-tweak="${latestOf(x) ? `${latestOf(x).id}:0` : `${job.id}:${frameNo(x)}`}">修改这一屏</button>` : ""}<button class="link" data-dl="${x.id}">导出这一屏</button><button class="link danger" data-off="${x.id}">不要这屏</button></div>
                 </div>
               </article>`;
             })
@@ -900,6 +944,7 @@ export function initSuite(ctx) {
         </div>
       </div>`;
     bindResume(box,s.id);
+    bindRedo(box);
     const main = $(".sb-main", box);
     for (const dp of $$(".dp", box)) {
       dp.style.setProperty("--c1", pal[0]);
@@ -942,7 +987,7 @@ export function initSuite(ctx) {
     };
     $$("[data-mode]", box).forEach((el) => (el.onchange = () => persist()));
     // Words and scene notes save quietly, so typing in the next box isn't interrupted.
-    $$("[data-tx], [data-scene]", box).forEach((el) => (el.onchange = () => saveSuite({ sections: collect() }).then(() => toast("已保存，重新生成后图上才会变"), (e) => toast(e.message, true))));
+    $$("[data-tx], [data-scene]", box).forEach((el) => (el.onchange = () => saveSuite({ sections: collect() }).then(() => toast("已保存。点这一屏的“重出这一屏”，图上的字才会变"), (e) => toast(e.message, true))));
     const move = (i, d) => {
       const list = collect();
       const j = i + d;

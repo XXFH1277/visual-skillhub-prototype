@@ -22,11 +22,14 @@ const SCENE_NAME = (id) => (id === "upscale" ? "4K 提升" : SCENES[id]?.name ||
 const MODE_SHORT = { ai: "AI 画字", overlay: "精确排字", none: "不加字" };
 const key = () => crypto.randomUUID();
 
-async function api(route, options = {}) {
+async function api(route, { timeout, ...options } = {}) {
+  // Uploads get longer; nothing waits forever. `timeout` (ms) overrides for the few slow calls.
+  const limit = timeout || (options.body instanceof FormData ? 180000 : 45000);
   let response;
   try {
-    response = await fetch("/api" + route, { ...options, headers: { "X-Requested-With": "SkillHub", ...options.headers } });
-  } catch {
+    response = await fetch("/api" + route, { ...options, headers: { "X-Requested-With": "SkillHub", ...options.headers }, signal: AbortSignal.timeout(limit) });
+  } catch (error) {
+    if (error?.name === "TimeoutError") throw new Error(`等了 ${Math.round(limit / 1000)} 秒服务器还没回应，这次没有成功。请稍后再点一次；如果是出图，先到“我的作品”看看是否已经开始。`);
     throw new Error("网络连接中断，请检查网络后重试");
   }
   const data = await response.json().catch(() => ({ error: "服务器返回了无法读取的响应" }));
@@ -46,14 +49,20 @@ function toast(message, error = false) {
   document.body.append(box);
   setTimeout(() => box.remove(), 4500);
 }
+// Every button that talks to the server: grey out and spin at once, come back (with the reason) if it fails.
 async function busy(button, fn) {
+  if (button.classList.contains("loading")) return;
   button.disabled = true;
+  button.classList.add("loading");
+  button.setAttribute("aria-busy", "true");
   try {
     await fn();
   } catch (error) {
     toast(error.message, true);
   } finally {
     button.disabled = false;
+    button.classList.remove("loading");
+    button.removeAttribute("aria-busy");
   }
 }
 const ICON = {
@@ -628,7 +637,13 @@ function tweakModal(job, i) {
         const next = await api(`/jobs/${job.id}/tweak`, json(body, { "Idempotency-Key": key() }));
         close();
         await refresh();
-        location.hash = "#/job/" + next.id;
+if (p.suiteId) {
+          // Made inside a product: stay there, the new version replaces the picture when it is ready.
+          await refresh();
+          toast("正在修改，好了会直接替换这张图");
+          if (location.hash.startsWith("#/suite/" + p.suiteId)) render();
+          else location.hash = `#/suite/${p.suiteId}/${p.skillId === "detail" ? "detail" : "shots"}`;
+        } else location.hash = "#/job/" + next.id;
       } catch (error) {
         $(".err", form).textContent = error.message;
       }
