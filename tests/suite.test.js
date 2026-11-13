@@ -164,20 +164,26 @@ test("merchant with a PDF note: import text + photos → profile → note/Word �
   assert.equal(tried.status, "succeeded", tried.error);
   assert.deepEqual([tried.params.frames.length, tried.cost], [1, 10]);
   suite = await (await s.request(`/api/suites/${id}`)).json();
-  assert.equal(suite.jobs.shotTrial.status, "succeeded");
+  assert.equal(suite.jobs["try:" + enabled[0].id].status, "succeeded");
   assert.equal(suite.jobs.shots, undefined);
-  assert.equal(suite.trialReuse, enabled[0].id);
+  assert.deepEqual(suite.madeShots, [enabled[0].id]);
   // Switching that picture off (or changing it) means the trial no longer stands in for it.
   const toggle = (on) => s.post(`/api/suites/${id}`, { shots: suite.shots.map((x) => ({ id: x.id, enabled: x.id === enabled[0].id ? on : x.enabled, scene: x.scene, texts: x.texts })) }).then((r) => r.json());
-  assert.equal((await toggle(false)).trialReuse, null);
-  assert.equal((await toggle(true)).trialReuse, enabled[0].id);
+  assert.deepEqual((await toggle(false)).madeShots, []);
+  assert.deepEqual((await toggle(true)).madeShots, [enabled[0].id]);
+  // A second picture made on its own, then fine-tuned: the full set takes both, the second in its fine-tuned version.
+  const second = await s.terminal((await (await s.post(`/api/suites/${id}/shots/generate`, { only: enabled[1].id }, { "Idempotency-Key": randomUUID() })).json()).id);
+  const tuned = await s.terminal((await (await s.post(`/api/jobs/${second.id}/tweak`, { frame: 0, instruction: "背景再亮一点" }, { "Idempotency-Key": randomUUID() })).json()).id);
+  assert.equal(tuned.status, "succeeded", tuned.error);
+  assert.deepEqual((await (await s.request(`/api/suites/${id}`)).json()).madeShots, [enabled[0].id, enabled[1].id]);
   const gen = await s.post(`/api/suites/${id}/shots/generate`, {}, { "Idempotency-Key": randomUUID() });
   assert.equal(gen.status, 202, await gen.clone().text());
   const job = await s.terminal((await gen.json()).id);
   assert.equal(job.status, "succeeded", job.error);
   assert.equal(job.params.frames[0].photos.length > 0, true);
-  assert.deepEqual(job.params.reusedFrames, [0]);
-  assert.equal(job.cost, (enabled.length - 1) * 10);
+  assert.deepEqual(job.params.reusedFrames, [0, 1]);
+  assert.equal(job.cost, (enabled.length - 2) * 10);
+  assert.equal(job.manifest.assets[1].sha256, tuned.manifest.assets[0].sha256);
   assert.equal(job.manifest.assets.filter((a) => a.role === "image").length, enabled.length);
   assert.equal(job.manifest.assets[0].sha256, tried.manifest.assets[0].sha256);
   suite = await (await s.request(`/api/suites/${id}`)).json();
@@ -202,7 +208,15 @@ test("merchant with a PDF note: import text + photos → profile → note/Word �
   assert.ok(djob.params.frames.filter((f) => bgs.some((x) => x.id === f.ref)).every((f) => f.textMode === "overlay" && f.layout === "center" && !f.texts.length));
   // AI screens get the facts for that screen.
   const detailCall = s.ai.calls.findLast((c) => c.system.includes("电商美工") && c.text.includes('"content"'));
-  assert.ok(detailCall, "detail planning sends each screen's content");  // Redrawing one picture with edited words: the product shows the new one in place of the old.
+  assert.ok(detailCall, "detail planning sends each screen's content");  // Product pictures can be placed in the detail page as screens of their own, anywhere, once each.
+  const firstSec = suite.sections[0].id;
+  suite = await (await s.post(`/api/suites/${id}/sections/shots`, { shots: [enabled[0].id, enabled[2].id], after: firstSec })).json();
+  assert.deepEqual(suite.sections.slice(1, 3).map((x) => [x.type, x.mode, x.shot]), [["shot", "shot", enabled[0].id], ["shot", "shot", enabled[2].id]]);
+  assert.equal((await s.post(`/api/suites/${id}/sections/shots`, { shots: [enabled[0].id] })).status, 400);
+  // Taking one out again = leaving it out of the saved order.
+  suite = await (await s.post(`/api/suites/${id}`, { sections: suite.sections.filter((x) => x.shot !== enabled[2].id).map((x) => ({ id: x.id, mode: x.mode })) })).json();
+  assert.deepEqual(suite.sections.filter((x) => x.type === "shot").map((x) => x.shot), [enabled[0].id]);
+  // Redrawing one picture with edited words: the product shows the new one in place of the old.
   const redo = await s.terminal((await (await s.post(`/api/jobs/${job.id}/retry`, { frame: 1, texts: [{ role: "headline", text: "改过的标题" }], scene: "画面：换个角度" }, { "Idempotency-Key": randomUUID() })).json()).id);
   assert.equal(redo.status, "succeeded", redo.error);
   assert.deepEqual([redo.params.tweakOf, redo.params.redo, redo.params.frames[0].texts[0].text, redo.params.frames[0].scene], [{ jobId: job.id, frame: 1 }, true, "改过的标题", "画面：换个角度"]);
@@ -215,7 +229,7 @@ test("merchant with a PDF note: import text + photos → profile → note/Word �
   assert.equal((await s.request(`/api/suites/${id}/look/upload`, { method: "POST", body: liked })).status, 200);
   suite = await s.waitTask(id, "looks");
   assert.deepEqual([suite.look.own, suite.look.conceptName, suite.looks[0].own], [true, "墨绿鎏金", true]);
-  assert.equal(suite.trialReuse, null, "a new look means the earlier trial no longer stands in");
+  assert.deepEqual(suite.madeShots, [], "a new look means pictures made earlier no longer stand in");
   const own = await s.terminal((await (await s.post(`/api/suites/${id}/shots/generate`, { only: enabled[0].id }, { "Idempotency-Key": randomUUID() })).json()).id);
   assert.equal(own.status, "succeeded", own.error);
   assert.match(own.params.frames[0].styleRefs[0], /^own-style-u-/);

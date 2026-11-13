@@ -64,22 +64,33 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     risky: scanRisky([s.note?.text, s.profile?.copy, JSON.stringify(s.profile || {})].join("\n")),
     packaging: s.packaging ? packState(s) : null,
     jobs: Object.fromEntries(Object.entries(s.jobs || {}).map(([k, id]) => [k, id && store.get(id) ? summary(store.get(id)) : null])),
-    trialReuse: s.profile && s.shots ? trialFor(s)?.shot.id || null : null,
+    madeShots: s.profile && s.shots ? madeShots(s).map((m) => m.shot.id) : [],
   });
   const summary = (j) => {
     const tweaks = store.tweaksOf(j.id);
     const ahead = j.status === "queued" ? store.ahead(j) : 0;
     return { id: j.id, skillId: j.params.skillId, status: j.status, phase: j.status === "queued" ? (ahead ? `排队中，前面还有 ${ahead} 个任务` : "排队中，马上开始") : j.phase, error: j.error, cost: j.cost, manifest: j.manifest, updatedAt: j.updatedAt, frames: j.params.frames, tweaks, upscales: j.params.skillId === "product" ? store.upscalesOf([j.id, ...tweaks.map((t) => t.id)]) : [] };
   };
-  // A trial shot can be taken over by the full set when nothing about that picture changed since.
+  // Pictures made one at a time (“单独出这张”). The full set takes each of them over as long as
+  // nothing about that picture changed since: same words, scene, photos and look.
   const sameList = (a, b) => JSON.stringify(a || []) === JSON.stringify(b || []);
-  function trialFor(s) {
-    const job = s.jobs?.shotTrial && store.get(s.jobs.shotTrial);
-    const f = job?.status === "succeeded" && job.params.frames?.[0];
-    const shot = f && (s.shots || []).find((x) => x.id === f.ref && x.enabled);
-    if (!shot || f.scene !== shot.scene || !sameList(f.photos, shot.photos) || !sameList(f.texts.filter((t) => t.text !== AI_LABEL).map((t) => [t.role, t.text]), shot.texts.map((t) => [t.role, t.text]))) return null;
-    if (JSON.stringify(job.params.direction) !== JSON.stringify(direction(s))) return null;
-    return { job, shot };
+  const tryKey = (shotId) => "try:" + shotId;
+  function madeShots(s) {
+    const made = [];
+    for (const shot of (s.shots || []).filter((x) => x.enabled)) {
+      const job = s.jobs?.[tryKey(shot.id)] && store.get(s.jobs[tryKey(shot.id)]);
+      const f = job?.status === "succeeded" && job.params.frames?.[0];
+      if (!f || f.ref !== shot.id || f.scene !== shot.scene || !sameList(f.photos, shot.photos)) continue;
+      if (!sameList(f.texts.filter((t) => t.text !== AI_LABEL).map((t) => [t.role, t.text]), shot.texts.map((t) => [t.role, t.text]))) continue;
+      if (JSON.stringify(job.params.direction) !== JSON.stringify(direction(s))) continue;
+      // If the merchant fine-tuned or redrew it, the newest version is the one that counts.
+      const newer = store.tweaksOf(job.id).find((t) => t.status === "succeeded" && t.asset);
+      const from = newer ? store.get(newer.id) : job;
+      const asset = from?.manifest?.assets?.find((a) => a.role === "image");
+      const file = asset && path.join(jobsDir, from.id, from.manifest.exportId, asset.name);
+      if (file && fs.existsSync(file)) made.push({ job, shot, file });
+    }
+    return made;
   }
 
   // Run one AI step in the background and record its state on the suite.
@@ -410,6 +421,19 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         .filter(Boolean);
     res.json(view(save(s)));
   });
+  // Put finished product pictures into the detail page as screens of their own (free: no new picture is made).
+  app.post("/api/suites/:id/sections/shots", (req, res) => {
+    const s = read(req.params.id);
+    needProfile(s);
+    const ids = Array.isArray(req.body?.shots) ? req.body.shots.filter((x) => typeof x === "string") : [];
+    const add = (s.shots || []).filter((x) => ids.includes(x.id) && !s.sections.some((y) => y.type === "shot" && y.shot === x.id));
+    if (!add.length) throw new AppError("选一张还没放进详情页的商品图");
+    if (s.sections.length + add.length > 30) throw new AppError("详情页最多 30 屏");
+    const fresh = add.map((x) => ({ id: `shot-${x.id}-${randomUUID().slice(0, 4)}`, type: "shot", mode: "shot", shot: x.id, name: x.title, texts: [], scene: "", photos: [] }));
+    const after = s.sections.findIndex((y) => y.id === req.body?.after);
+    s.sections = after >= 0 ? [...s.sections.slice(0, after + 1), ...fresh, ...s.sections.slice(after + 1)] : [...s.sections, ...fresh];
+    res.json(view(save(s)));
+  });
   const cleanTexts = (list) =>
     list
       .slice(0, 6)
@@ -533,23 +557,20 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     const extra = {};
     for (const f of params.frames) for (const r of f.styleRefs || []) extra[r] = r === ownRef ? ownFile : refs.file(r);
     params.inputs = [...new Set([...params.inputs, ...Object.keys(extra)])];
-    // The full set takes over a still-valid trial picture instead of drawing (and charging) it again.
-    const trial = kind === "shots" && !only && params.size === "1:1" ? trialFor(s) : null;
+    // The full set takes over the pictures already made one by one instead of drawing (and charging) them again.
     const reuse = {};
-    if (trial && trial.job.params.size === params.size) {
-      const at = frames.findIndex((f) => f.id === trial.shot.id);
-      const asset = trial.job.manifest?.assets?.find((a) => a.role === "image");
-      const file = asset && path.join(jobsDir, trial.job.id, trial.job.manifest.exportId, asset.name);
-      if (at >= 0 && frames.length > 1 && file && fs.existsSync(file)) {
-        params.frames[at] = { ...trial.job.params.frames[0] };
-        params.reusedFrames = [at];
-        reuse[at] = file;
+    if (kind === "shots" && !only)
+      for (const made of madeShots(s)) {
+        const at = frames.findIndex((f) => f.id === made.shot.id);
+        if (at < 0 || made.job.params.size !== params.size) continue;
+        params.frames[at] = { ...made.job.params.frames[0] };
+        (params.reusedFrames ||= []).push(at);
+        reuse[at] = made.file;
       }
-    }
     const holder = { status: (code) => ({ json: (job) => (holder.result = { code, job }) }) };
     await createJob(req, holder, params, dirOf(s.id), null, extra, reuse);
     const latest = read(s.id);
-    latest.jobs = { ...(latest.jobs || {}), [only ? "shotTrial" : kind]: holder.result.job.id };
+    latest.jobs = { ...(latest.jobs || {}), [only ? tryKey(only) : kind]: holder.result.job.id };
     save(latest);
     res.status(holder.result.code).json(holder.result.job);
   }

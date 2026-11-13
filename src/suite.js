@@ -120,6 +120,18 @@ export function initSuite(ctx) {
   let shotView = "results";
   let lastSnap = "";
   const pendingJob = (j) => ["queued", "running"].includes(j?.status);
+  const jobImage = (j, i = 0) => {
+    const newest = j?.tweaks?.find((t) => t.frame === i && t.status === "succeeded" && t.asset);
+    if (newest) return `/api/jobs/${newest.id}/files/${encodeURIComponent(newest.asset)}`;
+    const asset = j?.manifest?.assets?.filter((a) => ["image", "module"].includes(a.role)).find((a, pos) => (a.frame ?? pos) === i);
+    return asset ? fileUrl(j, asset.name) : null;
+  };
+  // The finished picture for one planned product shot: from the full set, or made on its own.
+  const shotImage = (s, shotId) => {
+    const set = s.jobs?.shots;
+    const i = set?.frames?.findIndex((f) => f.ref === shotId) ?? -1;
+    return (i >= 0 && jobImage(set, i)) || jobImage(s.jobs?.["try:" + shotId]) || null;
+  };
   // `quiet` = a background check while something is generating: redraw only when something
   // actually changed, and never under the merchant's fingers while they are typing.
   async function suitePage(id, sub, quiet = false) {
@@ -138,7 +150,7 @@ export function initSuite(ctx) {
       lastSnap = snap;
       render(s);
     }
-    if (snap !== lastSnap || anyBusy(s) || ["shots", "shotTrial", "detail", "dish", "packArt", "packMock"].some((k) => pendingJob(s.jobs?.[k])) || s.jobs?.shots?.upscales?.some(pendingJob) || ["shots", "shotTrial", "detail"].some((k) => s.jobs?.[k]?.tweaks?.some(pendingJob))) {
+    if (snap !== lastSnap || anyBusy(s) || Object.values(s.jobs || {}).some((j) => pendingJob(j) || j?.tweaks?.some(pendingJob) || j?.upscales?.some(pendingJob))) {
       const t = setTimeout(async () => {
         if (location.hash.startsWith("#/suite/" + id)) suitePage(id, undefined, true);
       }, 3000);
@@ -475,23 +487,27 @@ export function initSuite(ctx) {
     const finished = job?.manifest?.assets.filter(a => a.role === "image" || a.role === "module") || [];
     const showResults = job && shotView === "results";
     const enabledShots = (shots || []).filter((x) => x.enabled);
-    const firstTry = enabledShots.find((x) => x.photos.length)?.id;
-    const trial = s.jobs?.shotTrial;
-    // The trial matters while deciding; once a newer full set exists it has done its job.
-    const showTrial = trial && shots && (!job || trial.updatedAt > job.updatedAt);
-    const reuse = showTrial && s.trialReuse && enabledShots.length > 1 ? 1 : 0;
-    const making = busyTask(s, "shots") || busyTask(s, "looks") || pendingJob(s.jobs?.shots) || pendingJob(trial);
-    const trialImg = trial?.status === "succeeded" && trial.manifest.assets.find((a) => a.role === "image");
-    const trialHtml = !showTrial
-      ? ""
-      : pendingJob(trial)
-        ? spinner("正在试出 1 张", "1–3 分钟。这段时间可以接着改别的图的文字")
-        : trialImg
-          ? `<section class="card trial"><a href="${fileUrl(trial, trialImg.name)}" target="_blank" rel="noopener"><img src="${preview(fileUrl(trial, trialImg.name))}" alt="试出的图，查看原图"></a>
-              <div><h2>试出的这一张<small class="muted">${esc(trial.frames?.[0]?.title || "")}</small></h2>
-              <p class="muted">${reuse ? "满意就点下面的“生成其余”，这张直接带进整套，不重画、不再扣积分。" : "方案或风格在试出之后改过，这张不会带进整套。"}不满意就换个风格或改改文字，再试一张。</p>
-              <div class="row wrap"><button class="btn small navy" data-tweak="${trial.id}:0">修改这张</button><a class="btn small" href="${fileUrl(trial, trialImg.name, true)}">下载</a></div></div></section>`
-          : `<section class="card warn"><b>试出的这张没有成功</b><p>${esc(trial.error || "")}</p></section>`;
+    // Pictures made one at a time: each plan card shows its own, and the set takes over the ones still valid.
+    const tryOf = (x) => s.jobs?.["try:" + x.id];
+    const made = new Set(s.madeShots || []);
+    const madeCount = enabledShots.filter((x) => made.has(x.id)).length;
+    const rest = enabledShots.length - madeCount;
+    const firstTry = madeCount || enabledShots.some((x) => tryOf(x)) ? null : enabledShots.find((x) => x.photos.length)?.id;
+    const making = busyTask(s, "shots") || busyTask(s, "looks") || pendingJob(s.jobs?.shots);
+    const madeHtml = (x) => {
+      const t = tryOf(x);
+      const tryBtn = (label) => (x.photos.length ? `<button class="link" data-try="${x.id}" ${making ? "disabled" : ""}>${label} · ${cost} 积分</button>` : "");
+      if (!t) return tryBtn("单独出这张");
+      const changing = t.tweaks?.find(pendingJob);
+      if (pendingJob(t) || changing) return `<p class="hint working"><i class="spin"></i>${changing ? "正在改这张" : "正在单独出这张"}（${esc((changing || t).phase || "排队中")}），可以接着改别的图。</p>`;
+      const url = jobImage(t);
+      if (!url) return `<p class="warn-text">这张没出成功：${esc(t.error || "")}</p>${tryBtn("再出一次")}`;
+      const ok = made.has(x.id);
+      const newest = t.tweaks?.find((v) => v.status === "succeeded" && v.asset);
+      return `<div class="shot-made ${ok ? "" : "stale"}"><a href="${url}" target="_blank" rel="noopener"><img loading="lazy" src="${preview(url)}" alt="单独出的这张，点开看大图"></a>
+        <div><b>${ok ? "已出好，整套会直接用这张" : x.enabled ? "之后改过方案，整套会重新出这张" : "已出好（没勾“出这张”，不进整套）"}</b>
+        <div class="row wrap"><button class="link" data-tweak="${newest ? `${newest.id}:0` : `${t.id}:0`}">修改</button>${tryBtn("重新出")}<a class="link" href="${url}${url.includes("?") ? "&" : "?"}download=1">下载</a></div></div></div>`;
+    };
     box.innerHTML = `
       ${job ? `<div class="shot-toolbar"><div class="seg"><button data-panel="results" aria-pressed="${showResults}" class="${showResults ? "on" : ""}">生成结果${finished.length ? `（${finished.length}）` : ""}</button><button data-panel="plan" aria-pressed="${!showResults}" class="${showResults ? "" : "on"}">出图方案</button></div>
         ${finished.length > 1 ? `<select id="find-shot" aria-label="定位到商品图板块" ${showResults ? "" : "hidden"}><option value="">定位到板块…</option>${finished.map((a,pos) => { const i=a.frame ?? pos; return `<option value="${i}">第 ${i+1} 张 · ${esc(job.frames?.[i]?.title || "商品图")}</option>`; }).join("")}</select>` : ""}</div>
@@ -501,7 +517,6 @@ export function initSuite(ctx) {
       ${busyTask(s, "shots") ? spinner("AI 正在规划商品图", "给每张图挑实拍图、写标题和画面（约 1 分钟）") : ""}${failed(s, "shots")}
       ${checklist(s)}
       ${lookCard(s)}
-      ${trialHtml}
       ${
         !shots
           ? `<div class="row"><button class="btn primary" id="plan-shots" ${busyTask(s, "shots") ? "disabled" : ""}>AI 规划商品图</button><span class="muted">不扣积分</span></div>`
@@ -516,12 +531,12 @@ export function initSuite(ctx) {
                     <div class="tlines">${x.texts.map((t, j) => `<label class="tline"><span>${ROLE_NAME[t.role] || "文字"}</span><input data-t="${j}" value="${esc(t.text)}"></label>`).join("")}</div>
                   </div>
                   <details class="scene-desc"><summary>画面描述</summary><textarea data-scene rows="4">${esc(x.scene)}</textarea></details>
-                  ${x.photos.length ? `<button class="link try-one" data-try="${x.id}" ${making ? "disabled" : ""}>先出这张试试 · ${cost} 积分</button>` : ""}
+                  <div class="shot-one">${madeHtml(x)}</div>
                 </article>`,
               )
               .join("")}</div>
-            <div class="actionbar"><div class="actionbar-in"><span class="muted">拿不准风格？先出 1 张看看，满意再出整套</span>
-              <div class="row">${firstTry ? `<button class="btn" data-try="${firstTry}" ${making ? "disabled" : ""}>${showTrial ? "再试 1 张" : "先出 1 张试试"} · ${cost} 积分</button>` : ""}<button class="btn primary" id="gen-shots" ${making ? "disabled" : ""}>${s.jobs?.shots?.status === "partial" ? "整组重新生成" : reuse ? "生成其余" : "生成"} ${enabledShots.length - reuse} 张 · ${(enabledShots.length - reuse) * cost} 积分</button></div></div></div>`
+            <div class="actionbar"><div class="actionbar-in"><span class="muted">${madeCount ? `已单独出好 ${madeCount} 张，整套直接用，不重复扣积分` : "每张都能先单独出来看效果，满意再出整套"}</span>
+              <div class="row">${firstTry ? `<button class="btn" data-try="${firstTry}" ${making ? "disabled" : ""}>先出 1 张试试 · ${cost} 积分</button>` : ""}<button class="btn primary" id="gen-shots" ${making || !enabledShots.length ? "disabled" : ""}>${s.jobs?.shots?.status === "partial" && !madeCount ? `整组重新生成 ${rest} 张 · ${rest * cost} 积分` : !rest ? "都出好了，汇总成整套（免费）" : `${madeCount ? "生成其余" : "生成"} ${rest} 张 · ${rest * cost} 积分`}</button></div></div></div>`
       }
       </div>`;
     $$("[data-panel]", box).forEach(b => b.onclick = () => {
@@ -575,16 +590,16 @@ export function initSuite(ctx) {
             shotView = "plan";
             await refresh();
             await suitePage(s.id);
-            $(".planning", box)?.scrollIntoView({ block: "center" });
           })),
     );
     $("#gen-shots")?.addEventListener("click", (e) =>
       busy(e.currentTarget, async () => {
         await saveSuite({ shots: collect() });
-        // The button promised to keep the trial picture; if an edit just ruled that out, show the new count first.
-        if (reuse && !current.trialReuse) {
+        // The button named a count and a price; if an edit just changed which pictures can be kept, show the new ones first.
+        const restNow = (current.shots || []).filter((x) => x.enabled && !(current.madeShots || []).includes(x.id)).length;
+        if (restNow !== rest) {
           render(current);
-          return toast("试出的那张改过文字或画面，不能直接带进整套了。请看一下新的张数和积分，再点生成。", true);
+          return toast("方案改动后，要出的张数和积分变了。请看一下新的数字，再点一次。", true);
         }
         await api(`/suites/${s.id}/shots/generate`, json({}, { "Idempotency-Key": key() }));
         shotView = "results";
@@ -824,7 +839,12 @@ export function initSuite(ctx) {
       ${v.cards.length ? `<div class="tp-cards">${v.cards.map((c) => `<div><strong class="${bigSize(c.big)}">${esc(c.big)}</strong><b>${esc(c.label)}</b><small>${esc(c.sub)}</small></div>`).join("")}</div>` : ""}
       ${v.body ? `<p class="tp-body">${hi(v.body, v.highlight)}</p>` : ""}`;
   }
+  const secName = (x) => (x.type === "shot" ? `商品图 · ${x.name || ""}` : meta.sections[x.type].name);
   function sectionHtml(s, sec, safe) {
+    if (sec.type === "shot") {
+      const url = shotImage(s, sec.shot);
+      return url ? `<img class="tp-img" data-original="${url}" src="${preview(url)}" alt="">` : `<div class="tp-wait">${esc(secName(sec))}<small>这张商品图出好后显示在这里</small></div>`;
+    }
     const p = s.profile;
     const t = (x) => (safe ? safeText(x) : x);
     if (sec.mode === "ai") {
@@ -864,9 +884,10 @@ export function initSuite(ctx) {
   const safeText = (x) => RISKY.reduce((acc, [w, r]) => acc.split(w).join(r), String(x || "")).replace(/，，/g, "，");
   let safeMode = true;
   let detailView = "board";
+  let addOpen = false;
   let fitDetail = () => {};
   addEventListener("resize", () => fitDetail());
-  const MODE_SHORT = { ai: "AI 出图", bg: "底图排字", tpl: "排版", photo: "实拍", off: "不要" };
+  const MODE_SHORT = { ai: "AI 出图", bg: "底图排字", tpl: "排版", photo: "实拍", shot: "商品图", off: "不要" };
   const SECTION_WHY = {
     hero: "第一眼留住人，讲清卖的是什么。",
     why: "讲产地凭什么好，先把信任立住。",
@@ -894,6 +915,8 @@ export function initSuite(ctx) {
     const frameNo = (x) => (job?.status === "succeeded" && (x.mode === "ai" || x.mode === "bg") ? job.frames?.findIndex((f) => f.ref === x.id) ?? -1 : -1);
     const pendingOf = (x) => job?.tweaks?.find((t) => t.frame === frameNo(x) && pendingJob(t));
     const latestOf = (x) => job?.tweaks?.find((t) => t.frame === frameNo(x) && t.status === "succeeded" && t.asset);
+    // Finished product pictures that can be dropped into the page.
+    const addable = (s.shots || []).map((x) => ({ id: x.id, title: x.title, url: shotImage(s, x.id), sec: s.sections.find((y) => y.type === "shot" && y.shot === x.id) })).filter((a) => a.url);
     const live = s.sections.filter((x) => x.mode !== "off");
     const no = (x) => String(live.indexOf(x) + 1).padStart(2, "0");
     const running = busyTask(s, "detail") || ["queued", "running"].includes(job?.status);
@@ -903,8 +926,10 @@ export function initSuite(ctx) {
         <aside class="card sb-rail">
           <h2>详情页分镜<small class="muted">${live.length} 屏</small></h2>
           <ol class="sb-toc">${s.sections
-            .map((x) => `<li class="${x.mode === "off" ? "off" : ""}"><button data-goto="${x.id}"><i>${x.mode === "off" ? "–" : no(x)}</i><span>${esc(meta.sections[x.type].name)}</span><em class="m-${x.mode}">${MODE_SHORT[x.mode]}</em></button></li>`)
+            .map((x) => `<li class="${x.mode === "off" ? "off" : ""}"><button data-goto="${x.id}"><i>${x.mode === "off" ? "–" : no(x)}</i><span>${esc(secName(x))}</span><em class="m-${x.mode}">${MODE_SHORT[x.mode]}</em></button></li>`)
             .join("")}</ol>
+          ${addable.length ? `<details class="sb-add" ${addOpen ? "open" : ""}><summary>＋ 把商品图放进详情页</summary><p class="muted">点一张就加到详情页末尾，再用 ↑↓ 挪到想要的位置。不花积分。</p>
+            <div class="add-grid">${addable.map((a) => `<button class="add-shot ${a.sec ? "in" : ""}" data-add="${a.id}" title="${esc(a.title)}"><img loading="lazy" src="${preview(a.url, 320)}" alt="${esc(a.title)}"><span>${a.sec ? "已放入" : esc(a.title)}</span></button>`).join("")}</div></details>` : ""}
           ${s.look !== undefined ? `<p class="muted look-line">风格：<b>${esc(s.look?.conceptName || "实拍精修")}</b>，在“商品图”里换</p>` : ""}
           <label class="mini"><input type="checkbox" id="safe" ${safeMode ? "checked" : ""}>淘宝合规（自动替换“最、第一”等极限词）</label>
           <div class="sb-actions">
@@ -922,6 +947,15 @@ export function initSuite(ctx) {
           <div class="sb-top"><div class="seg small"><button data-dview="board" class="${detailView === "long" ? "" : "on"}">分镜编辑</button><button data-dview="long" class="${detailView === "long" ? "on" : ""}">长图预览</button></div><span class="muted sb-tip">点左边的小图可以看大图</span></div>
           <div class="sb-list">${s.sections
             .map((x, i) => {
+              if (x.type === "shot")
+                return `<article class="sb-card" data-sec="${x.id}" id="sec-${x.id}">
+                  <button class="sb-phone" data-zoom="${x.id}" aria-label="看第 ${no(x)} 屏大图"><div class="dp"><div class="dp-sec" data-pv="${x.id}">${sectionHtml(s, x, safeMode)}</div></div></button>
+                  <div class="sb-info">
+                    <header><span class="no">${no(x)}</span><b>${esc(secName(x))}</b><div class="sec-move"><button data-up="${i}" aria-label="上移">↑</button><button data-down="${i}" aria-label="下移">↓</button></div></header>
+                    <p class="sb-why">直接放一张做好的商品图，不花积分。想换图上的内容，到“商品图”里修改或重出，这里会跟着变。</p>
+                    <div class="sb-foot"><button class="link" data-dl="${x.id}">导出这一屏</button><button class="link danger" data-remove="${x.id}">移出详情页</button></div>
+                  </div>
+                </article>`;
               const m = meta.sections[x.type];
               const modes = `<select data-mode aria-label="这一屏的做法">${[...m.modes, "off"].map((k) => `<option value="${k}" ${x.mode === k ? "selected" : ""}>${meta.modes[k]}</option>`).join("")}</select>`;
               if (x.mode === "off") return `<article class="sb-card off" data-sec="${x.id}" id="sec-${x.id}"><div class="sb-info"><header><span class="no">–</span><b>${esc(m.name)}</b><span class="muted">已去掉，改回任一做法就恢复</span></header>${modes}</div></article>`;
@@ -979,13 +1013,29 @@ export function initSuite(ctx) {
         const row = $(`[data-sec="${x.id}"]`, box);
         const inputs = $$("[data-tx]", row);
         const scene = $("[data-scene]", row);
-        return { id: x.id, mode: $("[data-mode]", row).value, texts: inputs.length ? x.texts.map((t, j) => ({ ...t, text: inputs[j].value })) : x.texts, ...(scene ? { scene: scene.value } : {}) };
+        return { id: x.id, mode: $("[data-mode]", row)?.value || x.mode, texts: inputs.length ? x.texts.map((t, j) => ({ ...t, text: inputs[j].value })) : x.texts, ...(scene ? { scene: scene.value } : {}) };
       });
     const persist = async (list) => {
       await saveSuite({ sections: list || collect() });
       detailTab(box, current);
     };
     $$("[data-mode]", box).forEach((el) => (el.onchange = () => persist()));
+    $(".sb-add", box)?.addEventListener("toggle", (e) => (addOpen = e.currentTarget.open));
+    $$("[data-add]", box).forEach(
+      (b) =>
+        (b.onclick = () => {
+          const have = s.sections.find((y) => y.type === "shot" && y.shot === b.dataset.add);
+          if (have) return $("#sec-" + have.id, box)?.scrollIntoView({ block: "start", behavior: "smooth" });
+          busy(b, async () => {
+            await saveSuite({ sections: collect() });
+            current = await api(`/suites/${s.id}/sections/shots`, json({ shots: [b.dataset.add] }));
+            detailTab(box, current);
+            toast("已放到详情页最后，用 ↑↓ 调位置");
+            $("#sec-" + current.sections.find((y) => y.type === "shot" && y.shot === b.dataset.add)?.id)?.scrollIntoView({ block: "center" });
+          });
+        }),
+    );
+    $$("[data-remove]", box).forEach((b) => (b.onclick = () => busy(b, () => persist(collect().filter((x) => x.id !== b.dataset.remove)))));
     // Words and scene notes save quietly, so typing in the next box isn't interrupted.
     $$("[data-tx], [data-scene]", box).forEach((el) => (el.onchange = () => saveSuite({ sections: collect() }).then(() => toast("已保存。点这一屏的“重出这一屏”，图上的字才会变"), (e) => toast(e.message, true))));
     const move = (i, d) => {

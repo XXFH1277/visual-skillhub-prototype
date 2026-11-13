@@ -38,8 +38,10 @@ export const SECTION_TYPES = {
   pack: { name: "包装与收货", modes: ["ai", "bg", "tpl"], photo: ["package"] },
   info: { name: "商品信息", modes: ["bg", "tpl", "ai"], photo: [] },
   notice: { name: "购物须知", modes: ["bg", "tpl", "ai"], photo: [] },
+  // A finished product picture the merchant chose to place in the detail page.
+  shot: { name: "商品图", modes: ["shot"], photo: [] },
 };
-export const SECTION_MODES = { ai: "AI 出图", bg: "AI 底图+排字", tpl: "文字排版", photo: "实拍+说明", off: "不要这屏" };
+export const SECTION_MODES = { ai: "AI 出图", bg: "AI 底图+排字", tpl: "文字排版", photo: "实拍+说明", shot: "直接用商品图", off: "不要这屏" };
 
 // Ad-law "极限词" that are fine in a private WeChat group but get listings punished on Taobao.
 export const RISKY_WORDS = [
