@@ -122,7 +122,7 @@ function login(mode, invite = "") {
     code: `<label>管理员访问码<input name="code" type="password" autocomplete="current-password" required></label>
       <button class="btn primary wide">进入</button>`,
   };
-  app.innerHTML = `<section class="login card"><h1>出图工作台</h1><p class="muted">一个商品，一键出笔记、商品图和详情页。</p>
+  app.innerHTML = `<section class="login card"><h1>星图</h1><p class="muted">一个商品，一键出笔记、商品图和详情页。</p>
     ${mode === "code" ? "" : `<div class="seg"><button data-mode="login" class="${mode === "login" ? "on" : ""}">登录</button><button data-mode="register" class="${mode === "register" ? "on" : ""}">注册</button></div>`}
     <form id="login-form">${forms[mode]}<p class="err" id="login-error" role="alert"></p></form>
     <button class="link login-alt" id="alt">${mode === "code" ? "← 用手机号登录" : "管理员用访问码登录"}</button></section>`;
@@ -961,7 +961,7 @@ async function adminPage() {
       window.prompt("复制下面这段发给对方：", text);
     }
   };
-  const message = (code) => `邀请你体验「出图工作台」：一个商品一键出笔记、商品图和详情页。\n打开链接注册：${link(code)}\n邀请码：${code}`;
+  const message = (code) => `邀请你体验「星图」：一个商品一键出笔记、商品图和详情页。\n打开链接注册：${link(code)}\n邀请码：${code}`;
   $("#invite-form").onsubmit = (e) => {
     e.preventDefault();
     const form = e.currentTarget;

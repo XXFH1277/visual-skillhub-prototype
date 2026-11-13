@@ -38,8 +38,8 @@ small, .muted { color: var(--muted); }
 /* header */
 .top-wrap { position: sticky; top: 0; z-index: 30; background: #eef2f5e8; backdrop-filter: blur(10px); border-bottom: 1px solid transparent; }
 .top { max-width: 1180px; margin: auto; height: var(--top-h); padding: 0 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.logo { font-weight: 800; font-size: 17px; display: flex; gap: 9px; align-items: center; letter-spacing: 0.5px; }
-.logo-mark { width: 30px; height: 30px; border-radius: 9px; background: var(--navy); color: #fff; display: grid; place-items: center; font-size: 15px; }
+.logo { display: flex; align-items: center; flex: none; }
+.logo img { display: block; height: 30px; width: auto; }
 #nav { display: flex; align-items: center; gap: 2px; font-size: 14px; white-space: nowrap; }
 #nav a, #nav .link { padding: 7px 13px; border-radius: 999px; color: var(--muted); }
 #nav a:hover { color: var(--ink); }
