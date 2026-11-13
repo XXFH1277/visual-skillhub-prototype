@@ -216,13 +216,30 @@ test("merchant with a PDF note: import text + photos → profile → note/Word �
   // Taking one out again = leaving it out of the saved order.
   suite = await (await s.post(`/api/suites/${id}`, { sections: suite.sections.filter((x) => x.shot !== enabled[2].id).map((x) => ({ id: x.id, mode: x.mode })) })).json();
   assert.deepEqual(suite.sections.filter((x) => x.type === "shot").map((x) => x.shot), [enabled[0].id]);
+  // Swapping the real photos behind one picture, and adding a new one from the card.
+  const other = suite.photos.find((ph) => ph.usable && !suite.shots.find((x) => x.id === enabled[3].id).photos.includes(ph.file)).file;
+  suite = await (await s.post(`/api/suites/${id}`, { shots: [{ id: enabled[3].id, photos: [other, "not-a-file.png"] }] })).json();
+  assert.deepEqual(suite.shots.find((x) => x.id === enabled[3].id).photos, [other]);
+  const extra = new FormData();
+  extra.append("photo", new Blob([await photo("#888844")], { type: "image/jpeg" }), "new.jpg");
+  suite = await (await s.request(`/api/suites/${id}/shots/${enabled[3].id}/photo`, { method: "POST", body: extra })).json();
+  const mine = suite.shots.find((x) => x.id === enabled[3].id).photos;
+  assert.equal(mine.length, 2);
+  assert.ok(suite.photos.find((ph) => ph.file === mine[0]).desc, "the new photo is described so the brief can use it");
+  // With a finished set, making that picture again uses the plan as it is now and becomes its newest version.
+  const again = await s.terminal((await (await s.post(`/api/suites/${id}/shots/generate`, { only: enabled[3].id }, { "Idempotency-Key": randomUUID() })).json()).id);
+  assert.equal(again.status, "succeeded", again.error);
+  assert.deepEqual([again.params.tweakOf, again.params.redo, again.params.frames[0].photos], [{ jobId: job.id, frame: 3 }, true, mine]);
+  suite = await (await s.request(`/api/suites/${id}`)).json();
+  assert.equal(suite.jobs["try:" + enabled[3].id], undefined);
+  assert.deepEqual(suite.jobs.shots.tweaks.map((t) => [t.frame, t.redo]), [[3, true]]);
   // Redrawing one picture with edited words: the product shows the new one in place of the old.
   const redo = await s.terminal((await (await s.post(`/api/jobs/${job.id}/retry`, { frame: 1, texts: [{ role: "headline", text: "改过的标题" }], scene: "画面：换个角度" }, { "Idempotency-Key": randomUUID() })).json()).id);
   assert.equal(redo.status, "succeeded", redo.error);
   assert.deepEqual([redo.params.tweakOf, redo.params.redo, redo.params.frames[0].texts[0].text, redo.params.frames[0].scene], [{ jobId: job.id, frame: 1 }, true, "改过的标题", "画面：换个角度"]);
   assert.ok(redo.params.frames[0].photos.length, "a redraw still starts from the real photos");
   suite = await (await s.request(`/api/suites/${id}`)).json();
-  assert.deepEqual(suite.jobs.shots.tweaks.map((t) => [t.frame, t.redo, t.status, !!t.asset]), [[1, true, "succeeded", true]]);
+  assert.deepEqual(suite.jobs.shots.tweaks.map((t) => [t.frame, t.redo, t.status, !!t.asset]), [[1, true, "succeeded", true], [3, true, "succeeded", true]]);
   // The merchant uploads a picture they like: it becomes the look, and each picture gets it as a design reference.
   const liked = new FormData();
   liked.append("image", new Blob([await photo("#0f3d2e")], { type: "image/jpeg" }), "liked.jpg");

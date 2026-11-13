@@ -6,7 +6,7 @@ const bigSize = (t) => { const n = [...String(t)].length; return n > 5 ? "xs" : 
 
 // 商品全套：资料 → 档案 → 笔记 → 商品图 → 详情页
 export function initSuite(ctx) {
-  const { app, api, json, toast, busy, esc, $, $$, key, refresh, getWorkspace, setCleanup, tweak, problemText } = ctx;
+  const { app, api, json, toast, busy, esc, $, $$, key, refresh, getWorkspace, setCleanup, tweak, problemText, modal } = ctx;
   let meta = null;
   const loadMeta = async () => (meta ||= await api("/suite-meta"));
   const photoUrl = (s, file) => `/api/suites/${s.id}/photo/${encodeURIComponent(file)}`;
@@ -410,6 +410,8 @@ export function initSuite(ctx) {
     if (!["partial","succeeded"].includes(job.status)) return `<section class="card warn"><b>没有成功</b><p>${esc(job.error || "")}</p></section>`;
     const imgs = job.manifest.assets.filter((a) => ["image", "module"].includes(a.role));
     const ws = getWorkspace();
+    // Product pictures of this product can be redrawn from other real photos.
+    const swapRef = (i) => (job.id === current?.jobs?.shots?.id && current.shots?.some((x) => x.id === job.frames?.[i]?.ref) ? job.frames[i].ref : null);
     const bigger = (a) => {
       try {
         const [w, h] = upscaleSize(a.width, a.height).split("x").map(Number);
@@ -445,7 +447,7 @@ export function initSuite(ctx) {
           ${check?.ok === false && !latest ? `<ul class="problem-list">${check.problems.map((p) => `<li>${problemText(p)}</li>`).join("")}</ul>` : ""}
           ${pending ? `<p class="hint working"><i class="spin"></i>${pending.redo ? "正在重出这张" : "正在修改这张"}，好了会直接替换。<a href="#/job/${pending.id}">看进度</a></p>` : ""}
           <div class="result-actions"><button class="btn small navy" data-tweak="${latest ? `${latest.id}:0` : `${job.id}:${i}`}">修改</button><a class="btn small" href="${latest ? src + "?download=1" : fileUrl(job, a.name, true)}">下载</a><button class="link" data-redo="${job.id}:${i}">重出 · ${ws.skills.product.cost} 积分</button></div>
-          ${upHtml ? `<div class="result-more">${upHtml}</div>` : ""}</article>`;
+          <div class="result-more">${swapRef(i) ? `<button class="link" data-refs="${swapRef(i)}" data-go="1">换实拍图</button>` : ""}${upHtml}</div></article>`;
       })
       .join("")}</div>`;
   }
@@ -462,6 +464,7 @@ export function initSuite(ctx) {
           })),
     );
     $$("[data-tweak]", box).forEach((b) => (b.onclick = () => busy(b, () => tweak(...b.dataset.tweak.split(":").map((x, j) => (j ? Number(x) : x))))));
+    $$("[data-refs]", box).forEach((b) => (b.onclick = () => photoPicker(b.dataset.refs, box.__collectShots)));
     $$("[data-redo]", box).forEach(
       (b) =>
         (b.onclick = () =>
@@ -469,7 +472,14 @@ export function initSuite(ctx) {
             const [jobId, i] = b.dataset.redo.split(":");
             // Redraw with the words and scene as they are now in the plan, not as they were when the set was made.
             const ref = Object.values(current.jobs || {}).find((j) => j?.id === jobId)?.frames?.[Number(i)]?.ref;
-            const now = (current.shots || []).find((x) => x.id === ref) || (current.sections || []).find((x) => x.id === ref && (x.mode === "ai" || x.mode === "bg"));
+            if (jobId === current.jobs?.shots?.id && (current.shots || []).some((x) => x.id === ref)) {
+              // A product picture: made again from the plan as it is now (words, scene, real photos, look).
+              await api(`/suites/${current.id}/shots/generate`, json({ only: ref }, { "Idempotency-Key": key() }));
+              await refresh();
+              toast("正在重出，好了会直接替换这张图");
+              return void (await suitePage(current.id));
+            }
+            const now = (current.sections || []).find((x) => x.id === ref && (x.mode === "ai" || x.mode === "bg"));
             const body = { frame: Number(i), ...(now?.scene ? { scene: now.scene } : {}), ...(now?.texts?.length && now.mode !== "bg" ? { texts: now.texts.map((t) => ({ role: t.role, text: t.text })) } : {}) };
             await api(`/jobs/${jobId}/retry`, json(body, { "Idempotency-Key": key() }));
             await refresh();
@@ -477,6 +487,77 @@ export function initSuite(ctx) {
             await suitePage(current.id);
           })),
     );
+  }
+  // Which real photos one product picture is built from: pick among the product's photos or add a new one.
+  function photoPicker(shotId, collectShots) {
+    const s = current;
+    const shot = (s.shots || []).find((x) => x.id === shotId);
+    if (!shot) return;
+    const cost = getWorkspace().skills.product.cost;
+    let sel = [...shot.photos];
+    const pool = s.photos.filter((p) => p.usable || sel.includes(p.file));
+    const { wrap, close } = modal(`
+      <h2>「${esc(shot.title)}」用哪几张实拍图</h2>
+      <p class="muted">这张图会照着选中的实拍图来画，最多 3 张，标 1 的是主体。没有合适的就传一张新的。</p>
+      <div class="pick-grid">${pool
+        .map((p) => `<button class="pick" data-f="${esc(p.file)}" title="${esc(p.desc || "")}"><img loading="lazy" src="${preview(photoUrl(s, p.file), 320)}" alt="${esc(p.desc || "实拍图")}"><span>${esc(meta.roles[p.role] || "实拍图")}${p.ai ? "（AI 示意）" : ""}</span><i></i></button>`)
+        .join("")}
+        <label class="pick add" tabindex="0"><input type="file" accept="image/png,image/jpeg,image/webp" hidden><b>＋</b><span>上传新的实拍图</span></label></div>
+      <div class="row wrap picker-actions"><button class="btn" id="pick-save">只保存</button><button class="btn primary" id="pick-go">保存并出这张 · ${cost} 积分</button></div>`);
+    const mark = () =>
+      $$(".pick[data-f]", wrap).forEach((b) => {
+        const at = sel.indexOf(b.dataset.f);
+        b.classList.toggle("on", at >= 0);
+        $("i", b).textContent = at >= 0 ? at + 1 : "";
+      });
+    mark();
+    $$(".pick[data-f]", wrap).forEach(
+      (b) =>
+        (b.onclick = () => {
+          const f = b.dataset.f;
+          if (sel.includes(f)) sel = sel.filter((x) => x !== f);
+          else if (sel.length >= 3) return toast("最多选 3 张，先点掉一张", true);
+          else sel.push(f);
+          mark();
+        }),
+    );
+    // Keep whatever is typed in the plan (if it is on screen) together with the new choice of photos.
+    const save = async () => {
+      const base = collectShots?.() || s.shots.map((x) => ({ id: x.id }));
+      await saveSuite({ shots: base.map((x) => (x.id === shotId ? { ...x, photos: sel } : x)) });
+    };
+    $("#pick-save", wrap).onclick = (e) =>
+      busy(e.currentTarget, async () => {
+        if (!sel.length) throw new Error("至少选 1 张实拍图");
+        await save();
+        close();
+        render(current);
+        toast("已保存。点这张图的“重新出”，才会按新的实拍图来画");
+      });
+    $("#pick-go", wrap).onclick = (e) =>
+      busy(e.currentTarget, async () => {
+        if (!sel.length) throw new Error("至少选 1 张实拍图");
+        await save();
+        await api(`/suites/${s.id}/shots/generate`, json({ only: shotId }, { "Idempotency-Key": key() }));
+        close();
+        await refresh();
+        toast("正在按新的实拍图出这张");
+        await suitePage(s.id);
+      });
+    $("input[type=file]", wrap).onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      busy($(".pick.add", wrap), async () => {
+        if (sel.length) await save();
+        const form = new FormData();
+        form.set("photo", file);
+        current = await api(`/suites/${s.id}/shots/${encodeURIComponent(shotId)}/photo`, { method: "POST", body: form });
+        close();
+        render(current);
+        toast("新的实拍图已加入，并排在这张图的第 1 张");
+        photoPicker(shotId, collectShots);
+      });
+    };
   }
   const ROLE_NAME = { headline: "主标题", sub: "副标题", point: "卖点", tag: "小标" };
   function shotsTab(box, s) {
@@ -495,8 +576,19 @@ export function initSuite(ctx) {
     const firstTry = madeCount || enabledShots.some((x) => tryOf(x)) ? null : enabledShots.find((x) => x.photos.length)?.id;
     const making = busyTask(s, "shots") || busyTask(s, "looks") || pendingJob(s.jobs?.shots);
     const madeHtml = (x) => {
-      const t = tryOf(x);
       const tryBtn = (label) => (x.photos.length ? `<button class="link" data-try="${x.id}" ${making ? "disabled" : ""}>${label} · ${cost} 积分</button>` : "");
+      // Already part of the finished set: the newest version is shown; making it again files a newer one.
+      const at = job && ["succeeded", "partial"].includes(job.status) ? job.frames?.findIndex((f) => f.ref === x.id) ?? -1 : -1;
+      const inSet = at >= 0 ? jobImage(job, at) : null;
+      if (inSet) {
+        const changing = job.tweaks?.find((v) => v.frame === at && pendingJob(v));
+        if (changing) return `<p class="hint working"><i class="spin"></i>${changing.redo ? "正在重新出这张" : "正在改这张"}（${esc(changing.phase || "排队中")}），好了会替换整套里的第 ${at + 1} 张。</p>`;
+        const newest = job.tweaks?.find((v) => v.frame === at && v.status === "succeeded" && v.asset);
+        return `<div class="shot-made"><a href="${inSet}" target="_blank" rel="noopener"><img loading="lazy" src="${preview(inSet)}" alt="整套里的这张，点开看大图"></a>
+          <div><b>已在整套里（第 ${at + 1} 张）</b>
+          <div class="row wrap"><button class="link" data-tweak="${newest ? `${newest.id}:0` : `${job.id}:${at}`}">修改</button>${tryBtn("按现在的方案重新出")}</div></div></div>`;
+      }
+      const t = tryOf(x);
       if (!t) return tryBtn("单独出这张");
       const changing = t.tweaks?.find(pendingJob);
       if (pendingJob(t) || changing) return `<p class="hint working"><i class="spin"></i>${changing ? "正在改这张" : "正在单独出这张"}（${esc((changing || t).phase || "排队中")}），可以接着改别的图。</p>`;
@@ -527,7 +619,7 @@ export function initSuite(ctx) {
                   <header><span class="no">${n + 1}</span><b>${esc(x.title)}</b><label class="mini"><input type="checkbox" data-en ${x.enabled ? "checked" : ""} ${x.photos.length ? "" : "disabled"}>出这张</label></header>
                   ${x.missing ? `<p class="hint">${esc(x.missing)}</p>` : ""}
                   <div class="shot-body">
-                    ${x.photos.length ? `<div class="shot-refs">${x.photos.map((f) => `<img loading="lazy" src="${preview(photoUrl(s, f), 320)}" alt="用到的实拍图">`).join("")}</div>` : ""}
+                    <button class="shot-refs pickable" data-refs="${x.id}" title="换这张图参考的实拍图，或上传新的">${x.photos.map((f) => `<img loading="lazy" src="${preview(photoUrl(s, f), 320)}" alt="用到的实拍图">`).join("")}<span>${x.photos.length ? "换图" : "＋ 选实拍图"}</span></button>
                     <div class="tlines">${x.texts.map((t, j) => `<label class="tline"><span>${ROLE_NAME[t.role] || "文字"}</span><input data-t="${j}" value="${esc(t.text)}"></label>`).join("")}</div>
                   </div>
                   <details class="scene-desc"><summary>画面描述</summary><textarea data-scene rows="4">${esc(x.scene)}</textarea></details>
@@ -579,6 +671,8 @@ export function initSuite(ctx) {
           }
         }),
     );
+    // For the photo picker: what is typed in the plan right now (when the plan is the panel on screen).
+    box.__collectShots = shots ? () => ($("#shot-plan", box)?.hidden ? null : collect()) : null;
     $("#plan-shots")?.addEventListener("click", (e) => busy(e.currentTarget, async () => (await api(`/suites/${s.id}/shots/plan`, json({})), suitePage(s.id))));
     $("#replan-shots")?.addEventListener("click", (e) => busy(e.currentTarget, async () => (await api(`/suites/${s.id}/shots/plan`, json({})), (lookChangedFor = null), suitePage(s.id))));
     $$("[data-try]", box).forEach(

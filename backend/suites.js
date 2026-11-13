@@ -383,6 +383,30 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     save(s);
     res.json(view(read(s.id)));
   });
+  // A new real photo added from a product-picture card: stored with the product, described by the
+  // vision model (so the brief can say what it shows) and used for that picture right away.
+  const onePhoto = multer({ storage: multer.memoryStorage(), limits: { fileSize: SUITE_FILE_MB * 1024 * 1024, files: 1 } }).single("photo");
+  app.post("/api/suites/:id/shots/:shot/photo", onePhoto, async (req, res) => {
+    const s = read(req.params.id);
+    const shot = (s.shots || []).find((x) => x.id === req.params.shot);
+    if (!shot) throw new AppError("没有这张商品图");
+    if (!req.file) throw new AppError("请选一张实拍图");
+    if (s.photos.length >= 40) throw new AppError("一个商品最多 40 张实拍图，先在“商品档案”里删掉不用的");
+    const before = s.photos.length;
+    await addPhotos(s, [req.file.buffer], "upload");
+    const added = s.photos[before];
+    if (!added) throw new AppError("这张图读不出来，换一张 JPG 或 PNG 再试");
+    try {
+      Object.assign(added, (await labelPhotos(textAI, imgPaths(s, [added])))[0]);
+    } catch {
+      added.desc = "商家补充的实拍图"; // usable even when the vision model is busy; the role can be set in 商品档案
+    }
+    added.usable = true;
+    const fresh = read(s.id);
+    fresh.photos = [...fresh.photos, added];
+    fresh.shots = (fresh.shots || []).map((x) => (x.id === shot.id ? { ...x, photos: [added.file, ...x.photos.filter((f) => f !== added.file)].slice(0, 3), missing: "" } : x));
+    res.json(view(save(fresh)));
+  });
   // Merchant edits: profile fields, photo roles, case, note text, shots and sections.
   app.post("/api/suites/:id", (req, res) => {
     const s = read(req.params.id);
@@ -407,7 +431,10 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         const e = b.shots.find((y) => y?.id === x.id) || {};
         const texts = Array.isArray(e.texts) ? cleanTexts(e.texts) : x.texts;
         const scene = typeof e.scene === "string" ? e.scene.slice(0, 800) : x.scene;
-        return { ...x, enabled: typeof e.enabled === "boolean" ? e.enabled : x.enabled, texts, scene: syncScene(scene, x.texts, texts) };
+        // Which real photos this picture is built from: the merchant can swap them.
+        const photos = Array.isArray(e.photos) ? [...new Set(e.photos)].filter((f) => s.photos.some((p) => p.file === f)).slice(0, 3) : x.photos;
+        const enabled = (typeof e.enabled === "boolean" ? e.enabled : x.enabled) && photos.length > 0;
+        return { ...x, enabled, photos, missing: photos.length ? "" : x.missing || `缺少${x.title}需要的实拍图`, texts, scene: syncScene(scene, x.texts, texts) };
       });
     if (Array.isArray(b.sections))
       s.sections = b.sections
@@ -511,6 +538,9 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     if (only && !frames.length) throw new AppError("这张图缺少实拍图，先试别的一张");
     if (!frames.length) throw new AppError(kind === "shots" ? "请先规划商品图" : "详情页没有需要 AI 出图的屏");
     if (frames.some((f) => !f.scene)) throw new AppError("请先让 AI 规划画面");
+    const set = only && s.jobs?.shots ? store.get(s.jobs.shots) : null;
+    const at = set && ["succeeded", "partial"].includes(set.status) ? set.params.frames.findIndex((f) => f.ref === only) : -1;
+    const inSet = at >= 0 && set.manifest?.assets?.some((a, pos) => a.role === "image" && (a.frame ?? pos) === at);
     const refTaken = new Map();
     // A look the merchant uploaded: that picture is the design reference for every frame.
     const ownFile = s.look?.own ? styles.coverFile(s.look.styleId) : null;
@@ -519,7 +549,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       version: 3,
       skillId: kind === "shots" ? "product" : "detail",
       productName: `${s.profile.name || "商品"} · ${kind === "shots" ? "商品图" : "详情页"}`,
-      size: kind === "shots" ? (req.body?.size === "3:4" ? "3:4" : "1:1") : "3:4",
+      size: kind === "shots" ? (inSet ? set.params.size : req.body?.size === "3:4" ? "3:4" : "1:1") : "3:4",
       count: frames.length,
       frames: frames.map((f) => {
         // Pictures that use an AI-made dish say so on the image.
@@ -567,10 +597,13 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         (params.reusedFrames ||= []).push(at);
         reuse[at] = made.file;
       }
+    // One picture of a set that already exists: made from the plan as it stands now (words, scene,
+    // real photos, look) and filed as the newest version of that picture in the set.
+    if (inSet) Object.assign(params, { tweakOf: { jobId: set.id, frame: at }, redo: true, rootName: set.params.productName, productName: `${String(set.params.productName).slice(0, 30)} · 第${at + 1}张重出` });
     const holder = { status: (code) => ({ json: (job) => (holder.result = { code, job }) }) };
-    await createJob(req, holder, params, dirOf(s.id), null, extra, reuse);
+    await createJob(req, holder, params, dirOf(s.id), inSet ? set.id : null, extra, reuse);
     const latest = read(s.id);
-    latest.jobs = { ...(latest.jobs || {}), [only ? tryKey(only) : kind]: holder.result.job.id };
+    if (!inSet) latest.jobs = { ...(latest.jobs || {}), [only ? tryKey(only) : kind]: holder.result.job.id };
     save(latest);
     res.status(holder.result.code).json(holder.result.job);
   }

@@ -1052,6 +1052,7 @@ async function render() {
   }
 }
 const suite = initSuite({
+  modal,
   app,
   api,
   json,
