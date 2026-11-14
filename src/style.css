@@ -728,6 +728,23 @@ dd { margin: 0; line-height: 1.5; }
 .result-more { font-size: 12px; }
 .result-more .link { font-size: 12px; }
 
+/* 造景方向：还原度、想法、九宫格预览 */
+.look-controls { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px 28px; align-items: end; margin: 4px 0 14px; }
+.fid { display: grid; gap: 5px; justify-items: start; }
+.fid > span, .wish > span.muted { font-size: 12px; font-weight: 400; }
+.fid small { font-size: 12px; max-width: 30em; }
+.fid .seg { background: #dfe7ee; }
+.wish { font-weight: 400; }
+.wish .row input { flex: 1; min-width: 0; }
+.look-cover { display: flex; aspect-ratio: 4 / 3; border-radius: 8px; overflow: hidden; width: 100%; }
+.look-cover i { flex: 1; }
+.look-cover i:first-child { flex: 2; }
+.grid-preview { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: center; margin-top: 14px; padding: 14px; border-radius: 12px; background: var(--fill); }
+.grid-preview > div:only-child, .grid-preview > p { grid-column: 1 / -1; margin: 0; }
+.grid-preview img { width: 100%; border-radius: 8px; display: block; }
+.grid-preview b { display: block; margin-bottom: 4px; }
+.fid-advice { margin: 0; font-size: 12px; }
+
 /* 详情页：拖动排序、总览、更紧凑的逐屏编辑 */
 .toc-tip { margin: -6px 0 -4px; font-size: 12px; }
 .sb-toc li { touch-action: pan-y; -webkit-touch-callout: none; user-select: none; }
@@ -877,6 +894,10 @@ dd { margin: 0; line-height: 1.5; }
   .style-meta .tags { display: none; }
   .task-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .pack-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .look-controls { grid-template-columns: 1fr; gap: 12px; }
+  .fid .seg { width: 100%; }
+  .fid .seg button { flex: 1; padding: 7px 4px; }
+  .grid-preview { grid-template-columns: 120px minmax(0, 1fr); gap: 12px; padding: 10px; }
   .add-grid { grid-template-columns: repeat(5, 1fr); }
   .actionbar .btn { padding: 11px 10px; font-size: 14px; }
   .week { gap: 4px; }

@@ -9,13 +9,14 @@ import multer from "multer";
 export const SUITE_FILE_MB = 100;
 import { AppError } from "./errors.js";
 import { importNote } from "./importers.js";
-import { labelPhotos, buildProfile, normalizeProfile, writeNote, planFrames, proposeLooks } from "./suite-ai.js";
+import { labelPhotos, buildProfile, normalizeProfile, writeNote, planFrames, proposeLooks, recipeLook } from "./suite-ai.js";
 import { STYLES, FARM_CATEGORIES, SAFE_LAYOUT, FIRST_LAYOUT } from "../shared/styles.js";
 import { PACK_KINDS, packSize, mainFace, aspectFor, renderDieline } from "./packaging.js";
 import { withUsage } from "./usage.js";
 import { createRefs, REF_USES } from "./refs.js";
 import { noteDocx } from "./docx-note.js";
 import { caseById, CASES } from "../shared/cases.js";
+import { FIDELITY, FIDELITY_ADVICE, defaultFidelity, LOOK_SEEDS } from "../shared/suite.js";
 import { FREE_DAILY_PRODUCTS } from "../shared/pricing.js";
 import { SECTION_TYPES, SECTION_MODES, PHOTO_ROLES, QUICK, scanRisky, paletteRoles } from "../shared/suite.js";
 
@@ -65,6 +66,9 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     packaging: s.packaging ? packState(s) : null,
     jobs: Object.fromEntries(Object.entries(s.jobs || {}).map(([k, id]) => [k, id && store.get(id) ? summary(store.get(id)) : null])),
     madeShots: s.profile && s.shots ? madeShots(s).map((m) => m.shot.id) : [],
+    fidelity: s.profile ? productFidelity(s) : null,
+    fidelityAdvice: FIDELITY_ADVICE,
+    grids: Object.fromEntries((s.looks || []).filter((l) => l.gridJob && store.get(l.gridJob)).map((l) => [l.gridJob, summary(store.get(l.gridJob))])),
   });
   const summary = (j) => {
     const tweaks = store.tweaksOf(j.id);
@@ -82,7 +86,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       const f = job?.status === "succeeded" && job.params.frames?.[0];
       if (!f || f.ref !== shot.id || f.scene !== shot.scene || !sameList(f.photos, shot.photos)) continue;
       if (!sameList(f.texts.filter((t) => t.text !== AI_LABEL).map((t) => [t.role, t.text]), shot.texts.map((t) => [t.role, t.text]))) continue;
-      if (JSON.stringify(job.params.direction) !== JSON.stringify(direction(s))) continue;
+      if (JSON.stringify(job.params.direction) !== JSON.stringify(direction(s)) || (f.photoUse || "") !== (photoUseOf(s, shot) || "")) continue;
       // If the merchant fine-tuned or redrew it, the newest version is the one that counts.
       const newer = store.tweaksOf(job.id).find((t) => t.status === "succeeded" && t.asset);
       const from = newer ? store.get(newer.id) : job;
@@ -147,13 +151,28 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     styles
       .list({ id: "", role: "user" })
       .filter((x) => x.status === "ready" && !x.types.includes("interior") && x.types.some((t) => ["main", "scene", "selling", "detail"].includes(t)));
+  // What other merchants in the same category were offered lately (one line each), so the next
+  // proposal can steer away from it.
+  store.db.exec("CREATE TABLE IF NOT EXISTS look_log (category TEXT NOT NULL, summary TEXT NOT NULL, suite_id TEXT NOT NULL, created_at TEXT NOT NULL)");
+  const productFidelity = (s) => (FIDELITY[s.fidelity] ? s.fidelity : defaultFidelity(s.profile?.category));
+  // How far one picture may move from the real photo: its own setting, else the product's.
+  const fidelityOf = (s, x) => (x?.id === "white" || x?.noText ? "real" : FIDELITY[x?.fidelity] ? x.fidelity : x?.cinematic ? "free" : productFidelity(s));
+  const photoUseOf = (s, x) => ({ free: "hero", staged: "staged" })[fidelityOf(s, x)];
+  const pickSome = (list, n) => [...list].sort(() => Math.random() - 0.5).slice(0, n);
   async function ensureLooks(s) {
     if (s.looks?.length) return;
     const rep = ["package", "product", "cooked", "origin"].map((r) => s.photos.find((p) => p.role === r && p.usable && !p.ai)).filter(Boolean);
-    // Farm produce and seafood choose among listing layouts, with the proven best-seller first.
-    const farm = FARM_CATEGORIES.includes(s.profile.category);
-    const pool = farm ? styleCandidates().filter((x) => x.layout && x.categories.includes(s.profile.category)) : styleCandidates();
-    s.looks = await proposeLooks(textAI, s.profile, pool.length >= 3 ? pool : styleCandidates(), imgPaths(s, rep), farm ? { must: FIRST_LAYOUT[s.profile.category] || SAFE_LAYOUT } : {});
+    const category = s.profile.category;
+    // A different handful of seeds for each of the three directions, drawn fresh every time.
+    const seeds = [0, 1, 2].map(() => pickSome(Object.entries(LOOK_SEEDS), 4).map(([dim, options]) => `${dim}＝${pickSome(options, 1)[0]}`).join("；"));
+    const avoid = store.db.prepare("SELECT summary FROM look_log WHERE category=? ORDER BY created_at DESC LIMIT 12").all(category).map((r) => r.summary);
+    const pool = styleCandidates().filter((x) => x.categories.includes(category));
+    const looks = await proposeLooks(textAI, s.profile, pickSome(pool.length >= 4 ? pool : styleCandidates(), 6), imgPaths(s, rep), { seeds, avoid, wish: s.wish || "", fidelity: productFidelity(s) });
+    // The model answered with nothing usable: fall back to the proven layout rather than fail the step.
+    s.looks = looks.length ? looks : [recipeLook(STYLES.find((x) => x.id === (FIRST_LAYOUT[category] || SAFE_LAYOUT)), s.profile)];
+    const add = store.db.prepare("INSERT INTO look_log(category,summary,suite_id,created_at) VALUES(?,?,?,?)");
+    for (const l of looks) add.run(category, `${l.conceptName}：${l.story}`.slice(0, 80), s.id, new Date().toISOString());
+    store.db.prepare("DELETE FROM look_log WHERE rowid NOT IN (SELECT rowid FROM look_log ORDER BY created_at DESC LIMIT 600)").run();
     if (!s.look && s.looks.length) s.look = s.looks[0];
   }
   const steps = {
@@ -187,17 +206,19 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       await ensureLooks(s);
       const c = caseById(s.caseId);
       const used = new Map();
+      const before = new Map((s.shots || []).map((x) => [x.id, x.fidelity]));
       const items = c.shots.map((shot) => {
         const photos = pickPhotos(s, shot.photos, shot.noText ? 1 : 2, used);
         // A shot that needs facts the merchant hasn't given (e.g. weight for the size shot) waits.
         const optional = shot.optional || (shot.needs && !s.profile[shot.needs]);
-        return { id: shot.id, title: shot.title, brief: shot.brief, content: shotContent(shot.id, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), files: photos.map((p) => p.file), noText: shot.noText, optional, ...(shot.cinematic ? { cinematic: true } : {}) };
+        const own = FIDELITY[before.get(shot.id)] ? before.get(shot.id) : undefined;
+        return { id: shot.id, title: shot.title, brief: shot.brief, content: shotContent(shot.id, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), files: photos.map((p) => p.file), noText: shot.noText, optional, own, fidelity: fidelityOf(s, { ...shot, fidelity: own }) };
       });
       // The white-background picture has no words and no styling: nothing to plan.
-      const planned = await planFrames(textAI, s.profile, items.filter((i) => i.files.length && !i.noText).map(({ files, noText, optional, ...rest }) => rest), { kind: "product", look: s.look });
+      const planned = await planFrames(textAI, s.profile, items.filter((i) => i.files.length && !i.noText).map(({ files, noText, optional, own, ...rest }) => rest), { kind: "product", look: s.look });
       s.shots = items.map((it) => {
         const f = planned.find((p) => p.id === it.id);
-        return { id: it.id, title: it.title, ...(it.cinematic ? { cinematic: true } : {}), enabled: !!it.files.length && !it.optional, photos: it.files, texts: it.noText ? [] : f?.texts || [], scene: it.noText ? it.brief : f?.scene || it.brief, missing: it.files.length ? "" : `缺少${it.title}需要的实拍图` };
+        return { id: it.id, title: it.title, ...(it.own ? { fidelity: it.own } : {}), enabled: !!it.files.length && !it.optional, photos: it.files, texts: it.noText ? [] : f?.texts || [], scene: it.noText ? it.brief : f?.scene || it.brief, missing: it.files.length ? "" : `缺少${it.title}需要的实拍图` };
       });
     },
     async detail(s) {
@@ -211,7 +232,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         let photos = pickPhotos(s, roles, 2, used);
         if (!photos.length) photos = pickPhotos(s, ["product", "detail"], 1, used);
         x.photos = photos.map((p) => p.file);
-        return { id: x.id, title: SECTION_TYPES[x.type].name, brief: sectionBrief(x.type, s.profile), content: sectionContent(x.type, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), ...(x.cinematic ? { cinematic: true } : {}) };
+        return { id: x.id, title: SECTION_TYPES[x.type].name, brief: sectionBrief(x.type, s.profile), content: sectionContent(x.type, s.profile), photos: photos.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`), fidelity: fidelityOf(s, x) };
       });
       // Background screens: the text is typeset on top, so the picture only sets the mood.
       for (const x of s.sections.filter((y) => y.mode === "bg")) {
@@ -425,6 +446,8 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       s.shots = null;
     }
     if (typeof b.aiLabel === "boolean") s.aiLabel = b.aiLabel;
+    if (typeof b.wish === "string") s.wish = b.wish.trim().slice(0, 80);
+    if (FIDELITY[b.fidelity]) s.fidelity = b.fidelity;
     if (b.note && typeof b.note.text === "string") s.note = { title: String(b.note.title || "").slice(0, 40), text: b.note.text.slice(0, 3000) };
     if (Array.isArray(b.shots) && s.shots)
       s.shots = s.shots.map((x) => {
@@ -434,7 +457,9 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         // Which real photos this picture is built from: the merchant can swap them.
         const photos = Array.isArray(e.photos) ? [...new Set(e.photos)].filter((f) => s.photos.some((p) => p.file === f)).slice(0, 3) : x.photos;
         const enabled = (typeof e.enabled === "boolean" ? e.enabled : x.enabled) && photos.length > 0;
-        return { ...x, enabled, photos, missing: photos.length ? "" : x.missing || `缺少${x.title}需要的实拍图`, texts, scene: syncScene(scene, x.texts, texts) };
+        // "" = follow the product's setting again.
+        const fidelity = FIDELITY[e.fidelity] ? e.fidelity : e.fidelity === "" ? undefined : x.fidelity;
+        return { ...x, fidelity, enabled, photos, missing: photos.length ? "" : x.missing || `缺少${x.title}需要的实拍图`, texts, scene: syncScene(scene, x.texts, texts) };
       });
     if (Array.isArray(b.sections))
       s.sections = b.sections
@@ -499,10 +524,10 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
   });
 
   // Visual system shared by every image of the suite: the merchant's own colors and photos.
-  const direction = (s) => {
-    const look = s.look;
+  const direction = (s, look = s.look) => {
     if (!look) return plainDirection(s);
-    const recipe = STYLES.find((x) => x.id === look.styleId) || styles.get(look.styleId) || {};
+    // Directions written for the product have no library recipe behind them; uploaded and legacy ones do.
+    const recipe = (look.styleId && (STYLES.find((x) => x.id === look.styleId) || styles.get(look.styleId))) || {};
     return {
       conceptName: look.conceptName,
       styleName: recipe.name || "",
@@ -560,7 +585,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
         const ref = bg || f.id === "white" ? null : ownRef || refs.pick(s.profile.category, kindId, refTaken);
         return {
         ...(ref ? { styleRefs: [ref] } : {}),
-        ...(f.cinematic ? { photoUse: "hero" } : {}),
+        ...(photoUseOf(s, f) ? { photoUse: photoUseOf(s, f) } : {}),
         title: f.title || SECTION_TYPES[f.type]?.name || "",
         textMode: bg ? "overlay" : texts.length ? "ai" : "none",
         layout: bg ? "center" : texts.length ? "free" : "none",
@@ -581,7 +606,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
       inputs: [...new Set(frames.flatMap((f) => f.photos))],
       suiteId: s.id,
       brandColor: direction(s).palette[1] || "#e8541e",
-      ...(FARM_CATEGORIES.includes(s.profile.category) ? { fidelity: "real" } : {}),
+      fidelity: "real", // frames without a photoUse stay with the real photo; the others say so themselves
     };
     // Reference images live in the internal library, not with the product's photos.
     const extra = {};
@@ -614,6 +639,56 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     const s = read(req.params.id);
     needProfile(s);
     res.json(view(task(s.id, "looks", steps.looks)));
+  });
+  // 九宫格预览: one picture holding nine small ones, to judge a direction before paying for the set.
+  app.post("/api/suites/:id/looks/:n/grid", admission, async (req, res) => {
+    const s = read(req.params.id);
+    needProfile(s);
+    const n = Number(req.params.n);
+    const look = s.looks?.[n];
+    if (!look) throw new AppError("没有这个方向，先让 AI 准备风格");
+    const cells = caseById(s.caseId).shots.filter((x) => !x.noText).slice(0, 9);
+    const rep = ["product", "package", "detail", "origin", "cooked"].map((r) => s.photos.find((p) => p.role === r && p.usable && !p.ai)).filter(Boolean).slice(0, 4);
+    if (!rep.length) throw new AppError("还没有可用的实拍图");
+    const ownFile = look.own ? styles.coverFile(look.styleId) : null;
+    const ownRef = ownFile ? `own-style-${look.styleId}.png` : null;
+    const use = photoUseOf(s, {});
+    const frame = {
+      ref: "grid",
+      grid: true,
+      title: "九宫格预览",
+      textMode: "none",
+      layout: "none",
+      texts: [],
+      ...(use ? { photoUse: use } : {}),
+      ...(ownRef ? { styleRefs: [ownRef] } : {}),
+      scene: `九格从左到右、从上到下依次是：\n${cells.map((c, i) => `${i + 1}. ${c.title}——${String(c.brief).split(/[；。]/)[0].slice(0, 46)}`).join("\n")}\n每格都用同一件商品（见附件实拍），按整套视觉系统来做；九格的景别和机位互不相同。`,
+      photos: rep.map((p) => p.file),
+      photoNotes: rep.map((p) => `${PHOTO_ROLES[p.role]}：${p.desc}`),
+    };
+    const params = {
+      version: 3,
+      skillId: "product",
+      productName: `${s.profile.name || "商品"} · 九宫格预览`,
+      size: "1:1",
+      count: 1,
+      frames: [frame],
+      direction: direction(s, look),
+      hasMainImage: false,
+      refCount: 0,
+      styleRef: null,
+      inputs: [...frame.photos, ...(ownRef ? [ownRef] : [])],
+      suiteId: s.id,
+      brandColor: direction(s, look).palette[1] || "#e8541e",
+      fidelity: "real",
+    };
+    const holder = { status: (code) => ({ json: (job) => (holder.result = { code, job }) }) };
+    await createJob(req, holder, params, dirOf(s.id), null, ownRef ? { [ownRef]: ownFile } : {});
+    const latest = read(s.id);
+    const at = (latest.looks || []).findIndex((l) => l.conceptName === look.conceptName);
+    if (at >= 0) latest.looks[at].gridJob = holder.result.job.id;
+    save(latest);
+    res.status(holder.result.code).json(holder.result.job);
   });
   // The merchant's own reference picture as the look: AI breaks it down into a recipe,
   // and every picture gets the upload itself as a design reference.

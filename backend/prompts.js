@@ -68,7 +68,9 @@ export function framePrompt(params, index) {
           : frame.photoUse === "print"
             ? `图${n}：商品实拍${note}——包装上的商品图案以它为准（品种、颜色、形状一致），可以做成干净的摄影抠图或精致插画；不要照搬它的背景和容器。`
             : frame.photoUse === "hero"
-              ? `图${n}：商家实拍${note}——只用来确定商品长什么样（品种、外形、颜色、鳞片/纹理、大小比例），画面里的商品必须是它；场景完全重新构图（手托出水、水花、海面渔船、戏剧光），不要照搬它的背景、容器和摆放。`
+              ? `图${n}：商家实拍${note}——只用来确定商品长什么样（品种、外形、颜色、纹理、大小比例），画面里的商品必须是它；场景按下面的画面描述完全重新构图，不要照搬它的背景、容器和摆放。`
+            : frame.photoUse === "staged"
+              ? `图${n}：商家实拍${note}——商品本身照它来：品种、个头、颜色、纹理和数量感与它一致，不画成 3D 或塑料质感；它周围的背景、台面、容器和陪衬按下面的画面描述重新布置。`
             : frame.photoUse === "artwork"
               ? `图${n}：包装平面设计稿${note}——效果图里包装上的图案、文字、颜色、版式必须和它完全一致，只是贴到立体盒子上，不要重新设计。`
               : realPhoto(n, note),
@@ -107,6 +109,8 @@ export function framePrompt(params, index) {
     lines.push(
       `【视觉系统 · ${d.conceptName}】${d.story || ""}\n色板：${(d.palette || []).join(" ")}\n道具与材质：${d.props}\n光线：${d.light}\n机位构图：${d.camera}\n字体排版：${d.type}${d.layout ? `\n版式元素：${d.layout}` : ""}${d.avoid ? `\n避免：${d.avoid}` : ""}${d.core ? `\nStyle: ${d.core}` : ""}`,
     );
+  if (frame.grid)
+    lines.push("【九宫格预览】这一张不是成品，而是一张 3×3 的预览拼图：正方形画面平均分成 9 个小格，格与格之间留一条细白缝，每格是一张独立的小图，九格属于同一套视觉系统（同一色板、字体气质和造景语言），但构图、机位和景别各不相同。每格里可以有一行很短的大标题（2–6 个字，字要大），不要小字。");
   lines.push("【这一张】" + frame.title + "\n" + (white ? (frame.scene || "").replaceAll("透明背景抠图（之后自动铺纯白）", "纯白背景商品摄影") + "。直接生成不透明的纯白背景，只保留商品本体，无包装、道具、文字或装饰。" : frame.scene));
 
   if (real && !white)
@@ -121,7 +125,7 @@ export function framePrompt(params, index) {
     );
   } else if (frame.textMode === "overlay" && frame.layout !== "none") {
     lines.push(`【留白】${AREA[frame.layout]}保持干净（纯色、柔和渐变或虚化背景），后期会在这里排字。整张图不要出现任何新增文字、水印或 Logo（商品本身原有的标签保留）。`);
-  } else {
+  } else if (!frame.grid) {
     lines.push("【文字】不要在画面中新增任何文字、水印或 Logo（商品本身原有的标签保留）。");
   }
   if (params.skillId === "detail") lines.push("同一套详情页的各屏保持同一色板、光线方向与字体系统。");

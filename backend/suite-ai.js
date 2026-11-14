@@ -195,47 +195,43 @@ ${FACTS}
 // One call writes the texts and scene for every planned image (product shots or AI detail screens).
 // Different products should not all come out in one house style: Kimi picks 3 visual
 // directions from the style library and adapts each to this product.
-export async function proposeLooks(ai, profile, styles, images = [], { must } = {}) {
-  const catalog = styles.map((x) => `${x.id}｜${x.name}｜${x.categories.join("/")}｜${x.tone}｜${x.tagline}${x.layout ? `｜版式：${x.layout}` : ""}`).join("\n");
-  const first = must && styles.find((x) => x.id === must);
+// Three art directions written for this one product. Nothing is picked from a list: the material is
+// the product itself (where it grows, the season, the merchant's story and photos). Random seeds push
+// each direction somewhere different, `avoid` lists what other merchants were given lately, and the
+// merchant's own sentence (`wish`) comes first.
+export async function proposeLooks(ai, profile, styles, images = [], { seeds = [], avoid = [], wish = "", fidelity = "staged" } = {}) {
+  const inspiration = styles.map((x) => `${x.name}：${x.tagline}${x.layout ? `（版式：${x.layout}）` : ""}`).join("\n");
   const answer = await ask(ai, {
-    system: `你是资深电商视觉美术指导。根据商品档案和实拍图，从风格库里挑 3 个差别明显、都适合这件商品的视觉方向，并把每个方向改造成专属这件商品的方案。
-${first ? `第 1 个必须用「${first.id}｜${first.name}」（客户验证过、卖得最好的版式），另外 2 个从其余风格里挑，和它明显不同。` : "第 1 个是你最推荐的。"}三个方向在色调、版式、字体上要明显不同。
-风格库（id｜名称｜适合品类｜调性｜概念｜版式）：
-${catalog}
-只输出 JSON：{"looks":[{"styleId":"风格库 id","conceptName":"方案名（4-8字）","story":"一句话创意（20-40字）","palette":["#hex","#hex","#hex"],"props":"道具与材质（只用和这件商品相关、实拍里能对上的东西）","light":"光线","camera":"机位与构图","type":"中文字体与排版气质","layout":"版式元素：标题、色块、标签、分隔线、装饰怎么排（照风格库的版式改成这件商品的）","why":"为什么适合（15-30字）"}]}`,
-    text: `商品档案（数据）：${JSON.stringify({ name: profile.name, category: profile.category, origin: profile.origin, intro: profile.intro, sellingPoints: profile.sellingPoints, packaging: profile.packaging, palette: profile.palette })}`,
+    system: `你是资深电商视觉美术指导兼食物造型师。为这一件商品现想 3 个视觉与造景方向，三个方向在场景、色调、版式、字体上都要明显不同，像三位风格不同的摄影师各拍一套。
+素材只从这件商品自己身上找：产地的地貌和物产、当季的天气、种养和采收的方式、商家的故事、实拍图里已经有的环境。不要套“果篮 + 木桌 + 绿叶”这类谁都能用的通用摆法；同品类的另一家店拿到你的方案，应该用不上。
+造景的基本功（自己判断怎么用，不要照抄）：道具少而相关，只放和这件商品说得通的东西；台面和背景衬托商品的颜色而不抢它；侧光或逆光出质感；新鲜感来自水珠、汁水、切面、带叶带枝这些真实细节；数量、重复和留白要有节奏。
+${wish ? `商家自己的想法（最优先，三个方向都要回应它，但回应的方式不同）：「${wish}」` : ""}
+${seeds.length ? `灵感种子（每个方向各一组，用来把你推向不同的地方；可以取其中几点，不必全用，但不能三个方向趋同）：\n${seeds.map((x, i) => `方向 ${i + 1}：${x}`).join("\n")}` : ""}
+${avoid.length ? `最近其他商家已经用过这些方向，避开相似的场景和名字：\n${avoid.map((x) => "· " + x).join("\n")}` : ""}
+商家选的还原度是「${fidelity === "real" ? "照实拍：商品和场景尽量保留，方向主要体现在底色、画框、标题和版式上" : fidelity === "free" ? "自由发挥：可以完全重新构图" : "适度造景：商品照实拍，周围重新布置"}」，方案要在这个范围内能落地。
+下面是一些做得好的版式气质，仅供开阔思路，不要照搬名字和描述：
+${inspiration}
+只输出 JSON：{"looks":[{"conceptName":"方案名（4-8字，从这件商品身上来）","story":"一句话创意（20-40字）","palette":["#hex","#hex","#hex"],"props":"造景：在哪里、什么台面和容器、哪些陪衬（都要和这件商品有关）","light":"光线","camera":"机位与构图","type":"中文字体与排版气质","layout":"版式元素：标题、色块、标签、分隔线、装饰怎么排","why":"为什么适合这件商品（15-30字）"}]}`,
+    text: `商品档案（数据）：${JSON.stringify({ name: profile.name, category: profile.category, origin: profile.origin, intro: profile.intro, sellingPoints: profile.sellingPoints, why: profile.why, usage: profile.usage, packaging: profile.packaging, palette: profile.palette })}`,
     images: images.slice(0, 4),
     json: true,
   });
-  const d = answer;
-  const ids = new Set(styles.map((x) => x.id));
   const hex = (v) => (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim() : null);
   const seen = new Set();
-  const looks = arr(d.looks, 4)
-    .filter((l) => ids.has(l?.styleId) && !seen.has(l.styleId) && seen.add(l.styleId))
-    .map((l) => {
-      const recipe = styles.find((x) => x.id === l.styleId);
-      return {
-        styleId: l.styleId,
-        conceptName: clip(l.conceptName, 12) || recipe.name,
-        story: clip(l.story, 60),
-        palette: arr(l.palette, 4).map(hex).filter(Boolean),
-        props: clip(l.props, 120),
-        light: clip(l.light, 80),
-        camera: clip(l.camera, 80),
-        type: clip(l.type, 80),
-        layout: clip(l.layout, 140) || recipe.layout || "",
-        why: clip(l.why, 40),
-      };
-    });
-  // The proven layout is always on offer, first, even if the model skipped it.
-  if (first) {
-    const i = looks.findIndex((l) => l.styleId === first.id);
-    const safe = i >= 0 ? looks.splice(i, 1)[0] : recipeLook(first, profile);
-    looks.unshift(safe);
-  }
-  return looks.slice(0, 3);
+  return arr(answer.looks, 4)
+    .map((l) => ({
+      conceptName: clip(l?.conceptName, 12),
+      story: clip(l?.story, 60),
+      palette: arr(l?.palette, 4).map(hex).filter(Boolean),
+      props: clip(l?.props, 160),
+      light: clip(l?.light, 80),
+      camera: clip(l?.camera, 80),
+      type: clip(l?.type, 80),
+      layout: clip(l?.layout, 140),
+      why: clip(l?.why, 40),
+    }))
+    .filter((l) => l.conceptName && l.props && !seen.has(l.conceptName) && seen.add(l.conceptName))
+    .slice(0, 3);
 }
 export function recipeLook(recipe, profile = {}) {
   return {
@@ -268,11 +264,8 @@ export function assignLayouts(n, random = Math.random) {
 export async function planFrames(ai, profile, items, { kind, look }) {
   // 生鲜/农副：商品的光线、容器和摆放以实拍为准，视觉系统只管底色、画框和文字，
   // 否则“侧逆光、白瓷盘”这类描述会让生图模型把商品重画一遍。大片（cinematic）项仍可重新造景。
-  const real = ["生鲜水产", "农副产品"].includes(profile.category);
   const style = look
-    ? real
-      ? `整套视觉系统「${look.conceptName}」（只用于底色、画框、标题和标签；商品本身的光线、容器和摆放以实拍为准，不要另外设计）：色板 ${(look.palette || []).join(" ")}；字体排版 ${look.type}。${look.layout ? `版式元素 ${look.layout}。` : ""}带 cinematic:true 的项可另用：道具 ${look.props}；光线 ${look.light}；机位 ${look.camera}。`
-      : `整套视觉系统「${look.conceptName}」：${look.story} 色板 ${(look.palette || []).join(" ")}；道具 ${look.props}；光线 ${look.light}；机位 ${look.camera}；字体排版 ${look.type}。${look.layout ? `版式元素 ${look.layout}。` : ""}`
+    ? `整套视觉系统「${look.conceptName}」：${look.story || ""} 色板 ${(look.palette || []).join(" ")}；字体排版 ${look.type}。${look.layout ? `版式元素 ${look.layout}。` : ""}造景：${look.props}；光线 ${look.light}；机位 ${look.camera}。（造景、光线和机位只用于“适度造景”和“自由发挥”的项。）`
     : `${profile.palette?.length ? `主色 ${profile.palette.join(" ")}，` : ""}真实商业摄影质感。`;
   const layouts = assignLayouts(items.length);
   const withLayout = items.map((it, k) => ({ ...it, layout: layouts[k] }));
@@ -282,9 +275,12 @@ export async function planFrames(ai, profile, items, { kind, look }) {
 - scene：80-200 字的具体画面描述：用哪张实拍图里的什么、怎么摆、背景与道具、光线、文字放哪里多大。
 ${style}
 每项已经指定了版式（layout），按它来设计画面和文字位置。带 content 的项（规格、售后保障、正常现象等），文字只从 content 里取，事实照抄，content 里没有的保障和数字不要写。${kind === "detail" ? "\n详情页的每项带了 content（这一屏能用的要点）：文字从里面挑最有力的，整屏文字加起来不超过 50 字；数字、产地等事实照抄。" : ""}
-商品和包装只能画实拍图里有的样子：实拍里没有出现的包装形式（真空袋、保温箱、手提袋、内托等）不要画进画面，需要说明就放在文字里。生鲜没有被烹饪就不要加热气、蒸汽。对比屏里“普通的”一侧画同类普通货的样子（可以更暗淡、更普通），不出现任何品牌、店名和包装。
-真实感最重要：画面主体就是商家的实拍照片，保留它的光影、冰碴、反光、鳞片纹理等真实细节，只做裁切、轻微调色提亮和换掉杂乱背景；标题、牌匾、印章、画框、底色这些设计元素放在照片周围或照片的空白处。不要把商品重画成 3D 渲染质感，不要不可能的动作（冷冻的鱼不会跳出水面）。scene 只写实拍图里看得见的东西：数量、容器、手、生熟和冷冻状态按实拍如实写，不编造实拍里没有的盘子、手、动作、蘸料和配菜，不用“油亮、饱满、晶莹”这类美化词。
-带 cinematic:true 的项是“大片”：实拍图只用来确定商品长什么样（品种、外形、颜色、纹理），画面要重新构图成一个戏剧性的瞬间——手托起商品出水、水花飞溅、海面/渔船/渔网背景、碎冰水珠特写、戏剧侧逆光，商品占画面 50–60%，像餐厅和品牌的广告大片；不要照搬实拍的背景、泡沫箱和盘子。
+每项带了“还原度”（fidelity），这是商家自己定的，按它写 scene：
+- 照实拍（real）：画面主体就是商家的实拍照片，保留它的光影、冰碴、反光、纹理等真实细节，只做裁切、轻微调色提亮和换掉杂乱背景；标题、牌匾、印章、画框、底色这些设计元素放在照片周围或空白处。scene 只写实拍图里看得见的东西，数量、容器、手、生熟和冷冻状态如实写，不添加实拍里没有的盘子、手、动作和配菜。
+- 适度造景（staged）：商品本身照实拍（品种、个头、颜色、纹理、数量感不变），它周围重新布置：按整套造景方向写清楚在哪里、什么台面和容器、哪 1–3 样陪衬、什么光。陪衬必须和这件商品说得通。
+- 自由发挥（free）：实拍只用来确定商品长什么样，画面完全重新构图成一个有故事的瞬间，按整套造景方向来，可以有人手、动作、环境和戏剧光，商品占画面 50–60%。
+同一套图里的每一张要拉开差别：景别（特写/中景/环境）、机位（俯拍/平视/斜拍/手持）、陪衬和构图不要重复，不要每张都是同一个角度摆在同一张桌上。
+包装只画实拍里有的样子；生的没有被烹饪就不要加热气；不可能的事不要画（冷冻的鱼不会跳出水面）。对比屏里“普通的”一侧画同类普通货的样子，不出现任何品牌、店名和包装。
 视觉系统里有英文手写或印章时，可以另加 1 条 role=tag：英文装饰短语（2–5 个英文单词，如 Fresh From The East Sea）或印章字（1–3 个汉字，只能是产地或品类字，如 东海、鲜）。
 ${FACTS}
 只输出 JSON：{"frames":[{"id":"同输入","texts":[{"role":"headline|sub|point|tag","text":"..."}],"scene":"..."}]}`;

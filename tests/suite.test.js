@@ -303,28 +303,27 @@ test("style directions vary the look; AI dish pictures join the photo library an
   let suite = await s.waitTask(id, "profile");
   assert.equal(suite.profile.category, "生鲜水产");
 
-  // Planning first picks 3 directions from the style library (unknown ids dropped).
+  // Planning first has the AI write directions for this one product: nothing is picked from the library.
   await s.post(`/api/suites/${id}/shots/plan`, {});
   suite = await s.waitTask(id, "shots");
-  // Seafood picks among listing layouts; the proven best-seller layout always comes first.
-  assert.deepEqual(suite.looks.map((l) => l.styleId), ["ocean-gold", "ink-navy", "guochao-gift"]);
-  assert.equal(suite.look.conceptName, "海味大片");
-  assert.match(suite.looks[1].layout, /印章/);
+  assert.deepEqual(suite.looks.map((l) => [l.conceptName, l.styleId]), [["渔港晨光", undefined], ["年货礼盒", undefined]], "the unusable one is dropped");
+  assert.equal(suite.look.conceptName, "渔港晨光");
+  assert.equal(suite.fidelity, "real", "seafood opens on 照实拍; the merchant can change it");
   const lookAsk = s.ai.calls.findLast((c) => c.system.includes("美术指导")).system;
-  assert.match(lookAsk, /第 1 个必须用「ocean-gold/);
-  assert.doesNotMatch(lookAsk, /wabi｜/);
+  assert.match(lookAsk, /灵感种子[\s\S]*方向 3：/);
+  assert.match(lookAsk, /照实拍/);
+  assert.doesNotMatch(lookAsk, /必须用|最近其他商家/);
   const plan = s.ai.calls.findLast((c) => c.system.includes("电商美工")).system;
-  assert.match(plan, /海味大片/);
-  assert.match(plan, /版式元素 .*书法|版式元素 .*胶囊/);
-  assert.match(plan, /cinematic:true/);
+  assert.match(plan, /渔港晨光/);
+  assert.match(plan, /还原度/);
   assert.match(plan, /每项已经指定了版式/);
   // Every planned picture got its own layout, none repeated, sent in parallel chunks of two.
   const sentItems = s.ai.calls.filter((c) => c.system.includes("电商美工")).flatMap((c) => JSON.parse(c.text.split("要做的图：")[1]));
   const layouts = sentItems.slice(-suite.shots.filter((x) => x.photos.length && x.id !== "white").length).map((it) => it.layout);
   assert.equal(new Set(layouts).size, layouts.length, layouts.join());
   assert.ok(s.ai.calls.filter((c) => c.system.includes("电商美工")).every((c) => JSON.parse(c.text.split("要做的图：")[1]).length <= 2));
-  assert.match(plan, /实拍里没有出现的包装形式/);
-  assert.doesNotMatch(plan, /粗黑体中文大标题 \+ 细线装饰/);
+  assert.match(plan, /包装只画实拍里有的样子/);
+  assert.ok(sentItems.every((it) => it.fidelity === "real"), "each picture is planned at the fidelity the merchant set");
 
   // Edits made while a step runs survive it.
   await s.post(`/api/suites/${id}/shots/plan`, {});
@@ -332,16 +331,40 @@ test("style directions vary the look; AI dish pictures join the photo library an
   suite = await s.waitTask(id, "shots");
   assert.equal(suite.aiLabel, false);
   await s.post(`/api/suites/${id}`, { aiLabel: true });
-  // Switch to the second direction; the image job carries it.
-  suite = await (await s.post(`/api/suites/${id}/look`, { index: 2 })).json();
+  // The merchant says what they are after and loosens the fidelity; "换一批" writes new directions around both,
+  // steering away from what was offered before.
+  suite = await (await s.post(`/api/suites/${id}`, { wish: "像外婆家的院子", fidelity: "staged" })).json();
+  assert.deepEqual([suite.wish, suite.fidelity], ["像外婆家的院子", "staged"]);
+  await s.post(`/api/suites/${id}/looks`, {});
+  suite = await s.waitTask(id, "looks");
+  const lookAsk2 = s.ai.calls.findLast((c) => c.system.includes("美术指导")).system;
+  assert.match(lookAsk2, /「像外婆家的院子」/);
+  assert.match(lookAsk2, /适度造景/);
+  assert.match(lookAsk2, /最近其他商家已经用过[\s\S]*渔港晨光/);
+  // Switch to the second direction; the image job carries it, and each frame says how far it may move from the photo.
+  suite = await (await s.post(`/api/suites/${id}/look`, { index: 1 })).json();
   assert.equal(suite.look.conceptName, "年货礼盒");
   assert.equal((await s.post(`/api/suites/${id}/look`, { index: 7 })).status, 400);
+  const first = suite.shots.find((x) => x.enabled && x.id !== "white").id;
+  suite = await (await s.post(`/api/suites/${id}`, { shots: [{ id: first, fidelity: "free" }] })).json();
   const gen = await s.post(`/api/suites/${id}/shots/generate`, {}, { "Idempotency-Key": randomUUID() });
   assert.equal(gen.status, 202, await gen.clone().text());
   const job = await s.terminal((await gen.json()).id);
   assert.equal(job.params.direction.conceptName, "年货礼盒");
-  assert.match(job.params.direction.core, /guochao/);
-  assert.match(job.params.direction.layout, /回纹|祥云/);
+  const uses = Object.fromEntries(job.params.frames.map((f) => [f.ref, f.photoUse]));
+  assert.equal(uses[first], "hero", "this one picture was set to 自由发挥");
+  assert.equal(uses.white, undefined, "the white-background picture always stays with the photo");
+  assert.ok(job.params.frames.filter((f) => f.ref !== first && f.ref !== "white").every((f) => f.photoUse === "staged"));
+  // 九宫格预览: one picture, one picture's price, filed with the direction it previews.
+  const gridAsk = await s.post(`/api/suites/${id}/looks/0/grid`, {}, { "Idempotency-Key": randomUUID() });
+  assert.equal(gridAsk.status, 202, await gridAsk.clone().text());
+  const grid = await s.terminal((await gridAsk.json()).id);
+  assert.equal(grid.status, "succeeded", grid.error);
+  assert.deepEqual([grid.cost, grid.params.frames.length, grid.params.frames[0].grid, grid.params.direction.conceptName], [10, 1, true, "渔港晨光"]);
+  assert.match(grid.params.frames[0].scene, /九格[\s\S]*1\. 主图/);
+  suite = await (await s.request(`/api/suites/${id}`)).json();
+  assert.equal(suite.grids[suite.looks[0].gridJob].status, "succeeded");
+  assert.equal(suite.looks[1].gridJob, undefined);
   // "实拍精修" = no library style.
   suite = await (await s.post(`/api/suites/${id}/look`, { index: null })).json();
   assert.equal(suite.look, null);

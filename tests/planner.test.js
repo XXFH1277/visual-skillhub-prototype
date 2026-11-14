@@ -225,7 +225,12 @@ test("fresh seafood and farm produce keep the merchant's real photo as the produ
   assert.match(framePrompt(base, 0), /可以换角度摆放进新场景/);
   // Cinematic shots and dish pictures keep their own way of using the photo.
   const hero = { ...real, hasMainImage: false, frames: [{ ...base.frames[0], photos: ["p.png"], photoUse: "hero" }] };
-  assert.match(framePrompt(hero, 0), /场景完全重新构图/);
+  assert.match(framePrompt(hero, 0), /完全重新构图/);
+  // 适度造景: the product stays as photographed, its surroundings are restaged; the full visual system applies.
+  const staged = { ...real, hasMainImage: false, frames: [{ ...base.frames[0], photos: ["p.png"], photoUse: "staged" }] };
+  assert.match(framePrompt(staged, 0), /商品本身照它来.*重新布置/);
+  assert.match(framePrompt(staged, 0), /道具与材质/);
+  assert.doesNotMatch(framePrompt(staged, 0), /【真实度】/);
   assert.doesNotMatch(framePrompt(hero, 0), /【真实度】/);
 });
 

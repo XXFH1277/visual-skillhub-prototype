@@ -1,5 +1,6 @@
 import { preview } from "./preview.js";
 import { upscaleSize } from "../shared/generation.js";
+import { FIDELITY } from "../shared/suite.js";
 
 // Stat numbers are set big; longer ones (“48小时”) step down so they stay on one line.
 const bigSize = (t) => { const n = [...String(t)].length; return n > 5 ? "xs" : n > 3 ? "sm" : ""; };
@@ -150,7 +151,7 @@ export function initSuite(ctx) {
       lastSnap = snap;
       render(s);
     }
-    if (snap !== lastSnap || anyBusy(s) || Object.values(s.jobs || {}).some((j) => pendingJob(j) || j?.tweaks?.some(pendingJob) || j?.upscales?.some(pendingJob))) {
+    if (snap !== lastSnap || anyBusy(s) || [...Object.values(s.jobs || {}), ...Object.values(s.grids || {})].some((j) => pendingJob(j) || j?.tweaks?.some(pendingJob) || j?.upscales?.some(pendingJob))) {
       const t = setTimeout(async () => {
         if (location.hash.startsWith("#/suite/" + id)) suitePage(id, undefined, true);
       }, 3000);
@@ -620,7 +621,9 @@ export function initSuite(ctx) {
                   ${x.missing ? `<p class="hint">${esc(x.missing)}</p>` : ""}
                   <div class="shot-body">
                     <button class="shot-refs pickable" data-refs="${x.id}" title="换这张图参考的实拍图，或上传新的">${x.photos.map((f) => `<img loading="lazy" src="${preview(photoUrl(s, f), 320)}" alt="用到的实拍图">`).join("")}<span>${x.photos.length ? "换图" : "＋ 选实拍图"}</span></button>
-                    <div class="tlines">${x.texts.map((t, j) => `<label class="tline"><span>${ROLE_NAME[t.role] || "文字"}</span><input data-t="${j}" value="${esc(t.text)}"></label>`).join("")}</div>
+                    <div class="tlines">${x.texts.map((t, j) => `<label class="tline"><span>${ROLE_NAME[t.role] || "文字"}</span><input data-t="${j}" value="${esc(t.text)}"></label>`).join("")}
+                      ${x.id === "white" ? "" : `<label class="tline"><span>还原度</span><select data-fid aria-label="这张图的还原度"><option value="">跟整套（${FIDELITY[s.fidelity]?.name || ""}）</option>${Object.entries(FIDELITY).map(([k, v]) => `<option value="${k}" ${x.fidelity === k ? "selected" : ""}>${v.name}</option>`).join("")}</select></label>
+                      ${s.fidelityAdvice?.[x.id] && (x.fidelity || s.fidelity) !== s.fidelityAdvice[x.id] ? `<p class="hint fid-advice">这张涉及规格或售后说明，建议选“${FIDELITY[s.fidelityAdvice[x.id]].name}”，避免买家说货不对板。</p>` : ""}`}</div>
                   </div>
                   <details class="scene-desc"><summary>画面描述</summary><textarea data-scene rows="4">${esc(x.scene)}</textarea></details>
                   <div class="shot-one">${madeHtml(x)}</div>
@@ -653,8 +656,22 @@ export function initSuite(ctx) {
     const collect = () =>
       shots.map((x) => {
         const card = $(`[data-shot="${x.id}"]`, box);
-        return { id: x.id, enabled: $("[data-en]", card).checked, scene: $("[data-scene]", card).value, texts: x.texts.map((t, j) => ({ role: t.role, text: $(`[data-t="${j}"]`, card).value })) };
+        const fid = $("[data-fid]", card);
+        return { id: x.id, enabled: $("[data-en]", card).checked, scene: $("[data-scene]", card).value, texts: x.texts.map((t, j) => ({ role: t.role, text: $(`[data-t="${j}"]`, card).value })), ...(fid ? { fidelity: fid.value } : {}) };
       });
+    $$("[data-fid]", box).forEach(
+      (el) =>
+        (el.onchange = async () => {
+          try {
+            await saveSuite({ shots: collect() });
+            lookChangedFor = s.id;
+            shotsTab(box, current);
+            toast("已保存。画面描述是按原来的还原度写的，点“重新规划”让它跟着变");
+          } catch (error) {
+            toast("没保存上：" + error.message, true);
+          }
+        }),
+    );
     // Ticking "出这张" shows at once: the card lights up or dims, and the count and price follow.
     $$("[data-en]", box).forEach(
       (el) =>
@@ -810,24 +827,76 @@ export function initSuite(ctx) {
   let lookChangedFor = null; // the product whose look changed since its plan was made
   function lookCard(s) {
     const looks = s.looks || [];
-    if (busyTask(s, "looks")) return spinner("AI 正在准备风格", "挑选或拆解风格，约半分钟");
+    if (busyTask(s, "looks")) return spinner("AI 正在为这件商品想造景方向", "根据产地、实拍图和你的想法现写 3 个，约半分钟");
     const lookFailed = s.tasks?.looks?.status === "failed" ? `<p class="warn-text">${esc(s.tasks.looks.error)}</p>` : "";
     const ownLookTile = `<label class="look plain upload-look" tabindex="0"><input type="file" id="own-look" accept="image/png,image/jpeg,image/webp" hidden><span class="plain-ico">＋</span><b>上传我喜欢的风格</b><small>传一张你觉得好看的图，整套照它的感觉做</small></label>`;
-    if (!looks.length) return `<section class="card look-card"><h2>风格</h2><p class="muted">点“AI 规划商品图”时，AI 会先从风格库挑 3 个适合这件商品的方向，挑好后可以换。也可以直接传一张你喜欢的图。</p>${lookFailed}<div class="looks">${ownLookTile}</div></section>`;
+    // What the merchant decides: how far pictures may move from the real photos, and (optionally) the feeling they want.
+    const controls = `<div class="look-controls">
+        <div class="fid"><span class="muted">还原度</span><div class="seg small" role="group" aria-label="还原度">${Object.entries(FIDELITY).map(([k, v]) => `<button data-fidelity="${k}" class="${s.fidelity === k ? "on" : ""}" title="${esc(v.hint)}">${v.name}</button>`).join("")}</div><small class="muted">${esc(FIDELITY[s.fidelity]?.hint || "")}</small></div>
+        <label class="wish"><span class="muted">想要什么感觉（可不填）</span><span class="row"><input id="wish" maxlength="80" value="${esc(s.wish || "")}" placeholder="一句话就行，比如：像小时候外婆家的院子"><button class="btn small" id="more-looks">${looks.length ? "换一批" : "让 AI 想 3 个方向"}</button></span></label>
+      </div>`;
+    if (!looks.length) return `<section class="card look-card"><h2>造景方向</h2><p class="muted">AI 会根据这件商品的产地、实拍图和你的想法现写 3 个方向，每家都不一样。也可以直接传一张你喜欢的图。</p>${controls}${lookFailed}<div class="looks">${ownLookTile}</div></section>`;
     const on = (l) => s.look && s.look.styleId === l.styleId && s.look.conceptName === l.conceptName;
-    return `<section class="card look-card"><div class="row spread"><h2>风格 <small class="muted">商品图和详情页用同一套</small></h2><button class="link" id="more-looks">换一批</button></div>
+    const gridOf = (l) => (l.gridJob ? s.grids?.[l.gridJob] : null);
+    const cover = (l) => {
+      const g = gridOf(l);
+      const url = g && jobImage(g);
+      if (url) return `<img src="${preview(url, 320)}" alt="九宫格预览" loading="lazy">`;
+      if (l.styleId) return `<img src="/api/styles/${encodeURIComponent(l.styleId)}/cover?thumb=320" alt="" loading="lazy">`;
+      return `<span class="look-cover">${(l.palette || []).map((c) => `<i data-c="${esc(c)}"></i>`).join("")}</span>`;
+    };
+    const at = looks.findIndex(on);
+    const sel = looks[at];
+    const g = sel && gridOf(sel);
+    const gUrl = g && jobImage(g);
+    const cost = getWorkspace().skills.product.cost;
+    const preview9 = !sel
+      ? ""
+      : `<div class="grid-preview">${
+          pendingJob(g)
+            ? `<p class="hint working"><i class="spin"></i>正在出「${esc(sel.conceptName)}」的九宫格预览（${esc(g.phase || "排队中")}），1–3 分钟。</p>`
+            : gUrl
+              ? `<a href="${gUrl}" target="_blank" rel="noopener"><img src="${preview(gUrl)}" alt="「${esc(sel.conceptName)}」九宫格预览，点开看大图"></a>
+                 <div><b>「${esc(sel.conceptName)}」整套大概是这个样子</b><p class="muted">预览只用来选方向：每格很小，字会糊或写错；正式出图每张单独画，会像但不会一模一样。</p>
+                 <button class="link" data-grid="${at}">再出一张预览 · ${cost} 积分</button></div>`
+              : `<div><b>拿不准？先看「${esc(sel.conceptName)}」的九宫格预览</b><p class="muted">一张图里放 9 个小格（主图、卖点、切面、产地……），花一张图的积分看整套大概的样子，再决定出不出。</p>
+                 ${g?.status === "failed" ? `<p class="warn-text">上次没出成功：${esc(g.error || "")}</p>` : ""}<button class="btn small" data-grid="${at}">出九宫格预览 · ${cost} 积分</button></div>`
+        }</div>`;
+    return `<section class="card look-card"><div class="row spread"><h2>造景方向 <small class="muted">为这件商品现写的，商品图和详情页用同一套</small></h2></div>
+      ${controls}
       <div class="looks">${looks
         .map(
-          (l, i) => `<button class="look ${on(l) ? "on" : ""}" data-look="${i}"><img src="/api/styles/${encodeURIComponent(l.styleId)}/cover?thumb=320" alt="" loading="lazy">
-            <b>${esc(l.conceptName)}</b>${l.own ? `<em class="own-tag">我上传的</em>` : ""}<span class="swatches">${(l.palette || []).map((c) => `<i data-c="${esc(c)}"></i>`).join("")}</span><small>${esc(l.why || l.story)}</small></button>`,
+          (l, i) => `<button class="look ${on(l) ? "on" : ""}" data-look="${i}">${cover(l)}
+            <b>${esc(l.conceptName)}</b>${l.own ? `<em class="own-tag">我上传的</em>` : gridOf(l) && jobImage(gridOf(l)) ? `<em class="own-tag">有预览</em>` : ""}<span class="swatches">${(l.palette || []).map((c) => `<i data-c="${esc(c)}"></i>`).join("")}</span><small>${esc(l.story || l.why)}</small></button>`,
         )
         .join("")}
-        <button class="look plain ${s.look ? "" : "on"}" data-look="plain"><span class="plain-ico">📷</span><b>实拍精修</b><small>不套风格，在实拍基础上重新布光排版</small></button>
+        <button class="look plain ${s.look ? "" : "on"}" data-look="plain"><span class="plain-ico">📷</span><b>实拍精修</b><small>不另外造景，在实拍基础上清理背景、重新排版</small></button>
         ${ownLookTile}</div>
-      ${lookFailed}${s.shots && lookChangedFor === s.id ? `<p class="hint">换了风格，点“重新规划”让标题和画面跟着变（免费）</p>` : ""}</section>`;
+      ${preview9}
+      ${lookFailed}${s.shots && lookChangedFor === s.id ? `<p class="hint">方向或还原度改过了，点“重新规划”让标题和画面跟着变（免费）</p>` : ""}</section>`;
   }
   function bindLooks(box, s) {
-    $$(".swatches i", box).forEach((i) => (i.style.background = i.dataset.c));
+    $$(".swatches i, .look-cover i", box).forEach((i) => (i.style.background = i.dataset.c));
+    $$("[data-fidelity]", box).forEach(
+      (b) =>
+        (b.onclick = () =>
+          busy(b, async () => {
+            await saveSuite({ fidelity: b.dataset.fidelity });
+            if (s.shots) lookChangedFor = s.id;
+            render(current);
+          })),
+    );
+    const wish = $("#wish", box);
+    if (wish) wish.onchange = () => saveSuite({ wish: wish.value }).catch((e) => toast(e.message, true));
+    $$("[data-grid]", box).forEach(
+      (b) =>
+        (b.onclick = () =>
+          busy(b, async () => {
+            await api(`/suites/${s.id}/looks/${b.dataset.grid}/grid`, json({}, { "Idempotency-Key": key() }));
+            await refresh();
+            await suitePage(s.id);
+          })),
+    );
     $$("[data-look]", box).forEach(
       (b) =>
         (b.onclick = () =>
@@ -851,7 +920,13 @@ export function initSuite(ctx) {
           await suitePage(s.id);
         });
       };
-    $("#more-looks", box)?.addEventListener("click", (e) => busy(e.currentTarget, async () => (await api(`/suites/${s.id}/looks`, json({})), suitePage(s.id))));
+    $("#more-looks", box)?.addEventListener("click", (e) =>
+      busy(e.currentTarget, async () => {
+        if (wish) await saveSuite({ wish: wish.value }); // the new batch is written around what they just typed
+        await api(`/suites/${s.id}/looks`, json({}));
+        await suitePage(s.id);
+      }),
+    );
   }
 
   // AI dish pictures: for stock that hasn't been cooked and photographed yet.
