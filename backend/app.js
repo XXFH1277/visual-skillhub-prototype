@@ -876,12 +876,9 @@ export async function createWorkspace({
         a.name === req.body?.asset && ["image", "original"].includes(a.role),
     );
     if (!asset) throw new AppError("请选择可提升的单张原图");
+    if (Math.max(asset.width, asset.height) >= 3840)
+      throw new AppError("这张图片已达到 4K，无需再次提升");
     const choice = registry.upscaleSelection(asset.width, asset.height);
-    const [targetWidth, targetHeight] = choice.requestedSize
-      .split("x")
-      .map(Number);
-    if (asset.width >= targetWidth && asset.height >= targetHeight)
-      throw new AppError("这张图片已达到目标尺寸，无需再次提升");
     const id = randomUUID(),
       dir = path.join(jobsDir, id);
     await fsp.mkdir(dir);

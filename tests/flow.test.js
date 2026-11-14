@@ -12,6 +12,7 @@ import { fallbackAnalysis, fallbackStoryboard } from "../backend/planner.js";
 
 const ACCESS = "test-only-access-code-123456";
 const image = await sharp({ create: { width: 640, height: 640, channels: 3, background: "#6677aa" } }).png().toBuffer();
+const square4kResponse = await sharp({ create: { width: 2880, height: 2880, channels: 3, background: "#6677aa" } }).png().toBuffer();
 
 // Fake Kimi: rule-based directions/storyboard, configurable text read-back.
 function fakeAI({ seen = null, ready = true } = {}) {
@@ -185,9 +186,13 @@ test("posters work without images; product requires one; invalid edits never cha
     received = job.params;
     await writeResults(job, dir);
   });
-  const res = await s.submit({ main: null, fields: { skillId: "poster", size: "3:4", copy: "秋日咖啡节\n第二杯半价" } });
+  const res = await s.submit({ main: null, fields: { skillId: "poster", size: "9:16", copy: "秋日咖啡节\n第二杯半价" } });
   assert.equal(res.status, 202);
-  assert.equal((await s.terminal((await res.json()).id)).status, "succeeded");
+  const poster = await s.terminal((await res.json()).id);
+  assert.equal(poster.status, "succeeded", poster.error);
+  const { width, height } = poster.manifest.assets[0];
+  assert.equal(width * 16, height * 9);
+  assert.equal(received.size, "9:16");
   assert.deepEqual(received.inputs, []);
   assert.equal(received.hasMainImage, false);
   assert.equal((await s.draft({ main: null })).status, 400);
@@ -354,7 +359,8 @@ test("API mode: brief carries the visual system and exact text; covers feed the 
       if (url.pathname.endsWith("models")) return Response.json({ data: [{ id: "m25" }, { id: "m20" }] });
       const json = typeof init.body === "string" ? JSON.parse(init.body) : null;
       sent.push({ path: url.pathname, model: json?.model || init.body.get("model"), prompt: json?.prompt || init.body.get("prompt"), images: json ? [] : init.body.getAll("image[]").map((f) => f.name) });
-      return Response.json({ data: [{ b64_json: image.toString("base64") }] });
+      const result = sent.at(-1).model === "m20" ? square4kResponse : image;
+      return Response.json({ data: [{ b64_json: result.toString("base64") }] });
     },
   });
   const s = await setup(t, null, { providers });
@@ -394,9 +400,15 @@ test("API mode: brief carries the visual system and exact text; covers feed the 
   assert.equal(nextDone.status, "succeeded", nextDone.error);
   assert.deepEqual(sent.at(-1).images, ["input-0.png", "style-ref.png"]);
   assert.match(sent.at(-1).prompt, /风格样图/);
+  const beforeUpgrade = await s.balance();
   const up = await s.post(`/api/jobs/${done.id}/upscale`, { asset: "image-1.png" }, { "Idempotency-Key": randomUUID() });
   assert.equal(up.status, 202, await up.clone().text());
-  assert.equal((await s.terminal((await up.json()).id)).status, "succeeded");
+  const upgraded = await s.terminal((await up.json()).id);
+  assert.equal(upgraded.status, "succeeded", upgraded.error);
+  assert.equal(upgraded.cost, 20);
+  assert.equal(await s.balance(), beforeUpgrade - 20);
+  assert.equal(upgraded.manifest.assets[0].width, 4096);
+  assert.match(upgraded.manifest.warnings[0], /2880×2880.*4096×4096/);
   assert.equal(sent.at(-1).model, "m20");
   assert.doesNotMatch(await (await s.request("/api/workspace")).text(), /private-test-key/);
   const batch = await (await s.post("/api/styles-covers", { providerMode: "api" })).json();
@@ -428,7 +440,8 @@ test("image channels share frames dynamically and respect each credential's conc
       else if (calls.secondary === 3) gate.resolve();
       assert.equal(init.body.get("model"), "gpt-image-2.6-sunburst");
       active[key]--;
-      return Response.json({ data: [{ b64_json: image.toString("base64") }] });
+      const result = init.body.get("size") === "3840x3840" ? square4kResponse : image;
+      return Response.json({ data: [{ b64_json: result.toString("base64") }] });
     },
   });
   const s = await setup(t, null, { providers });
@@ -438,15 +451,25 @@ test("image channels share frames dynamically and respect each credential's conc
   assert.deepEqual(calls, { primary: 1, secondary: 3 });
   assert(peak.primary <= 1 && peak.secondary <= 2);
   assert.equal(job.manifest.assets.length, 4);
+  assert.equal(job.cost, 40);
   const workspace = (await (await s.request("/api/workspace")).json()).providers.find(p => p.mode === "api");
   assert.equal(workspace.channelCount, 2);
   assert.equal(workspace.concurrency, 3);
   assert.equal(workspace.modelsByResolution["4K"], "gpt-image-2.6-sunburst");
-  const created4k = await s.submit({ fields: { skillId: "poster", size: "16:9" }, extra: { providerMode: "api", resolution: "4K" } });
+  const created4k = await s.submit({ fields: { skillId: "poster", size: "1:1" }, extra: { resolution: "4K" } });
   const job4k = await s.terminal((await created4k.json()).id);
   assert.equal(job4k.status, "succeeded", job4k.error);
   assert.equal(job4k.params.imageModel, "gpt-image-2.6-sunburst");
-  assert.equal(job4k.params.requestedSize, "3840x2160");
+  assert.equal(job4k.cost, 20);
+  assert.equal(job4k.params.requestedSize, "3840x3840");
+  assert.equal(job4k.manifest.assets[0].width, 3840);
+  assert.match(job4k.manifest.warnings[0], /2880×2880.*3840×3840/);
+  const beforeRejected = await s.balance();
+  const undersized = await s.submit({ fields: { size: "3:4" }, extra: { resolution: "4K" } });
+  const rejected = await s.terminal((await undersized.json()).id);
+  assert.equal(rejected.status, "failed");
+  assert.match(rejected.error, /未达到 4K/);
+  assert.equal(await s.balance(), beforeRejected);
 });
 
 test("several jobs run at once and take turns on the channels; pictures in flight never exceed the channels' slots", { timeout: 20000 }, async t => {

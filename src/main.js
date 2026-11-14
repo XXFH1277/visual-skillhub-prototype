@@ -1,8 +1,10 @@
 import { preview } from "./preview.js";
 import { SCENES, SIZE_NAMES, TEXT_MODES, TEXT_ROLES, MAX_TEXTS } from "../shared/scenes.js";
 import { CATEGORIES, IMAGE_TYPES, TONES, sceneTypes } from "../shared/styles.js";
-import { IMAGE_SIZES, upscaleSize } from "../shared/generation.js";
+import { IMAGE_SIZES } from "../shared/generation.js";
+import { IMAGE_CREDITS, imageCredits } from "../shared/pricing.js";
 import { initSuite } from "./suite.js";
+import { downloadImage, exportLongImage, mountLongExport } from "./long-export.js";
 
 const app = document.querySelector("#app");
 const nav = document.querySelector("#nav");
@@ -122,7 +124,7 @@ function login(mode, invite = "") {
     code: `<label>管理员访问码<input name="code" type="password" autocomplete="current-password" required></label>
       <button class="btn primary wide">进入</button>`,
   };
-  app.innerHTML = `<section class="login card"><h1>出图工作台</h1><p class="muted">一个商品，一键出笔记、商品图和详情页。</p>
+  app.innerHTML = `<section class="login card"><h1>星图</h1><p class="muted">一个商品，一键出笔记、商品图和详情页。</p>
     ${mode === "code" ? "" : `<div class="seg"><button data-mode="login" class="${mode === "login" ? "on" : ""}">登录</button><button data-mode="register" class="${mode === "register" ? "on" : ""}">注册</button></div>`}
     <form id="login-form">${forms[mode]}<p class="err" id="login-error" role="alert"></p></form>
     <button class="link login-alt" id="alt">${mode === "code" ? "← 用手机号登录" : "管理员用访问码登录"}</button></section>`;
@@ -192,7 +194,6 @@ const state = {
   count: SCENES.product.defaultCount,
   size: SCENES.product.defaultSize,
   styleId: "",
-  providerMode: null,
   resolution: "2K",
   draft: null,
   frames: null,
@@ -220,7 +221,6 @@ async function createPage(sceneParam) {
   await loadStyles();
   if (sceneParam && SCENES[sceneParam]) setScene(sceneParam);
   const s = SCENES[state.scene];
-  state.providerMode ||= workspace.provider.mode;
   const chosen = styleOf(state.styleId);
   app.innerHTML = `
   <div class="create">
@@ -249,15 +249,16 @@ async function createPage(sceneParam) {
         </div>
       </div>
       <label class="note-label">${s.copyLabel}<textarea id="copy" rows="3" maxlength="1500" placeholder="${esc(s.copyPlaceholder)}">${esc(state.copy)}</textarea></label>
-      <div class="row wrap specs">
-        <div class="pills">${s.counts.map((c) => `<button class="pill ${c === state.count ? "on" : ""}" data-count="${c}">${c} ${s.unit}</button>`).join("")}</div>
-        ${s.sizes.length > 1 ? `<div class="pills">${s.sizes.map((z) => `<button class="pill ${z === state.size ? "on" : ""}" data-size="${z}">${SIZE_NAMES[z]}</button>`).join("")}</div>` : `<span class="muted">每屏 3:4 竖版，自动拼成长图</span>`}
+      <div class="specs">
+        <div class="pills" role="group" aria-label="数量">${s.counts.map((c) => `<button class="pill ${c === state.count ? "on" : ""}" data-count="${c}" aria-pressed="${c === state.count}">${c} ${s.unit}</button>`).join("")}</div>
+        ${s.sizes.length > 1 ? `<div class="aspect-options" role="group" aria-labelledby="aspect-label">
+          <span id="aspect-label">画幅</span>
+          <div class="pills">${s.sizes.map((z) => `<button class="pill ${z === state.size ? "on" : ""}" data-size="${z}" aria-pressed="${z === state.size}">${SIZE_NAMES[z]}</button>`).join("")}</div>
+        </div>` : `<span class="muted">每屏 3:4 竖版，自动拼成长图</span>`}
       </div>
+      <label class="resolution-label">清晰度<select id="resolution">${Object.entries(IMAGE_CREDITS).map(([tier, points]) => `<option value="${tier}" ${tier === state.resolution ? "selected" : ""}>${tier} · ${IMAGE_SIZES[state.size][tier].replace("x", "×")} · ${points} 积分/张</option>`).join("")}</select></label>
+      <p id="resolution-note" class="muted" ${state.resolution === "4K" ? "" : "hidden"}>上游返回尺寸不足时，可能放大到所选尺寸。原生像素会在结果页显示。</p>
       <details class="advanced"><summary>高级设置</summary>
-        <div class="row wrap">
-          <label>出图通道<select id="provider">${workspace.providers.map((p) => `<option value="${p.mode}" ${p.mode === state.providerMode ? "selected" : ""}>${esc(p.label)}${p.ready ? "" : "（未就绪）"}</option>`).join("")}</select></label>
-          <label id="res-wrap">清晰度<select id="resolution"></select></label>
-        </div>
         <p class="muted">AI 策划：${esc(workspace.textAI.label)}${workspace.textAI.ready ? "" : " —— 只能给出常用风格和基础分镜"}${workspace.textAI.lastError ? `（上次错误：${esc(workspace.textAI.lastError)}）` : ""}</p>
       </details>
     </section>
@@ -310,19 +311,11 @@ function bindInputs() {
   $("#copy").oninput = (e) => ((state.copy = e.target.value), invalidate(false), updateAction());
   $$("[data-count]").forEach((b) => (b.onclick = () => ((state.count = Number(b.dataset.count)), invalidate(false), createPage())));
   $$("[data-size]").forEach((b) => (b.onclick = () => ((state.size = b.dataset.size), invalidate(false), createPage())));
-  $("#provider").onchange = (e) => ((state.providerMode = e.target.value), syncProvider());
-  $("#resolution").onchange = (e) => (state.resolution = e.target.value);
-  syncProvider();
-}
-function syncProvider() {
-  const p = workspace.providers.find((x) => x.mode === state.providerMode) || workspace.provider;
-  $("#res-wrap").hidden = p.mode !== "api";
-  const sizes = IMAGE_SIZES[state.size];
-  if (!sizes[state.resolution]) state.resolution = "2K";
-  $("#resolution").innerHTML = Object.entries(sizes)
-    .map(([tier, px]) => `<option value="${tier}" ${tier === state.resolution ? "selected" : ""}>${tier} · ${px.replace("x", "×")}</option>`)
-    .join("");
-  updateAction();
+  $("#resolution").onchange = (e) => {
+    state.resolution = e.target.value;
+    $("#resolution-note").hidden = state.resolution !== "4K";
+    updateAction();
+  };
 }
 
 function updateAction() {
@@ -349,7 +342,7 @@ function updateAction() {
     note.textContent = "点上面任意一个方向的“用这个”";
     return;
   }
-  const cost = workspace.skills[state.scene].cost * state.frames.length;
+  const cost = imageCredits(state.resolution) * state.frames.length;
   b.textContent = `确认出图 · ${cost} 积分`;
   note.textContent = cost > workspace.account.balance ? "积分不足，请联系管理员" : `余额 ${workspace.account.balance} · 失败或取消自动退回`;
   b.disabled = cost > workspace.account.balance;
@@ -520,7 +513,7 @@ async function submitJob(button) {
     return { ...f, texts, textMode: texts.length ? f.textMode : "none" };
   });
   await busy(button, async () => {
-    const job = await api("/jobs", json({ draftId: state.draft.id, frames, providerMode: state.providerMode, resolution: state.resolution }, { "Idempotency-Key": key() }));
+    const job = await api("/jobs", json({ draftId: state.draft.id, frames, resolution: state.resolution }, { "Idempotency-Key": key() }));
     await refresh();
     location.hash = "#/job/" + job.id;
   });
@@ -605,7 +598,7 @@ function tweakModal(job, i) {
   const p = job.params;
   const frame = p.frames[i];
   const asset = job.manifest.assets.filter((a) => ["image", "module"].includes(a.role)).find((a, pos) => (a.frame ?? pos) === i);
-  const cost = workspace.skills[p.skillId]?.cost || 10;
+  const cost = imageCredits(p.resolution);
   const aiTexts = frame.textMode === "ai" ? frame.texts : [];
   const { wrap, close } = modal(`
     <div class="tweak">
@@ -786,14 +779,14 @@ function jobPage(job) {
   const p = job.params;
   const m = job.manifest;
   const legacy = !p.frames;
-  const cost = (n) => (workspace.skills[p.skillId]?.cost || 10) * n;
+  const cost = (n) => imageCredits(p.resolution) * n;
   const images = m ? m.assets.filter((a) => ["image", "module"].includes(a.role)) : [];
   const long = m?.assets.find((a) => a.role === "long" || a.role === "long-preview");
+  const detail = p.skillId === "detail" && p.operation !== "tweak";
   const apiReady = workspace.providers.find((x) => x.mode === "api")?.ready;
   const canUpscale = (a) => {
     if (job.status === "partial" || !apiReady || a.role !== "image" || p.operation === "cover") return false;
-    const [w, h] = upscaleSize(a.width, a.height).split("x").map(Number);
-    return a.width < w || a.height < h;
+    return Math.max(a.width, a.height) < 3840;
   };
   const special = ["upscale", "cover"].includes(p.operation);
   const card = (a, i) => `<article class="card result">
@@ -805,7 +798,7 @@ function jobPage(job) {
         <a class="btn small" href="${fileUrl(job, a.name, true)}">下载</a>
         ${legacy || special ? "" : `<button class="btn small primary-soft" data-tweak="${i}">修改这张图 · ${cost(1)}</button><button class="btn small" data-redo="${i}">重出这张 · ${cost(1)}</button>`}
         ${job.status !== "partial" && !legacy && !special && p.frames?.[i]?.textMode === "ai" ? `<button class="btn small" data-overlay="${i}" title="重新出一张留白的图，由程序把字排上去">改用精确排字 · ${cost(1)}</button>` : ""}
-        ${canUpscale(a) ? `<button class="link" data-upscale="${esc(a.name)}">提升到 4K · ${workspace.skills.upscale.cost}</button>` : ""}
+        ${canUpscale(a) ? `<button class="link" data-upscale="${esc(a.name)}">提升到 4K · ${workspace.skills.upscale.cost} 积分</button>` : ""}
       </div>
     </article>`;
   const d = p.direction;
@@ -822,13 +815,17 @@ function jobPage(job) {
     .map((t) => `<a href="#/job/${t.id}" class="version">${t.asset ? `<img src="/api/jobs/${t.id}/files/${encodeURIComponent(t.asset)}?thumb=320" alt="">` : `<span class="status ${t.status}">${STATUS[t.status]}</span>`}<small>第 ${t.frame + 1} 张 · ${esc(t.instruction.slice(0, 18))}</small></a>`)
     .join("")}</div></section>` : ""}
   ${
-    m && p.skillId === "detail" && long && p.operation !== "tweak"
+    detail && images.length
       ? `<div class="detail-result">
-          <div class="long-view card"><a href="${fileUrl(job, long.name)}" target="_blank" rel="noopener"><img src="${preview(fileUrl(job, long.name))}" alt="查看详情页长图原图"></a></div>
           <div class="side">
-            <section class="card"><h2>下载</h2><a class="btn primary wide" href="${fileUrl(job, long.name, true)}">下载整张长图</a></section>
-            ${images.map((a, i) => card(a, i)).join("")}
+            <section class="card long-export" id="job-long-export"></section>
+            <div class="long-view card" id="job-long-preview" aria-label="长图预览"></div>
+          </div>
+          <div class="side">
+            ${images.map((a, i) => card(a, a.frame ?? i)).join("")}
           </div></div>`
+      : detail && long
+        ? `<a class="btn primary" href="${fileUrl(job, long.name, true)}">下载整张长图</a>`
       : m && p.operation !== "tweak"
         ? `<div class="results">${images.map((a,i) => card(a,a.frame ?? i)).join("")}</div>`
         : ""
@@ -843,6 +840,27 @@ function jobPage(job) {
       : ""
   }`;
   paint(app);
+  const exportBox = $("#job-long-export");
+  if (exportBox) {
+    const previewBox = $("#job-long-preview");
+    const items = images.map((asset, i) => {
+      const frame = asset.frame ?? i;
+      const source = fileUrl(job, asset.name);
+      return { id: asset.name, title: `${frame + 1}. ${p.frames?.[frame]?.title || "分屏"}`, source, thumb: preview(source, 320) };
+    });
+    mountLongExport(exportBox, {
+      key: `job:${job.id}`, items, esc, busy,
+      onChange(picked) {
+        previewBox.hidden = !picked.length;
+        previewBox.innerHTML = picked.map(({ source, title }) => `<img src="${preview(source)}" alt="${esc(title)}" loading="lazy" decoding="async">`).join("");
+      },
+      onExport(picked) {
+        if (long && picked.length === items.length && picked.every((item, i) => item === items[i]))
+          return downloadImage(fileUrl(job, long.name, true), long.name);
+        return exportLongImage(picked, (item) => item.source, "detail-long.png");
+      },
+    });
+  }
   bindJob(job);
 }
 function bindJob(job) {
@@ -886,7 +904,7 @@ function creditsPage() {
   const per = (p) => (p.price / (p.credits / 10)).toFixed(2);
   const u = workspace.user;
   app.innerHTML = `<div class="page-head"><div><h1>我的账号</h1><p class="muted">${esc(u.name)}${u.phone ? ` · ${esc(u.phone)}` : ""}</p></div></div>
-  <section class="card balance-card"><b>${workspace.account.balance}</b><span class="muted">可用积分。一张图 10 积分，出图时预扣，失败或取消自动退回。</span></section>
+  <section class="card balance-card"><b>${workspace.account.balance}</b><span class="muted">可用积分。2K 每张 ${IMAGE_CREDITS["2K"]} 积分，4K 每张 ${IMAGE_CREDITS["4K"]} 积分。出图时预扣，失败或取消自动退回。</span></section>
   ${c ? `<section class="card checkin"><div class="row spread wrap"><div><h2>每日签到</h2><p class="muted">${c.today ? `今天已签到，已连续 ${c.streak} 天。` : c.streak ? `已连续 ${c.streak} 天，今天签到领 ${c.amount} 积分。` : `今天签到领 ${c.amount} 积分。`}签到积分 ${c.expireDays} 天内有效，出图时优先使用。</p></div>
       <button class="btn primary" id="checkin" ${c.today ? "disabled" : ""}>${c.today ? "今天已签到" : `签到 +${c.amount}`}</button></div>
     <ol class="week">${c.week.map((n, i) => `<li class="${i + 1 < c.position || (c.today && i + 1 === c.position) ? "done" : i + 1 === c.position ? "next" : ""}"><b>+${n}</b><small>第 ${i + 1} 天</small></li>`).join("")}</ol></section>` : ""}
@@ -945,7 +963,7 @@ async function adminPage() {
       <input name="note" maxlength="40" placeholder="备注：发给谁 / 哪个群">
       <button class="btn primary">生成</button>
     </form>
-    <p class="muted">商品图和详情页一屏都是 10 积分一张，送 40 积分够新用户出 4 张图。邀请码不区分大小写，一个码可以发给多人。</p>
+    <p class="muted">2K 每张 ${IMAGE_CREDITS["2K"]} 积分，4K 每张 ${IMAGE_CREDITS["4K"]} 积分。邀请码不区分大小写，一个码可以发给多人。</p>
     <div class="table-wrap"><table class="admin-table"><thead><tr><th>邀请码</th><th>送积分</th><th>已用</th><th>备注</th><th></th></tr></thead>
     <tbody>${data.invites.map(invite).join("") || `<tr><td colspan="5" class="muted">还没有邀请码</td></tr>`}</tbody></table></div>
   </section>
@@ -961,7 +979,7 @@ async function adminPage() {
       window.prompt("复制下面这段发给对方：", text);
     }
   };
-  const message = (code) => `邀请你体验「出图工作台」：一个商品一键出笔记、商品图和详情页。\n打开链接注册：${link(code)}\n邀请码：${code}`;
+  const message = (code) => `邀请你体验「星图」：一个商品一键出笔记、商品图和详情页。\n打开链接注册：${link(code)}\n邀请码：${code}`;
   $("#invite-form").onsubmit = (e) => {
     e.preventDefault();
     const form = e.currentTarget;

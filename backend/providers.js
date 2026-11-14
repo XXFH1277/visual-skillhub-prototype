@@ -79,7 +79,7 @@ export function createProviders({
       return describe(mode);
     },
     selection(body, fallback = "codex") {
-      const mode = apiOnly ? "api" : body.providerMode || fallback;
+      const mode = apiOnly || body.resolution === "4K" ? "api" : body.providerMode || fallback;
       validate(mode);
       if (!states[mode]?.ready)
         throw new AppError(states[mode]?.message || "生成服务未就绪", 503);
@@ -93,7 +93,7 @@ export function createProviders({
       )
         throw new AppError("该 API 模型不可用");
       if (!requestedSize)
-        throw new AppError("此画幅不支持所选分辨率；4K 请使用 16:9");
+        throw new AppError("此画幅不支持所选分辨率");
       return { providerMode: mode, imageModel, resolution, requestedSize };
     },
     upscaleSelection(width, height) {

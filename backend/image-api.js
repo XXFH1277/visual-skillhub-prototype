@@ -234,6 +234,16 @@ export function createImageRunner(config, fetchImpl = fetch, channels = [config]
             (meta.pages || 1) !== 1
           )
             throw new Error("invalid");
+        } catch {
+          throw new Error("生图 API 返回的图片无法解码或不符合尺寸限制");
+        }
+        if (p.resolution === "4K") {
+          const [width, height] = requestedSize.split("x").map(Number);
+          const ratio = meta.width * height / (meta.height * width);
+          if (Math.max(meta.width, meta.height) <= 2048 || Math.abs(ratio - 1) > 0.02)
+            throw new Error(`生图 API 返回 ${meta.width}×${meta.height}，未达到 4K 出图所需的像素或画幅`);
+        }
+        try {
           const img = sharp(bytes, { limitInputPixels: 40000000, failOn: "warning" });
           const file = path.join(dir, `result-${i + 1}.png`);
           await img.png().toFile(file + ".tmp");
