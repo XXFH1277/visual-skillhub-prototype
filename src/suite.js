@@ -2,13 +2,14 @@ import { preview } from "./preview.js";
 import { FIDELITY } from "../shared/suite.js";
 import { imageCredits } from "../shared/pricing.js";
 import { downloadImage, exportLongImage, mountLongExport } from "./long-export.js";
+import { mountLabel } from "./label-ui.js";
 
 // Stat numbers are set big; longer ones (“48小时”) step down so they stay on one line.
 const bigSize = (t) => { const n = [...String(t)].length; return n > 5 ? "xs" : n > 3 ? "sm" : ""; };
 
 // 商品全套：资料 → 档案 → 笔记 → 商品图 → 详情页
 export function initSuite(ctx) {
-  const { app, api, json, toast, busy, esc, $, $$, key, refresh, getWorkspace, setCleanup, tweak, problemText, modal } = ctx;
+  const { app, api, json, toast, busy, esc, $, $$, key, refresh, getWorkspace, setCleanup, tweak, problemText, modal, openBox } = ctx;
   let meta = null;
   const loadMeta = async () => (meta ||= await api("/suite-meta"));
   const photoUrl = (s, file) => `/api/suites/${s.id}/photo/${encodeURIComponent(file)}`;
@@ -28,7 +29,7 @@ export function initSuite(ctx) {
   /* ---------------- home: my products ---------------- */
   async function homePage() {
     const { suites } = await api("/suites");
-    const flow = [["商品档案", "AI 读图读笔记，建好档案"], ["笔记", "私域能直接发的文案"], ["包装", "要印箱子再做，可跳过"], ["商品图", "8–10 张，主图到售后"], ["详情页", "分镜出图，拼成长图"]];
+    const flow = [["商品档案", "AI 读图读笔记，建好档案"], ["笔记", "私域能直接发的文案"], ["包装", "要印箱子再做，可跳过"], ["标签", "食品标签，字由程序排"], ["商品图", "8–10 张，主图到售后"], ["详情页", "分镜出图，拼成长图"]];
     const stepNames = { profile: "档案", note: "笔记", shots: "商品图", detail: "详情页" };
     const when = (v) => new Date(v).toLocaleString("zh-CN", { hour12: false, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
     app.innerHTML = `
@@ -116,7 +117,7 @@ export function initSuite(ctx) {
   }
 
   /* ---------------- one product ---------------- */
-  const tabs = { profile: "1 商品档案", note: "2 笔记", pack: "3 包装", shots: "4 商品图", detail: "5 详情页" };
+  const tabs = { profile: "1 商品档案", note: "2 笔记", pack: "3 包装", label: "4 标签", shots: "5 商品图", detail: "6 详情页" };
   let tab = "profile";
   let current = null;
   let shotView = "results";
@@ -187,7 +188,7 @@ export function initSuite(ctx) {
         });
     });
     if (!p) return profileWaiting(box, s);
-    ({ profile: profileTab, note: noteTab, pack: packTab, shots: shotsTab, detail: detailTab })[tab](box, s);
+    ({ profile: profileTab, note: noteTab, pack: packTab, label: labelTab, shots: shotsTab, detail: detailTab })[tab](box, s);
   }
   let delArmed = 0;
   const confirmDelete = () => {
@@ -721,6 +722,22 @@ export function initSuite(ctx) {
   /* ---------------- packaging ---------------- */
   // Asked right after the note: merchants with fixed foam boxes print an outer carton or a gift box,
   // and the new box then shows up in every product shot and detail screen.
+  // 食品标签：从商品档案带出能带的，其余商家补；字由程序排。
+  function labelTab(box, s) {
+    const p = s.profile || {};
+    const data = s.label || { name: p.name, spec: p.spec, origin: p.origin, storage: p.storage };
+    box.innerHTML = `<div id="label-mount"></div><div class="row"><button class="btn primary" id="label-next">下一步：商品图 →</button></div>`;
+    mountLabel($("#label-mount"), {
+      data,
+      esc,
+      busy,
+      toast,
+      title: "食品标签",
+      note: s.label ? "" : "品名、规格、产地、贮存方式已从商品档案带过来，其余的请照实填写。不需要标签可以直接跳过。",
+      onSave: async (d) => (current = await saveSuite({ label: d })),
+    });
+    $("#label-next").onclick = () => ((tab = "shots"), render(current));
+  }
   function packTab(box, s) {
     const ws = getWorkspace();
     const cost = ws.skills.product.cost;
@@ -772,7 +789,7 @@ export function initSuite(ctx) {
         pk.dieline
           ? `<section class="card"><h2>给印刷厂的文件</h2>
               <img class="dieline" src="/api/suites/${s.id}/packaging/dieline.png?v=${encodeURIComponent(chosen || "")}&thumb=720" alt="展开图">
-              <div class="row wrap"><a class="btn small" href="/api/suites/${s.id}/packaging/dieline.png" download>下载展开图（带尺寸）</a><a class="btn small" href="/api/suites/${s.id}/packaging/front.png" download>下载正面设计稿</a></div>
+              <div class="row wrap"><button class="btn small primary" id="pk-box">看 3D 盒子 · 改盒型和各个面</button><a class="btn small" href="/api/suites/${s.id}/packaging/dieline.png" download>下载展开图（带尺寸）</a><a class="btn small" href="/api/suites/${s.id}/packaging/front.png" download>下载正面设计稿</a></div>
               <p class="muted">展开图按真实尺寸排好了正面、侧面信息和摇盖，标了裁切线和压痕线，给印刷厂做刀版参考；最终刀版、纸张和出血以印刷厂为准。</p></section>
             <section class="card"><h2>立体效果图</h2>
               ${going(mock) ? spinner(mock.phase || "生成中", "约 1–2 分钟") : ""}
@@ -812,7 +829,8 @@ export function initSuite(ctx) {
           })),
     );
     $("#pk-adopt")?.addEventListener("click", (e) => busy(e.currentTarget, async () => ((current = await api(`/suites/${s.id}/packaging/adopt`, json({}))), toast("后面的商品图和详情页会重新规划，用上新包装"), render(current))));
-    $("#pack-next")?.addEventListener("click", () => ((tab = "shots"), render(current)));
+    $("#pack-next")?.addEventListener("click", () => ((tab = "label"), render(current)));
+    $("#pk-box")?.addEventListener("click", (e) => openBox({ suiteId: s.id }, e.currentTarget));
     bindLooks(box, s);
   }
 

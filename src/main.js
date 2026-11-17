@@ -1,10 +1,13 @@
 import { preview } from "./preview.js";
-import { SCENES, SIZE_NAMES, TEXT_MODES, TEXT_ROLES, MAX_TEXTS, PACK_FORMS, FIDELITY_SCENES, frameSig } from "../shared/scenes.js";
+import { SCENES, SIZE_NAMES, TEXT_MODES, TEXT_ROLES, MAX_TEXTS, PACK_FORMS, BOX_FORMS, FIDELITY_SCENES, frameSig } from "../shared/scenes.js";
 import { FIDELITY } from "../shared/suite.js";
 import { CATEGORIES, IMAGE_TYPES, TONES, sceneTypes } from "../shared/styles.js";
 import { IMAGE_SIZES } from "../shared/generation.js";
 import { IMAGE_CREDITS, imageCredits } from "../shared/pricing.js";
 import { initSuite } from "./suite.js";
+import { initBox } from "./box.js";
+import { mountLabel } from "./label-ui.js";
+import { BOX_TYPES } from "../shared/boxes.js";
 import { downloadImage, exportLongImage, mountLongExport } from "./long-export.js";
 
 const app = document.querySelector("#app");
@@ -79,7 +82,7 @@ function header() {
   const on = (r) => (r.includes(route) ? "on" : "");
   const main = [
     ["#/", "商品", ["", "suite"], "goods"],
-    ["#/new/product", "单张出图", ["new"], "single"],
+    ["#/new/product", "单张出图", ["new", "label", "box"], "single"],
     ["#/styles", "风格库", ["styles"], "styles"],
     ["#/tasks", "我的作品", ["tasks", "job"], "works"],
   ];
@@ -198,7 +201,8 @@ const state = {
   resolution: "2K",
   wish: "",
   fidelity: "",
-  packForm: "gift",
+  packForm: "tuck",
+  packSize: {},
   off: new Set(),
   draft: null,
   frames: null,
@@ -232,7 +236,7 @@ async function createPage(sceneParam) {
   <div class="create">
     <div class="scenes" role="tablist">${Object.entries(SCENES)
       .map(([id, sc]) => `<button role="tab" class="scene ${id === state.scene ? "on" : ""}" data-scene="${id}"><b>${sc.name}</b><small>${sc.tagline}</small></button>`)
-      .join("")}</div>
+      .join("")}<a class="scene" href="#/label"><b>食品标签</b><small>营养成分表 · 条码 · 免费</small></a></div>
     <section class="card step">
       <h2><span class="n">1</span>上传图片</h2>
       <div class="uploads">
@@ -255,14 +259,16 @@ async function createPage(sceneParam) {
         </div>
       </div>
       <label class="note-label">${s.copyLabel}<textarea id="copy" rows="3" maxlength="1500" placeholder="${esc(s.copyPlaceholder)}">${esc(state.copy)}</textarea></label>
-      ${state.scene === "packaging" ? `<div class="aspect-options pack-forms" role="group" aria-labelledby="form-label"><span id="form-label">包装形式</span><div class="pills">${Object.entries(PACK_FORMS).map(([k, n]) => `<button class="pill ${k === state.packForm ? "on" : ""}" data-form="${k}" aria-pressed="${k === state.packForm}">${n}</button>`).join("")}</div></div>` : ""}
+      ${state.scene === "packaging" ? `<div class="aspect-options pack-forms" role="group" aria-labelledby="form-label"><span id="form-label">包装形式</span><div class="pills">${Object.entries(PACK_FORMS).map(([k, n]) => `<button class="pill ${k === state.packForm ? "on" : ""}" data-form="${k}" aria-pressed="${k === state.packForm}">${n}</button>`).join("")}</div></div>
+        ${BOX_FORMS.includes(state.packForm) ? `<p class="muted pack-note">${esc(BOX_TYPES[state.packForm].hint)}。AI 先画${state.packForm === "lid" ? "盒盖" : "正面"}的平面稿，选中一款后可以拼成刀版图、看 3D 盒子，其余几个面再定。</p>
+        <div class="row dims pack-dims"><span>成品尺寸</span>${["l", "w", "h"].map((k, i) => `<label>${["长", "宽", "高"][i]}<input data-dim="${k}" inputmode="numeric" placeholder="${BOX_TYPES[state.packForm].size[k]}" value="${esc(state.packSize[k] ?? "")}"></label>`).join("<span>×</span>")}<span class="muted">毫米，不填按常用尺寸</span></div>` : `<p class="muted pack-note">直接出立体效果图。</p>`}` : ""}
       <label class="note-label wish">想要什么感觉 <span class="muted">可不填，比如“过年送礼的热闹感”“朴素的农家味”</span><input id="wish" maxlength="60" value="${esc(state.wish)}" placeholder="一句话就行"></label>
       ${FIDELITY_SCENES.includes(state.scene) ? `<div class="fid create-fid"><span>还原度 <span class="muted">商品图离实拍多远</span></span>
         <div class="seg small" role="group" aria-label="还原度"><button class="${!state.fidelity ? "on" : ""}" data-fidelity="" aria-pressed="${!state.fidelity}">按品类自动</button>${Object.entries(FIDELITY).map(([k, f]) => `<button class="${state.fidelity === k ? "on" : ""}" data-fidelity="${k}" aria-pressed="${state.fidelity === k}">${f.name}</button>`).join("")}</div>
         <small class="muted">${state.fidelity ? FIDELITY[state.fidelity].hint : "生鲜水产照实拍，其他适度造景；每张图还能单独改"}</small></div>` : ""}
       <div class="specs">
         <div class="pills" role="group" aria-label="数量">${s.counts.map((c) => `<button class="pill ${c === state.count ? "on" : ""}" data-count="${c}" aria-pressed="${c === state.count}">${c} ${s.unit}</button>`).join("")}</div>
-        ${s.sizes.length > 1 ? `<div class="aspect-options" role="group" aria-labelledby="aspect-label">
+        ${state.scene === "packaging" && BOX_FORMS.includes(state.packForm) ? `<span class="muted">画幅按盒子${state.packForm === "lid" ? "盒盖" : "正面"}的比例自动定</span>` : s.sizes.length > 1 ? `<div class="aspect-options" role="group" aria-labelledby="aspect-label">
           <span id="aspect-label">画幅</span>
           <div class="pills">${s.sizes.map((z) => `<button class="pill ${z === state.size ? "on" : ""}" data-size="${z}" aria-pressed="${z === state.size}">${SIZE_NAMES[z]}</button>`).join("")}</div>
         </div>` : `<span class="muted">每屏 3:4 竖版，自动拼成长图</span>`}
@@ -283,7 +289,7 @@ async function createPage(sceneParam) {
 }
 
 function bindInputs() {
-  $$(".scene").forEach((b) => (b.onclick = () => (location.hash = "#/new/" + b.dataset.scene)));
+  $$(".scene[data-scene]").forEach((b) => (b.onclick = () => (location.hash = "#/new/" + b.dataset.scene)));
   const takeMain = (file) => {
     if (!file) return;
     if (file.size > 10 * 1024 * 1024) return toast("图片不能超过 10MB", true);
@@ -321,7 +327,8 @@ function bindInputs() {
   $("#clear-style")?.addEventListener("click", () => ((state.styleId = ""), invalidate(true), createPage()));
   $("#copy").oninput = (e) => ((state.copy = e.target.value), invalidate(false), updateAction());
   $("#wish").oninput = (e) => ((state.wish = e.target.value), invalidate(false), updateAction());
-  $$("[data-form]").forEach((b) => (b.onclick = () => ((state.packForm = b.dataset.form), invalidate(false), createPage())));
+  $$("[data-form]").forEach((b) => (b.onclick = () => ((state.packForm = b.dataset.form), (state.packSize = {}), invalidate(false), createPage())));
+  $$("[data-dim]").forEach((x) => (x.oninput = () => ((state.packSize[x.dataset.dim] = x.value.trim()), invalidate(false), updateAction())));
   $$("[data-fidelity]").forEach(
     (b) =>
       (b.onclick = () => {
@@ -382,7 +389,7 @@ async function startDraft() {
   const s = SCENES[state.scene];
   const reuse = state.draft && !state.filesDirty && state.draft.input.skillId === state.scene;
   if (s.mainRequired && !state.main && !reuse) return toast(`请先上传${s.mainLabel}`, true);
-  const fields = { copy: state.copy, count: state.count, size: state.size, styleId: state.styleId, wish: state.wish.trim(), fidelity: FIDELITY_SCENES.includes(state.scene) ? state.fidelity : "", ...(state.scene === "packaging" ? { packForm: state.packForm } : {}) };
+  const fields = { copy: state.copy, count: state.count, size: state.size, styleId: state.styleId, wish: state.wish.trim(), fidelity: FIDELITY_SCENES.includes(state.scene) ? state.fidelity : "", ...(state.scene === "packaging" ? { packForm: state.packForm, packSize: JSON.stringify(state.packSize) } : {}) };
   try {
     let d;
     if (reuse) d = await api(`/drafts/${state.draft.id}/replan`, json(fields));
@@ -926,6 +933,7 @@ function jobPage(job) {
         ${job.status !== "partial" && !legacy && !special && p.frames?.[i]?.textMode === "ai" ? `<button class="btn small" data-overlay="${i}" title="重新出一张留白的图，由程序把字排上去">改用精确排字 · ${cost(1)}</button>` : ""}
         ${canUpscale(a) ? `<button class="link" data-upscale="${esc(a.name)}">提升到 4K · ${workspace.skills.upscale.cost} 积分</button>` : ""}
       </div>
+      ${BOX_FORMS.includes(p.packForm) && job.status !== "partial" && !special ? `<button class="btn primary wide" data-box="${esc(a.name)}">用这款做盒子 · 看 3D 和刀版图</button>` : ""}
     </article>`;
   const d = p.direction;
   app.innerHTML = `${p.suiteId && p.skillId === "product" ? `<a class="back" href="#/suite/${encodeURIComponent(p.suiteId)}/shots">← 返回商品图</a>` : `<a class="back" href="#/tasks">← 我的作品</a>`}
@@ -1007,6 +1015,7 @@ function bindJob(job) {
   $$("[data-tweak]").forEach((b) => (b.onclick = () => tweakModal(job, Number(b.dataset.tweak))));
   $$("[data-overlay]").forEach((b) => (b.onclick = () => busy(b, () => go(`/jobs/${job.id}/retry`, { frame: Number(b.dataset.overlay), textMode: "overlay" }))));
   $$("[data-upscale]").forEach((b) => (b.onclick = () => busy(b, () => go(`/jobs/${job.id}/upscale`, { asset: b.dataset.upscale }))));
+  $$("[data-box]").forEach((b) => (b.onclick = () => boxes.openBox({ jobId: job.id, asset: b.dataset.box }, b)));
   $$("[data-save]").forEach(
     (b) =>
       (b.onclick = () =>
@@ -1147,6 +1156,29 @@ async function adminPage() {
   }));
 }
 
+/* ---------------- food label ---------------- */
+const LABEL_KEY = "skillhub-label";
+function labelPage() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(LABEL_KEY) || "null");
+  } catch {}
+  app.innerHTML = `<a class="back" href="#/new/product">← 单张出图</a><div class="page-head"><div><h1>食品标签</h1><p class="muted">预包装食品的不干胶标签：填好内容，下载打印图交给印刷厂。不扣积分。</p></div></div><div id="label-page"></div>`;
+  mountLabel($("#label-page"), {
+    data: saved || {},
+    esc,
+    busy,
+    toast,
+    title: "标签内容",
+    note: "这台设备会记住你填的内容，下次打开还在。",
+    onChange: (d) => {
+      try {
+        localStorage.setItem(LABEL_KEY, JSON.stringify(d));
+      } catch {}
+    },
+  });
+}
+
 /* ---------------- router ---------------- */
 async function render() {
   cleanup();
@@ -1175,6 +1207,11 @@ async function render() {
         cleanup = () => clearTimeout(t);
       } else await refresh();
     } else if (route === "styles") await stylesPage();
+    else if (route === "label") labelPage();
+    else if (route === "box" && id) {
+      const stop = await boxes.boxPage(id);
+      if (stop) cleanup = stop;
+    }
     else if (route === "suite" && id === "new") await suite.newPage();
     else if (route === "suite" && id) await suite.suitePage(id, location.hash.split("/")[3]);
     else if (!route) await suite.homePage();
@@ -1211,7 +1248,9 @@ const suite = initSuite({
   tweak: async (jobId, i) => tweakModal(await api("/jobs/" + jobId), i),
   problemText,
   setCleanup: (fn) => (cleanup = fn),
+  openBox: (body, button) => boxes.openBox(body, button),
 });
+const boxes = initBox({ app, api, json, toast, busy, esc, key, refresh, preview, getWorkspace: () => workspace });
 addEventListener("hashchange", () => {
   scrollTo(0, 0);
   render();

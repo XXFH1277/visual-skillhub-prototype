@@ -276,6 +276,44 @@ test("standalone directions are written for the product: seeds, avoid list, wish
   const staged = framePrompt({ ...base, frames: [{ ...f, fidelity: "staged" }] }, 0);
   assert.doesNotMatch(staged, /【真实度】/);
   assert.match(staged, /周围的背景、台面、容器和陪衬/);
-  const pack = analyzeMessages({ skillId: "packaging", count: 2, size: "1:1", copy: "", hasMain: true, packForm: "gift" }, candidatesFor(lib, "packaging"));
-  assert.match(pack.system, /包装设计（礼盒）/);
+  const pack = analyzeMessages({ skillId: "packaging", count: 2, size: "1:1", copy: "", hasMain: true, packForm: "lid" }, candidatesFor(lib, "packaging"));
+  assert.match(pack.system, /包装设计（天地盖礼盒）/);
+});
+
+test("food label: NRV, net-content letter height, EAN-13, auto-fit and missing mandatory items", async () => {
+  const { nrv, netHeight, ean13, eanBits, labelSvg, cleanLabel } = await import("../shared/label.js");
+  assert.equal(nrv("energy", "1480"), "18%");
+  assert.equal(nrv("sodium", "1650"), "83%");
+  assert.equal(nrv("fat", "微量"), "");
+  assert.deepEqual([netHeight("30g"), netHeight("200克"), netHeight("500g"), netHeight("2.5kg")], [2, 3, 4, 6]);
+  assert.equal(ean13("690123456789"), "6901234567892");
+  assert.equal(ean13("6901234567890"), null);
+  assert.equal(eanBits("6901234567892").length, 95);
+  const full = labelSvg({ name: "小鱼印象", ingredients: "鳀鱼、白砂糖、食用盐", net: "200克", maker: "舟山小鱼食品", address: "浙江舟山", phone: "0580-1", storage: "常温", shelfLife: "12个月", barcode: "690123456789", nutrition: { energy: "1480" } });
+  assert.ok(full.fits);
+  assert.deepEqual(full.problems, []);
+  assert.match(full.svg, /营养成分表/);
+  assert.match(full.svg, /净含量：200克/);
+  const crowded = labelSvg({ name: "x", ingredients: "很长的配料".repeat(60), usage: "很长".repeat(60), allergen: "提示".repeat(60), distributor: "经销".repeat(40), address: "地址".repeat(50), size: "100x70" });
+  assert.equal(crowded.fits, false);
+  assert.equal(crowded.fontMm, 1.8);
+  assert.ok(crowded.problems.some((p) => /放不下/.test(p)));
+  assert.equal(cleanLabel({ size: "nope", barcode: "69-01 23" }).size, "100x70");
+  assert.equal(cleanLabel({ barcode: "69-01 23" }).barcode, "690123");
+});
+
+test("box nets: every type folds from one root per sheet; cut and fold lines never overlap", async () => {
+  const { flatNet, cutLines, foldLines, faceSizes, mainFace } = await import("../shared/boxes.js");
+  for (const type of ["tuck", "lid", "carton"]) {
+    const net = flatNet(type, {});
+    assert.equal(net.sheets.length, type === "lid" ? 2 : 1, type);
+    const folds = foldLines(net);
+    const cuts = cutLines(net);
+    assert.equal(folds.length, net.parts.length - net.sheets.length);
+    const key = ([a, b]) => JSON.stringify([a, b].map((p) => p.map((v) => Math.round(v))).sort());
+    const foldKeys = new Set(folds.map(key));
+    assert.ok(cuts.every((c) => !foldKeys.has(key(c))), type);
+  }
+  assert.deepEqual(Object.keys(faceSizes("carton", {})).sort(), ["back", "front", "left", "right"]);
+  assert.deepEqual(mainFace("lid", { l: 300, w: 200, h: 90 }), { face: "top", w: 300, h: 200 });
 });

@@ -20,6 +20,9 @@ import { FIDELITY } from "../shared/suite.js";
 import { StyleLibrary } from "./styles.js";
 import { ADMIN_ID } from "./users.js";
 import { registerSuites, SUITE_FILE_MB } from "./suites.js";
+import { registerBoxes } from "./boxes.js";
+import { BOX_TYPES, cleanSize, mainFace } from "../shared/boxes.js";
+import { aspectFor } from "./packaging.js";
 import { SCENES, PACK_FORMS, frameSig, textsForImage } from "../shared/scenes.js";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -45,9 +48,25 @@ function draftInput(body, existing = {}) {
   // 还原度：空字符串表示让系统按品类给默认值。
   const fidelity = body.fidelity ?? existing.fidelity ?? "";
   if (fidelity && !FIDELITY[fidelity]) throw new AppError("还原度无效");
-  const packForm = skillId === "packaging" ? (body.packForm ?? existing.packForm ?? "gift") : "";
+  const packForm = skillId === "packaging" ? (body.packForm ?? existing.packForm ?? "tuck") : "";
   if (packForm && !PACK_FORMS[packForm]) throw new AppError("包装形式无效");
-  return { skillId, copy: text(body.copy ?? existing.copy, 1500, "说明"), count, size, styleId, wish: text(body.wish ?? existing.wish, 60, "想要的感觉"), fidelity, packForm };
+  // A box: its front is drawn flat at the ratio of the box's main face.
+  let packSize = null;
+  let finalSize = size;
+  if (BOX_TYPES[packForm]) {
+    let raw = body.packSize ?? existing.packSize ?? {};
+    if (typeof raw === "string") {
+      try {
+        raw = JSON.parse(raw);
+      } catch {
+        raw = {};
+      }
+    }
+    packSize = cleanSize(packForm, raw);
+    const face = mainFace(packForm, packSize);
+    finalSize = aspectFor(face.w, face.h);
+  }
+  return { skillId, copy: text(body.copy ?? existing.copy, 1500, "说明"), count, size: finalSize, styleId, wish: text(body.wish ?? existing.wish, 60, "想要的感觉"), fidelity, packForm, packSize };
 }
 
 export async function createWorkspace({
@@ -883,6 +902,8 @@ export async function createWorkspace({
       inputs: [...d.inputs],
       planVia: d.via,
       ...(fidelity ? { fidelity } : {}),
+      ...(d.input.packForm ? { packForm: d.input.packForm, packSize: d.input.packSize } : {}),
+      ...(BOX_TYPES[d.input.packForm] ? { opener: "包装盒正面的平面设计稿（不是立体效果图，不要画盒子的透视和阴影）：满版铺满画面，画面边缘就是盒子的边，四周 3 毫米内不放文字，设计完整精致、可以直接印刷。" } : {}),
     };
     // Pictures already tried on their own, unchanged since: the set takes them over instead of drawing (and charging) them again.
     const reuse = {};
@@ -987,6 +1008,7 @@ export async function createWorkspace({
     await createJob(req, res, params, null, source.id, { "tweak-base.png": base });
   });
   registerSuites({ app, store, users, styles, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir });
+  registerBoxes({ app, store, dataDir, jobsDir, normalizeUpload, regularFile, admission, createJob });
   app.post("/api/jobs/:id/upscale", admission, async (req, res) => {
     const source = store.get(req.params.id);
     if (!source || source.status !== "succeeded")

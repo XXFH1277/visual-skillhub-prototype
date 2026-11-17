@@ -17,6 +17,7 @@ import { createRefs, REF_USES } from "./refs.js";
 import { noteDocx } from "./docx-note.js";
 import { caseById, CASES } from "../shared/cases.js";
 import { FIDELITY, FIDELITY_ADVICE, defaultFidelity, LOOK_SEEDS } from "../shared/suite.js";
+import { cleanLabel } from "../shared/label.js";
 import { FREE_DAILY_PRODUCTS } from "../shared/pricing.js";
 import { SECTION_TYPES, SECTION_MODES, PHOTO_ROLES, QUICK, scanRisky, paletteRoles } from "../shared/suite.js";
 
@@ -450,6 +451,7 @@ export function registerSuites({ app, store, users, styles, dataDir, textAI, nor
     }
     if (typeof b.aiLabel === "boolean") s.aiLabel = b.aiLabel;
     if (typeof b.wish === "string") s.wish = b.wish.trim().slice(0, 80);
+    if (b.label && typeof b.label === "object") s.label = cleanLabel(b.label);
     if (FIDELITY[b.fidelity]) s.fidelity = b.fidelity;
     if (b.note && typeof b.note.text === "string") s.note = { title: String(b.note.title || "").slice(0, 40), text: b.note.text.slice(0, 3000) };
     if (Array.isArray(b.shots) && s.shots)

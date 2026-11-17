@@ -54,13 +54,15 @@ export const SCENES = {
     unit: "款",
     counts: [1, 2, 3],
     defaultCount: 2,
-    sizes: ["1:1", "4:3", "3:4"],
+    sizes: ["1:1", "4:3", "3:4", "16:9", "9:16"],
     defaultSize: "1:1",
   },
 };
 
 // 包装做成什么形式（只用于包装图）。
-export const PACK_FORMS = { gift: "礼盒", bag: "手提袋", pouch: "自立袋", can: "罐 / 瓶", carton: "外箱", label: "标签贴纸" };
+export const PACK_FORMS = { tuck: "插舌盒", lid: "天地盖礼盒", carton: "外箱纸箱", bag: "手提袋", pouch: "自立袋", can: "罐 / 瓶" };
+// 这几种是盒子：AI 画正面平面稿，之后拼刀版、看 3D。其余的直接出立体效果图。
+export const BOX_FORMS = ["tuck", "lid", "carton"];
 // 这几种图能选还原度；包装图上的商品是印刷图案，不按实拍还原度来。
 export const FIDELITY_SCENES = ["product", "detail", "poster"];
 

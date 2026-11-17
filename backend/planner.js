@@ -1,6 +1,7 @@
 import { parseJsonObject } from "./json.js";
 import fs from "node:fs";
-import { SCENES, LAYOUTS, TEXT_MODES, TEXT_ROLES, MAX_TEXTS, SIZE_NAMES, PACK_FORMS, FIDELITY_SCENES } from "../shared/scenes.js";
+import { SCENES, LAYOUTS, TEXT_MODES, TEXT_ROLES, MAX_TEXTS, SIZE_NAMES, PACK_FORMS, BOX_FORMS, FIDELITY_SCENES } from "../shared/scenes.js";
+import { BOX_TYPES, mainFace } from "../shared/boxes.js";
 import { FIDELITY, defaultFidelity } from "../shared/suite.js";
 import { CATEGORIES, FARM_CATEGORIES, styleFits } from "../shared/styles.js";
 import { AppError } from "./store.js";
@@ -73,10 +74,10 @@ const REAL_RULES = `硬性规则（与上面的指南冲突时，以这里为准
 
 const STAGED_RULE = "- 还原度：适度造景——商品本身照实拍来（品种、个头、颜色、纹理、数量感一致，不画成 3D 或塑料质感），周围的台面、道具、背景和光线按创意方向重新布置。";
 const FREE_RULE = "- 还原度：自由发挥——实拍只用来认清商品长什么样，画面可以完全重新构图和造景；商品外观仍必须和实拍一致。";
-const PACK_RULES = `硬性规则：
+const packRules = (input) => `硬性规则：
 - 这是一款真实要拿去印刷的包装：品牌名、品名、规格、净含量只用商家给的，逐字照抄；商家没给的不编（不编认证、生产日期、条码、厂址、电话）。
 - 包装上的商品图案以商家照片为准（品种、颜色、形状一致），可以做成摄影抠图、精致插画或局部特写。
-- 每张图是一张包装成品效果图：包装立体摆放，正面清楚可读；旁边可以少量摆放商品实物或应景道具，但不能被误认为随包装附赠。
+${BOX_FORMS.includes(input?.packForm) ? "- 每张图是盒子主面的平面设计稿：满版、正对、没有透视和阴影，不画盒子本身和桌面。" : "- 每张图是一张包装成品效果图：包装立体摆放，正面清楚可读；旁边可以少量摆放商品实物或应景道具，但不能被误认为随包装附赠。"}
 - 字少而大：品牌名和品名最醒目，卖点不超过 2 条短句。`;
 // 还原度：商家选了就按商家的；没选按品类给默认值（生鲜水产照实拍，其余适度造景）。包装图不适用。
 export function draftFidelity(input, analysis) {
@@ -115,7 +116,7 @@ ${input.skillId === "packaging" ? `这次做的是包装设计${input.packForm &
 风格库（id｜名称｜适合品类｜调性｜概念）：
 ${catalog}
 
-${input.skillId === "packaging" ? PACK_RULES : HARD_RULES}
+${input.skillId === "packaging" ? packRules(input) : HARD_RULES}
 ${realLine}
 只输出一个 JSON 对象，不要 Markdown：
 {
@@ -202,7 +203,10 @@ const STRUCTURE = {
   product: (n) => `出 ${n} 张商品图，组成一套：第 1 张主图（商品完整、最强视觉冲击），之后依次是场景图、细节/质感图、卖点图（按张数取舍）。每张画面不同但同一视觉系统。`,
   detail: (n) => `详情页拆成 ${n} 屏竖版 3:4 设计稿，每屏是一张完整的海报式设计（画面 + 排版文字），自上而下讲一个故事：首屏主视觉（品牌+一句概念）→ 核心卖点 → 材质/细节特写 → 使用场景 → 更多卖点或成分/工艺 → 收尾（品牌态度或规格，规格只用商家给的数据）。每屏 1 个主题，标题 4-12 字，说明 1-2 行，可加英文小标。`,
   poster: (n) => `出 ${n} 张海报方案，文字内容相同，版式和主视觉不同。文字层级：主标题、副标题、正文/活动信息、行动号召、落款。`,
-  packaging: (n, form) => `出 ${n} 款${form || "包装"}设计，都属于选定的创意方向，但主视觉和版式各不相同（比如一款以商品大图为主，一款以图形和字体为主，一款以产地或手绘插画为主）。每张图是这一款包装的成品效果图：包装立体摆放、正面朝向镜头、文字清楚；简单的台面或应景场景，少量商品实物或道具陪衬。texts 就是包装上印的字：品牌名、品名、规格/净含量、1–2 条短卖点。`,
+  packaging: (n, form, input) =>
+    BOX_FORMS.includes(input?.packForm)
+      ? `出 ${n} 款${form}的${input.packForm === "lid" ? "盒盖顶面" : "正面"}平面设计稿（不是立体效果图），都属于选定的创意方向，但主视觉和版式各不相同（比如一款以商品大图为主，一款以图形和字体为主，一款以产地或手绘插画为主）。这个面实际尺寸 ${mainFace(input.packForm, input.packSize).w}×${mainFace(input.packForm, input.packSize).h} 毫米：满版铺满画面，画面边缘就是盒子的边，四周 3 毫米内不放文字；之后程序会把它拼进刀版图、做成 3D 盒子，其余几个面另外处理。scene 写版式：商品图案画法与位置、标题位置与字体、图形元素和底纹。texts 就是这个面上印的字：品牌名、品名、规格/净含量、1–2 条短卖点。`
+      : `出 ${n} 款${form || "包装"}设计，都属于选定的创意方向，但主视觉和版式各不相同（比如一款以商品大图为主，一款以图形和字体为主，一款以产地或手绘插画为主）。每张图是这一款包装的成品效果图：包装立体摆放、正面朝向镜头、文字清楚；简单的台面或应景场景，少量商品实物或道具陪衬。texts 就是包装上印的字：品牌名、品名、规格/净含量、1–2 条短卖点。`,
 };
 const lean = new Map();
 function leanGuide(skillId) {
@@ -215,14 +219,14 @@ function leanGuide(skillId) {
 export function storyboardMessages(input, result, chosen) {
   const fidelity = draftFidelity(input, result.analysis);
   const real = fidelity === "real";
-  const rules = input.skillId === "packaging" ? PACK_RULES : fidelityRules(fidelity || "staged");
+  const rules = input.skillId === "packaging" ? packRules(input) : fidelityRules(fidelity || "staged");
   const system = `${leanGuide(input.skillId)}
 
 ---
 你现在按选定的创意方向写分镜。
 创意方向：${chosen.conceptName}——${chosen.story}
 视觉系统：色板 ${chosen.palette.join(" ")}；${real ? "" : `道具材质：${chosen.props}；光线：${chosen.light}；机位构图：${chosen.camera}；`}字体排版：${chosen.type}；避免：${chosen.avoid}
-${STRUCTURE[input.skillId](input.count, PACK_FORMS[input.packForm])}
+${STRUCTURE[input.skillId](input.count, PACK_FORMS[input.packForm], input)}
 
 ${rules}
 

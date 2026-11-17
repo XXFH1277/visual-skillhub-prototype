@@ -30,7 +30,7 @@ export function mainFace(kind, size) {
 // Nearest image ratio the generator supports.
 export function aspectFor(w, h) {
   const r = w / h;
-  const options = [["16:9", 16 / 9], ["4:3", 4 / 3], ["1:1", 1], ["3:4", 3 / 4]];
+  const options = [["16:9", 16 / 9], ["4:3", 4 / 3], ["1:1", 1], ["3:4", 3 / 4], ["9:16", 9 / 16]];
   return options.reduce((best, o) => (Math.abs(Math.log(o[1] / r)) < Math.abs(Math.log(best[1] / r)) ? o : best))[0];
 }
 

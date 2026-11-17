@@ -736,3 +736,60 @@ test("standalone: try one picture first, the set reuses it unchanged; pick a sub
   assert.match(framePrompt(packJob.params, 0), /包装设计的成品效果图[\s\S]*包装上的商品图案以它为准/);
   assert.equal((await s.draft({ fields: { skillId: "interior" } })).status, 400);
 });
+
+test("boxes: a packaging front becomes a box (3 types), faces uploaded or drawn by AI from the front; labels print at 300dpi", async (t) => {
+  const s = await setup(t);
+  const created = await s.draft({ fields: { skillId: "packaging", count: "1", packForm: "tuck", packSize: JSON.stringify({ l: 100, w: 50, h: 150 }) } });
+  assert.equal(created.status, 202, await created.clone().text());
+  const d = await s.ready((await created.json()).id);
+  assert.equal(d.input.size, "3:4"); // 100×150 front → nearest ratio
+  const res = await s.post("/api/jobs", { draftId: d.id, frames: d.frames }, { "Idempotency-Key": randomUUID() });
+  const job = await s.terminal((await res.json()).id);
+  assert.equal(job.status, "succeeded", job.error);
+  assert.equal(job.params.packForm, "tuck");
+  assert.match(job.params.opener, /平面设计稿/);
+  const asset = job.manifest.assets.find((a) => a.role === "image").name;
+  const made = await s.post("/api/boxes", { jobId: job.id, asset });
+  assert.equal(made.status, 201, await made.clone().text());
+  const box = await made.json();
+  assert.deepEqual(box.size, { l: 100, w: 50, h: 150 });
+  assert.equal(box.faces.front.kind, "design");
+  assert.equal(box.faces.back.kind, "auto");
+  assert.equal((await s.request(box.faces.front.url)).status, 200);
+  // Same design again: the same box.
+  assert.equal((await (await s.post("/api/boxes", { jobId: job.id, asset })).json()).id, box.id);
+  // Upload one face, then let AI draw the rest from the front.
+  const form = new FormData();
+  form.append("image", new Blob([image], { type: "image/png" }), "side.png");
+  const up = await (await s.request(`/api/boxes/${box.id}/faces/right`, { method: "POST", body: form })).json();
+  assert.equal(up.faces.right.kind, "upload");
+  const before = await s.balance();
+  const ai = await s.post(`/api/boxes/${box.id}/ai-faces`, { faces: ["back", "top"] }, { "Idempotency-Key": randomUUID() });
+  assert.equal(ai.status, 202, await ai.clone().text());
+  const drawn = await ai.json();
+  assert.equal(drawn.faces.back.kind, "ai");
+  assert.equal(drawn.faces.right.kind, "upload");
+  for (const f of ["back", "top"]) assert.equal((await s.terminal(drawn.faces[f].jobId)).status, "succeeded");
+  assert.equal(await s.balance(), before - 20);
+  const backJob = await (await s.request(`/api/jobs/${drawn.faces.back.jobId}`)).json();
+  assert.equal(backJob.params.frames[0].photoUse, "packface");
+  assert.match(framePrompt(backJob.params, 0), /已经定稿的正面设计稿/);
+  const after = await (await s.request(`/api/boxes/${box.id}`)).json();
+  assert.ok(after.faces.back.url && after.faces.top.url);
+  // Other box types: the designed face moves to the new main face.
+  const lid = await (await s.post(`/api/boxes/${box.id}`, { type: "lid" })).json();
+  assert.equal(lid.faces.top.kind, "design");
+  assert.equal(lid.size.l, 300);
+  const reset = await (await s.post(`/api/boxes/${box.id}`, { reset: "back", label: { name: "小鱼印象", net: "200克" }, labelOn: true })).json();
+  assert.equal(reset.faces.back.kind, "auto");
+  assert.equal(reset.label.net, "200克");
+  assert.deepEqual((await (await s.request("/api/boxes")).json()).boxes.map((b) => b.id), [box.id]);
+  // Food label: a print-size PNG (100×70 mm at 300 dpi).
+  const png = await s.post("/api/labels/png", { label: { name: "小鱼印象", net: "200克", barcode: "697072554400" } });
+  assert.equal(png.status, 200);
+  const meta = await sharp(Buffer.from(await png.arrayBuffer())).metadata();
+  assert.equal(meta.width, 1181);
+  assert.equal(meta.height, 827);
+  // Someone else's box is not reachable.
+  assert.equal((await fetch(s.url + `/api/boxes/${box.id}`)).status, 401);
+});
