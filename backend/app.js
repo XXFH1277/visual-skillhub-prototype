@@ -14,11 +14,13 @@ import { JobQueue } from "./queue.js";
 import { createProviders } from "./providers.js";
 import { CREDITS_PER_YUAN, PACKAGES } from "../shared/pricing.js";
 import { createTextAI, compareTexts, confirmProblems } from "./text-ai.js";
-import { sanitizeFrames, candidatesFor, realPhotoFirst } from "./planner.js";
+import { sanitizeFrames, candidatesFor, draftFidelity } from "./planner.js";
+import { lookSeeds, lookLog } from "./looks.js";
+import { FIDELITY } from "../shared/suite.js";
 import { StyleLibrary } from "./styles.js";
 import { ADMIN_ID } from "./users.js";
 import { registerSuites, SUITE_FILE_MB } from "./suites.js";
-import { SCENES, textsForImage } from "../shared/scenes.js";
+import { SCENES, PACK_FORMS, frameSig, textsForImage } from "../shared/scenes.js";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const digest = (value) => createHash("sha256").update(value).digest();
@@ -40,7 +42,12 @@ function draftInput(body, existing = {}) {
   if (!scene.sizes.includes(size)) throw new AppError("画幅无效");
   const styleId = body.styleId ?? existing.styleId ?? "";
   if (typeof styleId !== "string" || styleId.length > 40) throw new AppError("风格无效");
-  return { skillId, copy: text(body.copy ?? existing.copy, 1500, "说明"), count, size, styleId };
+  // 还原度：空字符串表示让系统按品类给默认值。
+  const fidelity = body.fidelity ?? existing.fidelity ?? "";
+  if (fidelity && !FIDELITY[fidelity]) throw new AppError("还原度无效");
+  const packForm = skillId === "packaging" ? (body.packForm ?? existing.packForm ?? "gift") : "";
+  if (packForm && !PACK_FORMS[packForm]) throw new AppError("包装形式无效");
+  return { skillId, copy: text(body.copy ?? existing.copy, 1500, "说明"), count, size, styleId, wish: text(body.wish ?? existing.wish, 60, "想要的感觉"), fidelity, packForm };
 }
 
 export async function createWorkspace({
@@ -597,11 +604,43 @@ export async function createWorkspace({
     directions: d.result?.directions || [],
     chosen: d.chosen ?? null,
     frames: d.frames || null,
+    fidelity: d.result ? draftFidelity({ ...d.input, hasMain: d.hasMainImage }, d.result.analysis) : null,
+    trials: trialsOf(d),
+    grids: gridsOf(d),
     via: d.via,
     warning: d.warning,
     error: d.error,
   });
   const imagesOf = (d) => d.inputs.map((n) => path.join(d.dir, n));
+  const looks = lookLog(store.db);
+  // A picture tried on its own: where its finished file is, if it finished.
+  const madeFile = (job) => {
+    if (job?.status !== "succeeded") return null;
+    const raw = path.join(jobsDir, job.id, "result-1.png");
+    return fs.existsSync(raw) ? raw : null;
+  };
+  const jobBrief = (id) => {
+    const job = id && store.get(id);
+    if (!job) return null;
+    const asset = job.manifest?.assets?.find((a) => a.role === "image");
+    return { jobId: job.id, status: job.status, error: job.status === "failed" ? job.error : null, image: asset ? `/api/jobs/${job.id}/files/${encodeURIComponent(asset.name)}` : null };
+  };
+  function trialsOf(d) {
+    const out = {};
+    for (const [i, t] of Object.entries(d.trials || {})) {
+      const brief = jobBrief(t.jobId);
+      if (brief) out[i] = { ...brief, sig: t.sig };
+    }
+    return out;
+  }
+  function gridsOf(d) {
+    const out = {};
+    for (const [i, id] of Object.entries(d.grids || {})) {
+      const brief = jobBrief(id);
+      if (brief) out[i] = brief;
+    }
+    return out;
+  }
   async function think(d, status, fn) {
     d.status = status;
     d.error = d.warning = null;
@@ -617,8 +656,11 @@ export async function createWorkspace({
   const analyze = (d) =>
     think(d, "analyzing", async () => {
       const candidates = candidatesFor(styles.list(users.get(d.userId)), d.input.skillId);
-      const r = await textAI.analyze({ ...d.input, hasMain: d.hasMainImage, hasReference: d.refCount > 0 }, imagesOf(d), candidates);
-      Object.assign(d, { status: "directions", result: r.result, via: r.via, warning: r.warning || null, chosen: null, frames: null });
+      // Fresh seeds every time; what other merchants got lately (same category once we know it) is steered away from.
+      const avoid = looks.avoid(d.result?.analysis?.category || "");
+      const r = await textAI.analyze({ ...d.input, hasMain: d.hasMainImage, hasReference: d.refCount > 0, seeds: lookSeeds(3), avoid }, imagesOf(d), candidates);
+      Object.assign(d, { status: "directions", result: r.result, via: r.via, warning: r.warning || null, chosen: null, frames: null, trials: {}, grids: {} });
+      if (r.via !== "rules") looks.add(r.result.analysis?.category, r.result.directions, d.id);
     });
   const storyboard = (d) =>
     think(d, "storyboarding", async () => {
@@ -697,7 +739,9 @@ export async function createWorkspace({
     const index = req.body?.index;
     if (!Number.isInteger(index) || !d.result.directions[index]) throw new AppError("请选择一个方向");
     if (thinking >= 3) throw new AppError("正在处理其他请求，请稍后重试", 429);
+    if (req.body?.fidelity != null) d.input = draftInput({ fidelity: req.body.fidelity }, d.input);
     d.chosen = index;
+    d.trials = {};
     storyboard(d);
     res.json(draftView(d));
   });
@@ -708,11 +752,59 @@ export async function createWorkspace({
     await sendImage(req, res, await regularFile(d.dir, name), dataDir);
   });
 
+  // 九宫格预览：选方向前先用一张 3×3 小图看整套的大致样子。
+  const GRID_CELLS = {
+    product: ["主图", "使用场景", "细节质感", "卖点", "另一角度", "生活氛围", "规格展示", "局部特写", "收尾形象"],
+    detail: ["首屏主视觉", "核心卖点", "材质细节", "使用场景", "更多卖点", "工艺或产地", "规格", "食用或使用方法", "收尾"],
+    poster: ["主视觉居中版", "图文左右分区版", "大字标题版", "满版图片版", "留白极简版", "节庆氛围版", "拼贴版", "竖排书法版", "底部信息条版"],
+    packaging: ["礼盒正面", "礼盒侧面", "打开的礼盒", "手提袋", "包装与商品同框", "包装细节工艺", "俯拍平铺", "送礼场景", "包装背面"],
+  };
+  app.post("/api/drafts/:id/grid", admission, async (req, res) => {
+    const d = getDraft(req.params.id, req.user);
+    if (!d.result) throw new AppError("请先等 AI 给出方向");
+    const index = req.body?.index;
+    const dir = Number.isInteger(index) && d.result.directions[index];
+    if (!dir) throw new AppError("请选择一个方向");
+    const fidelity = draftFidelity({ ...d.input, hasMain: d.hasMainImage }, d.result.analysis);
+    const cells = GRID_CELLS[d.input.skillId] || GRID_CELLS.product;
+    const frame = {
+      grid: true,
+      title: "九宫格预览",
+      textMode: "none",
+      layout: "none",
+      texts: [],
+      ...(fidelity ? { fidelity } : {}),
+      scene: `九格从左到右、从上到下依次是：\n${cells.map((c, i) => `${i + 1}. ${c}`).join("\n")}\n每格都用同一件商品（见附件），按整套视觉系统来做；九格的景别和机位互不相同。`,
+    };
+    const params = {
+      version: 3,
+      skillId: d.input.skillId,
+      productName: `${d.result.analysis?.product?.slice(0, 20) || dir.conceptName} · 九宫格预览`,
+      copy: d.input.copy,
+      size: "1:1",
+      count: 1,
+      frames: [frame],
+      direction: dir,
+      styleId: dir.styleId && dir.styleId !== "ref" ? dir.styleId : null,
+      analysis: d.result.analysis,
+      brandColor: dir.palette?.[2] || "#e8541e",
+      hasMainImage: d.hasMainImage,
+      refCount: d.refCount,
+      inputs: [...d.inputs],
+      planVia: d.via,
+      ...(fidelity ? { fidelity } : {}),
+    };
+    const holder = { status: (code) => ({ json: (job) => (holder.result = { code, job }) }) };
+    await createJob(req, holder, params, d.dir);
+    (d.grids ||= {})[index] = holder.result.job.id;
+    res.status(holder.result.code).json(draftView(d));
+  });
+
   async function prepareJob(dir, params, sourceDir, extra = {}) {
     for (const name of params.inputs)
       await fsp.copyFile(Object.hasOwn(extra, name) ? extra[name] : await regularFile(sourceDir, name), path.join(dir, name));
     if (params.styleRef && sourceDir) await fsp.copyFile(await regularFile(sourceDir, params.styleRef), path.join(dir, params.styleRef));
-    else if (!params.reusedFrames && params.styleId && params.operation !== "cover") {
+    else if ((params.reusedFrames?.length || 0) < params.count && params.styleId && params.operation !== "cover") {
       const cover = styles.coverFile(params.styleId);
       if (cover) {
         await fsp.copyFile(cover, path.join(dir, "style-ref.png"));
@@ -754,30 +846,58 @@ export async function createWorkspace({
   const nameFrom = (frames, skillId, direction) =>
     (frames[0]?.texts.find((t) => t.role === "headline")?.text || direction?.conceptName || SCENES[skillId].name).slice(0, 40);
 
+  // Confirm the plan: the whole set, the pictures ticked in `pick`, or one picture (`trial`) tried on its own.
   app.post("/api/jobs", admission, async (req, res) => {
     const d = getDraft(String(req.body?.draftId || ""), req.user);
     if (d.status !== "ready" || !d.frames) throw new AppError("请先选定方向并等分镜完成");
-    const frames = sanitizeFrames(req.body?.frames, d.input.skillId, d.input.count, { strict: true });
+    const all = sanitizeFrames(req.body?.frames, d.input.skillId, d.input.count, { strict: true });
     const direction = d.result.directions[d.chosen];
+    const resolution = req.body?.resolution || "2K";
+    const trial = req.body?.trial;
+    let indices = all.map((_, i) => i);
+    if (trial != null) {
+      if (!Number.isInteger(trial) || !all[trial]) throw new AppError("图片序号无效");
+      indices = [trial];
+    } else if (Array.isArray(req.body?.pick)) {
+      indices = [...new Set(req.body.pick)].filter((i) => Number.isInteger(i) && all[i]).sort((a, b) => a - b);
+      if (!indices.length) throw new AppError("至少勾选一张");
+    }
+    const frames = indices.map((i) => all[i]);
+    const fidelity = draftFidelity({ ...d.input, hasMain: d.hasMainImage }, d.result.analysis);
     const params = {
       version: 3,
       skillId: d.input.skillId,
-      productName: text(req.body?.productName, 40, "作品名称") || nameFrom(frames, d.input.skillId, direction),
+      productName:
+        text(req.body?.productName, 40, "作品名称") ||
+        (trial != null ? `${nameFrom(all, d.input.skillId, direction).slice(0, 30)} · ${frames[0].title}` : nameFrom(frames, d.input.skillId, direction)),
       copy: d.input.copy,
       size: d.input.size,
       count: frames.length,
       frames,
       direction,
-      styleId: direction.styleId === "ref" ? null : direction.styleId,
+      styleId: direction.styleId && direction.styleId !== "ref" ? direction.styleId : null,
       analysis: d.result.analysis,
       brandColor: direction.palette?.[2] || "#e8541e",
       hasMainImage: d.hasMainImage,
       refCount: d.refCount,
       inputs: [...d.inputs],
       planVia: d.via,
-      ...(d.input.skillId !== "interior" && realPhotoFirst(d.result.analysis?.category, d.hasMainImage) ? { fidelity: "real" } : {}),
+      ...(fidelity ? { fidelity } : {}),
     };
-    await createJob(req, res, params, d.dir);
+    // Pictures already tried on their own, unchanged since: the set takes them over instead of drawing (and charging) them again.
+    const reuse = {};
+    if (trial == null)
+      frames.forEach((f, at) => {
+        const t = d.trials?.[indices[at]];
+        const file = t && t.sig === frameSig(f, d.chosen, resolution) && madeFile(store.get(t.jobId));
+        if (!file) return;
+        (params.reusedFrames ||= []).push(at);
+        reuse[at] = file;
+      });
+    const holder = { status: (code) => ({ json: (job) => (holder.result = { code, job }) }) };
+    await createJob(req, holder, params, d.dir, null, {}, reuse);
+    if (trial != null) (d.trials ||= {})[trial] = { jobId: holder.result.job.id, sig: frameSig(frames[0], d.chosen, resolution) };
+    res.status(holder.result.code).json(holder.result.job);
   });
   // Regenerate the whole job, or a single frame (optionally with exact program text).
   app.post("/api/jobs/:id/retry", admission, async (req, res) => {

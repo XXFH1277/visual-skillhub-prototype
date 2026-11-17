@@ -925,3 +925,22 @@ dd { margin: 0; line-height: 1.5; }
 @media (prefers-reduced-motion: reduce) {
   .spinner, .bar::after { animation-duration: 4s; }
 }
+
+/* 独立出图：勾选、逐张还原度、单独出一张、九宫格、包装形式 */
+.create-fid { margin-top: 16px; }
+.create-fid .seg { background: #dfe7ee; flex-wrap: wrap; }
+.wish input { width: 100%; margin-top: 6px; }
+.wish .muted { font-size: 12px; font-weight: 400; }
+.pack-forms { margin-top: 14px; }
+.frame header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.pick-frame { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.pick-frame input { width: 17px; height: 17px; accent-color: var(--accent); }
+.frame.off > :not(header) { opacity: 0.4; }
+.frame.off header b { color: var(--muted); }
+.frame-fid { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.frame-fid select { width: auto; padding: 5px 8px; font-size: 13px; }
+.frame-try { border-top: 1px dashed var(--line); padding-top: 12px; }
+.frame-try .btn { justify-self: start; }
+.grid-btn { justify-self: center; font-size: 13px; }
+.grid-thumb img { width: 100%; border-radius: 8px; display: block; }
+.grid-fail { font-size: 13px; }

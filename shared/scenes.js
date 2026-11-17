@@ -43,21 +43,35 @@ export const SCENES = {
     sizes: ["3:4", "9:16", "1:1", "16:9"],
     defaultSize: "3:4",
   },
-  interior: {
-    name: "装修效果",
-    tagline: "原空间 · 换风格",
-    mainLabel: "现场照片",
+  packaging: {
+    name: "包装图",
+    tagline: "礼盒 · 袋子 · 罐子 · 外箱",
+    mainLabel: "商品照片",
     mainRequired: true,
-    copyLabel: "改造想法",
+    copyLabel: "包装上印什么",
     copyPlaceholder:
-      "例如：保留沙发和地板，换掉窗帘和地毯，墙面刷成暖白色，想要温馨一点的原木风",
-    unit: "张",
+      "例如：品牌叫海味渔家，舟山冷冻带鱼，净含量 2.5kg，过年送礼用。品牌名、品名和规格会原样印上去，没写的不会编。",
+    unit: "款",
     counts: [1, 2, 3],
-    defaultCount: 1,
-    sizes: ["16:9", "3:4", "1:1"],
-    defaultSize: "16:9",
+    defaultCount: 2,
+    sizes: ["1:1", "4:3", "3:4"],
+    defaultSize: "1:1",
   },
 };
+
+// 包装做成什么形式（只用于包装图）。
+export const PACK_FORMS = { gift: "礼盒", bag: "手提袋", pouch: "自立袋", can: "罐 / 瓶", carton: "外箱", label: "标签贴纸" };
+// 这几种图能选还原度；包装图上的商品是印刷图案，不按实拍还原度来。
+export const FIDELITY_SCENES = ["product", "detail", "poster"];
+
+// 一张图“出过了”的判据：画面、文字、还原度、方向和清晰度都没变，整组就直接用它。
+// 空白按服务器整理文字的方式归一，免得多敲一个空格就算“改过了”。
+const norm = (v) => String(v || "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+export function frameSig(frame, chosen, resolution) {
+  const texts = (frame.texts || []).map((t) => [t.role, norm(t.text)]).filter((t) => t[1]);
+  const mode = texts.length ? frame.textMode : "none";
+  return JSON.stringify([chosen, resolution, norm(frame.scene), mode, mode === "overlay" ? frame.layout : "", frame.fidelity || "", texts]);
+}
 
 export const SIZE_NAMES = {
   "1:1": "方形 1:1",

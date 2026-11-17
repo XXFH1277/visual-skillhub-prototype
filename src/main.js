@@ -1,5 +1,6 @@
 import { preview } from "./preview.js";
-import { SCENES, SIZE_NAMES, TEXT_MODES, TEXT_ROLES, MAX_TEXTS } from "../shared/scenes.js";
+import { SCENES, SIZE_NAMES, TEXT_MODES, TEXT_ROLES, MAX_TEXTS, PACK_FORMS, FIDELITY_SCENES, frameSig } from "../shared/scenes.js";
+import { FIDELITY } from "../shared/suite.js";
 import { CATEGORIES, IMAGE_TYPES, TONES, sceneTypes } from "../shared/styles.js";
 import { IMAGE_SIZES } from "../shared/generation.js";
 import { IMAGE_CREDITS, imageCredits } from "../shared/pricing.js";
@@ -20,7 +21,7 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const date = (v) => new Date(v).toLocaleString("zh-CN", { hour12: false, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const active = (job) => ["queued", "running"].includes(job.status);
 const STATUS = { partial: "部分完成", queued: "排队中", running: "生成中", succeeded: "已完成", failed: "失败 · 已退积分", cancelled: "已取消 · 已退积分" };
-const SCENE_NAME = (id) => (id === "upscale" ? "4K 提升" : SCENES[id]?.name || id);
+const SCENE_NAME = (id) => (id === "upscale" ? "4K 提升" : SCENES[id]?.name || { interior: "装修效果（旧）" }[id] || id);
 const MODE_SHORT = { ai: "AI 画字", overlay: "精确排字", none: "不加字" };
 const key = () => crypto.randomUUID();
 
@@ -195,6 +196,10 @@ const state = {
   size: SCENES.product.defaultSize,
   styleId: "",
   resolution: "2K",
+  wish: "",
+  fidelity: "",
+  packForm: "gift",
+  off: new Set(),
   draft: null,
   frames: null,
   filesDirty: true,
@@ -210,6 +215,7 @@ function setScene(id) {
   if (st && !st.types.some((t) => sceneTypes[id].includes(t))) state.styleId = "";
   state.draft = null;
   state.frames = null;
+  state.off = new Set();
   state.filesDirty = true;
 }
 const invalidate = (files) => {
@@ -249,6 +255,11 @@ async function createPage(sceneParam) {
         </div>
       </div>
       <label class="note-label">${s.copyLabel}<textarea id="copy" rows="3" maxlength="1500" placeholder="${esc(s.copyPlaceholder)}">${esc(state.copy)}</textarea></label>
+      ${state.scene === "packaging" ? `<div class="aspect-options pack-forms" role="group" aria-labelledby="form-label"><span id="form-label">包装形式</span><div class="pills">${Object.entries(PACK_FORMS).map(([k, n]) => `<button class="pill ${k === state.packForm ? "on" : ""}" data-form="${k}" aria-pressed="${k === state.packForm}">${n}</button>`).join("")}</div></div>` : ""}
+      <label class="note-label wish">想要什么感觉 <span class="muted">可不填，比如“过年送礼的热闹感”“朴素的农家味”</span><input id="wish" maxlength="60" value="${esc(state.wish)}" placeholder="一句话就行"></label>
+      ${FIDELITY_SCENES.includes(state.scene) ? `<div class="fid create-fid"><span>还原度 <span class="muted">商品图离实拍多远</span></span>
+        <div class="seg small" role="group" aria-label="还原度"><button class="${!state.fidelity ? "on" : ""}" data-fidelity="" aria-pressed="${!state.fidelity}">按品类自动</button>${Object.entries(FIDELITY).map(([k, f]) => `<button class="${state.fidelity === k ? "on" : ""}" data-fidelity="${k}" aria-pressed="${state.fidelity === k}">${f.name}</button>`).join("")}</div>
+        <small class="muted">${state.fidelity ? FIDELITY[state.fidelity].hint : "生鲜水产照实拍，其他适度造景；每张图还能单独改"}</small></div>` : ""}
       <div class="specs">
         <div class="pills" role="group" aria-label="数量">${s.counts.map((c) => `<button class="pill ${c === state.count ? "on" : ""}" data-count="${c}" aria-pressed="${c === state.count}">${c} ${s.unit}</button>`).join("")}</div>
         ${s.sizes.length > 1 ? `<div class="aspect-options" role="group" aria-labelledby="aspect-label">
@@ -268,7 +279,7 @@ async function createPage(sceneParam) {
   paint(app);
   bindInputs();
   renderPlan();
-  if (state.draft && ["analyzing", "storyboarding"].includes(state.draft.status)) pollDraft();
+  if (state.draft && draftBusy(state.draft)) pollDraft();
 }
 
 function bindInputs() {
@@ -309,6 +320,18 @@ function bindInputs() {
   );
   $("#clear-style")?.addEventListener("click", () => ((state.styleId = ""), invalidate(true), createPage()));
   $("#copy").oninput = (e) => ((state.copy = e.target.value), invalidate(false), updateAction());
+  $("#wish").oninput = (e) => ((state.wish = e.target.value), invalidate(false), updateAction());
+  $$("[data-form]").forEach((b) => (b.onclick = () => ((state.packForm = b.dataset.form), invalidate(false), createPage())));
+  $$("[data-fidelity]").forEach(
+    (b) =>
+      (b.onclick = () => {
+        state.fidelity = b.dataset.fidelity;
+        // Pictures the merchant hasn't set one by one follow the new setting.
+        if (state.frames) for (const f of state.frames) delete f.fidelity;
+        invalidate(false);
+        createPage();
+      }),
+  );
   $$("[data-count]").forEach((b) => (b.onclick = () => ((state.count = Number(b.dataset.count)), invalidate(false), createPage())));
   $$("[data-size]").forEach((b) => (b.onclick = () => ((state.size = b.dataset.size), invalidate(false), createPage())));
   $("#resolution").onchange = (e) => {
@@ -342,9 +365,16 @@ function updateAction() {
     note.textContent = "点上面任意一个方向的“用这个”";
     return;
   }
-  const cost = imageCredits(state.resolution) * state.frames.length;
-  b.textContent = `确认出图 · ${cost} 积分`;
-  note.textContent = cost > workspace.account.balance ? "积分不足，请联系管理员" : `余额 ${workspace.account.balance} · 失败或取消自动退回`;
+  const picked = state.frames.map((_, i) => i).filter((i) => !state.off.has(i));
+  const reused = picked.filter((i) => trialState(i) === "made").length;
+  const cost = imageCredits(state.resolution) * (picked.length - reused);
+  b.textContent = picked.length === state.frames.length ? `确认出整组 · ${cost} 积分` : `出勾选的 ${picked.length} ${SCENES[state.scene].unit} · ${cost} 积分`;
+  note.textContent = !picked.length
+    ? "至少勾选一张"
+    : cost > workspace.account.balance
+      ? "积分不足，请联系管理员"
+      : `${reused ? `已单独出过的 ${reused} 张直接用，不再扣分 · ` : ""}余额 ${workspace.account.balance} · 失败或取消自动退回`;
+  if (!picked.length) return (b.disabled = true);
   b.disabled = cost > workspace.account.balance;
   b.onclick = () => submitJob(b);
 }
@@ -352,7 +382,7 @@ async function startDraft() {
   const s = SCENES[state.scene];
   const reuse = state.draft && !state.filesDirty && state.draft.input.skillId === state.scene;
   if (s.mainRequired && !state.main && !reuse) return toast(`请先上传${s.mainLabel}`, true);
-  const fields = { copy: state.copy, count: state.count, size: state.size, styleId: state.styleId };
+  const fields = { copy: state.copy, count: state.count, size: state.size, styleId: state.styleId, wish: state.wish.trim(), fidelity: FIDELITY_SCENES.includes(state.scene) ? state.fidelity : "", ...(state.scene === "packaging" ? { packForm: state.packForm } : {}) };
   try {
     let d;
     if (reuse) d = await api(`/drafts/${state.draft.id}/replan`, json(fields));
@@ -367,6 +397,7 @@ async function startDraft() {
     }
     state.draft = d;
     state.frames = null;
+    state.off = new Set();
     state.stale = false;
     renderPlan();
     $("#plan")?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -376,35 +407,64 @@ async function startDraft() {
   }
 }
 let polling = null;
+let lastSum = "";
+let wasThinking = true;
+const running = (x) => x && ["queued", "running"].includes(x.status);
+const draftBusy = (d) => ["analyzing", "storyboarding"].includes(d.status) || Object.values(d.trials || {}).some(running) || Object.values(d.grids || {}).some(running);
+// A picture tried on its own: "made" (the set will take it over), "stale" (changed since), "running" or none.
+function trialState(i) {
+  const t = state.draft?.trials?.[i];
+  const f = state.frames?.[i];
+  if (!t || !f) return null;
+  if (running(t)) return "running";
+  if (t.status !== "succeeded") return "failed";
+  return t.sig === frameSig(withFidelity(f), state.draft.chosen, state.resolution) ? "made" : "stale";
+}
+// The frame as it will be sent: fidelity only where the merchant set one.
+const withFidelity = (f) => {
+  const texts = f.texts.filter((t) => t.text.trim());
+  return { ...f, texts, textMode: texts.length ? f.textMode : "none", layout: texts.length ? f.layout : "none" };
+};
 function pollDraft() {
   const id = state.draft?.id;
   if (polling === id) return;
   polling = id;
+  wasThinking = ["analyzing", "storyboarding"].includes(state.draft.status);
+  lastSum = "";
   const tick = async () => {
-    if (state.draft?.id !== id || !["analyzing", "storyboarding"].includes(state.draft.status)) return (polling = null);
+    if (state.draft?.id !== id || !draftBusy(state.draft)) return (polling = null);
     try {
       state.draft = await api("/drafts/" + id);
     } catch (error) {
       state.draft = { ...state.draft, status: "failed", error: error.message };
     }
     const here = /^#?\/?(new.*)?$/.test(location.hash);
-    if (state.draft.status === "ready") state.frames = structuredClone(state.draft.frames);
+    if (state.draft.status === "ready" && !state.frames) state.frames = structuredClone(state.draft.frames);
     if (["directions", "ready"].includes(state.draft.status) && state.draft.warning) toast(state.draft.warning, true);
     if (here) {
-      renderPlan();
-      if (["directions", "ready"].includes(state.draft.status)) $("#plan")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const thinking = ["analyzing", "storyboarding"].includes(state.draft.status);
+      // While pictures are being drawn, redraw only when something finished and the merchant isn't typing.
+      const typing = document.activeElement?.matches?.("#plan input, #plan textarea");
+      const sum = JSON.stringify([state.draft.status, state.draft.trials, state.draft.grids]);
+      if (sum !== lastSum && !typing) {
+        lastSum = sum;
+        renderPlan();
+        if (wasThinking && !thinking) $("#plan")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      wasThinking = thinking;
     }
-    if (["analyzing", "storyboarding"].includes(state.draft.status)) setTimeout(tick, 1500);
+    if (draftBusy(state.draft)) setTimeout(tick, ["analyzing", "storyboarding"].includes(state.draft.status) ? 1500 : 3000);
     else polling = null;
   };
   setTimeout(tick, 1500);
 }
 
 function directionCard(dir, i, chosen) {
-  const style = styleOf(dir.styleId);
+  // A direction written for this product has no library sample: show its own palette.
+  const style = styleOf(dir.styleId) || (dir.styleId === "ref" ? null : { name: dir.conceptName, palette: dir.palette });
   const refUrl = dir.styleId === "ref" ? state.urls.refs[0] || (state.draft ? `/api/drafts/${state.draft.id}/input/${state.draft.hasMainImage ? 1 : 0}` : null) : null;
   return `<article class="card direction ${chosen ? "on" : ""}">
-    <div class="dir-cover">${coverHtml(style, refUrl)}<span class="dir-style">${esc(dir.styleName)}</span></div>
+    <div class="dir-cover">${coverHtml(style, refUrl)}<span class="dir-style">${esc(dir.styleId ? dir.styleName : "为这件商品现写")}</span></div>
     <div class="dir-body">
       <h3>${esc(dir.conceptName)}</h3>
       <p>${esc(dir.story)}</p>
@@ -412,16 +472,40 @@ function directionCard(dir, i, chosen) {
       <dl><dt>道具</dt><dd>${esc(dir.props)}</dd><dt>光线</dt><dd>${esc(dir.light)}</dd><dt>排版</dt><dd>${esc(dir.type)}</dd></dl>
       ${dir.why ? `<p class="why">${esc(dir.why)}</p>` : ""}
       <button class="btn ${chosen ? "" : "primary"} wide" data-choose="${i}">${chosen ? "重新写分镜" : "用这个方向"}</button>
+      ${gridHtml(i)}
     </div>
   </article>`;
 }
+function gridHtml(i) {
+  const g = state.draft?.grids?.[i];
+  const cost = imageCredits("2K");
+  if (!g) return `<button class="link grid-btn" data-grid="${i}" title="一张 3×3 小图，先看这个方向整套大概的样子">先看九宫格预览 · ${cost} 积分</button>`;
+  if (running(g)) return `<p class="hint working"><span class="spin"></span>九宫格预览生成中，一般 1–3 分钟</p>`;
+  if (g.status !== "succeeded" || !g.image) return `<p class="muted grid-fail">九宫格没出来，积分已退。<button class="link" data-grid="${i}">再试一次</button></p>`;
+  return `<a class="grid-thumb" href="${g.image}" target="_blank" rel="noopener"><img src="${preview(g.image, 720)}" alt="九宫格预览" loading="lazy"></a><small class="muted">只用来看整体感觉，不是成品。<button class="link" data-grid="${i}">再出一张</button></small>`;
+}
+function trialHtml(i) {
+  const st = trialState(i);
+  const t = state.draft?.trials?.[i];
+  const cost = imageCredits(state.resolution);
+  const btn = (label) => `<button class="btn small" data-try="${i}">${label} · ${cost} 积分</button>`;
+  if (!st) return btn("单独出这张");
+  if (st === "running") return `<p class="hint working"><span class="spin"></span>这张正在出，一般 1–3 分钟</p>`;
+  if (st === "failed") return `<p class="muted">没出来，积分已退。</p>${btn("再试一次")}`;
+  return `<div class="shot-made ${st === "stale" ? "stale" : ""}"><a href="${t.image}" target="_blank" rel="noopener"><img src="${preview(t.image, 320)}" alt="单独出的这张"></a><div>
+    <b>${st === "made" ? "已单独出过 · 出整组时直接用" : "出过之后又改了 · 出整组会重新画"}</b>
+    <a class="link" href="#/job/${t.jobId}">去修改或下载</a> ${btn(st === "made" ? "再出一张" : "按现在的再出")}</div></div>`;
+}
 function frameEditor(frame, i, skillId) {
   const roles = Object.keys(TEXT_ROLES);
-  const modes = skillId === "interior" ? [] : ["ai", "none", "overlay"];
-  return `<article class="card frame" data-frame="${i}">
-    <header><b>${i + 1}. ${esc(frame.title)}</b>${modes.length ? `<div class="seg small">${modes.map((m) => `<button class="${frame.textMode === m ? "on" : ""}" data-mode="${m}" title="${esc(TEXT_MODES[m])}">${MODE_SHORT[m]}</button>`).join("")}</div>` : ""}</header>
+  const modes = ["ai", "none", "overlay"];
+  const fid = state.draft?.fidelity;
+  const on = !state.off.has(i);
+  return `<article class="card frame ${on ? "" : "off"}" data-frame="${i}">
+    <header><label class="pick-frame"><input type="checkbox" data-on ${on ? "checked" : ""}><b>${i + 1}. ${esc(frame.title)}</b></label><div class="seg small">${modes.map((m) => `<button class="${frame.textMode === m ? "on" : ""}" data-mode="${m}" title="${esc(TEXT_MODES[m])}">${MODE_SHORT[m]}</button>`).join("")}</div></header>
+    ${fid ? `<label class="frame-fid">还原度<select data-fid>${Object.entries(FIDELITY).map(([k, f]) => `<option value="${k}" ${(frame.fidelity || fid) === k ? "selected" : ""}>${f.name}${k === fid && !frame.fidelity ? "（整组）" : ""}</option>`).join("")}</select></label>` : ""}
     <label class="scene-label">画面<textarea data-scene rows="4" maxlength="800">${esc(frame.scene)}</textarea></label>
-    ${frame.textMode !== "none" && skillId !== "interior" ? `<div class="texts">${frame.texts
+    ${frame.textMode !== "none" ? `<div class="texts">${frame.texts
       .map(
         (t, j) => `<div class="text-row" data-text="${j}">
           <select data-role aria-label="文字类型">${roles.map((r) => `<option value="${r}" ${t.role === r ? "selected" : ""}>${TEXT_ROLES[r].name}</option>`).join("")}</select>
@@ -430,6 +514,7 @@ function frameEditor(frame, i, skillId) {
       )
       .join("")}${frame.texts.length < MAX_TEXTS ? `<button class="link" data-add>＋ 加一行文字</button>` : ""}</div>` : ""}
     ${frame.textMode === "overlay" ? `<p class="hint">精确排字：图上留白，程序把字排上去，适合价格、菜单、参数</p>` : ""}
+    <div class="frame-try">${trialHtml(i)}</div>
   </article>`;
 }
 function renderPlan() {
@@ -456,18 +541,29 @@ function renderPlan() {
         : d.status === "ready" && state.frames
           ? `<section class="plan-head"><h2>分镜 <small class="muted">${esc(d.directions[d.chosen].conceptName)}</small></h2>
               ${d.polishedCopy ? `<details class="polished"><summary>AI 整理的文案</summary><pre>${esc(d.polishedCopy)}</pre></details>` : ""}
-              <p class="muted">重点看图上的字：改字、删行都免费。确认后才扣积分。</p></section>
+              <p class="muted">重点看图上的字：改字、删行都免费。拿不准可以先单独出一张看看，满意的那张出整组时直接用，不重复扣分。${d.fidelity ? ` 整组还原度：${FIDELITY[d.fidelity].name}。` : ""}</p></section>
              <div class="frames">${state.frames.map((f, i) => frameEditor(f, i, d.input.skillId)).join("")}</div>`
           : ""
     }`;
   paint(box);
   $("#reroll").onclick = () => startDraft();
+  $$("[data-grid]").forEach(
+    (b) =>
+      (b.onclick = () =>
+        busy(b, async () => {
+          state.draft = await api(`/drafts/${d.id}/grid`, json({ index: Number(b.dataset.grid) }, { "Idempotency-Key": key() }));
+          await refresh();
+          renderPlan();
+          pollDraft();
+        })),
+  );
   $$("[data-choose]").forEach(
     (b) =>
       (b.onclick = () =>
         busy(b, async () => {
           state.draft = await api(`/drafts/${d.id}/choose`, json({ index: Number(b.dataset.choose) }));
           state.frames = null;
+          state.off = new Set();
           renderPlan();
           pollDraft();
         })),
@@ -484,6 +580,19 @@ function bindFrames(skillId) {
     };
     if (card.dataset.bound) return;
     card.dataset.bound = "1";
+    $("[data-on]", card).onchange = (e) => {
+      if (e.target.checked) state.off.delete(i);
+      else state.off.add(i);
+      card.classList.toggle("off", !e.target.checked);
+      updateAction();
+    };
+    $("[data-fid]", card)?.addEventListener("change", (e) => {
+      if (e.target.value === state.draft.fidelity) delete f.fidelity;
+      else f.fidelity = e.target.value;
+      rerender();
+      updateAction();
+    });
+    $("[data-try]", card)?.addEventListener("click", (e) => submitJob(e.currentTarget, i));
     $$("[data-mode]", card).forEach(
       (b) =>
         (b.onclick = () => {
@@ -504,18 +613,35 @@ function bindFrames(skillId) {
       $("[data-del]", row).onclick = () => (f.texts.splice(Number(row.dataset.text), 1), rerender());
     });
     $("[data-add]", card)?.addEventListener("click", () => (f.texts.push({ role: "body", text: "" }), rerender()));
-    $("[data-scene]", card).oninput = (e) => (f.scene = e.target.value);
+    // Edits change whether a picture tried earlier still counts; refresh its note when the merchant pauses.
+    const later = () => {
+      clearTimeout(card._t);
+      card._t = setTimeout(() => {
+        const box = $(".frame-try", card);
+        if (box && state.draft?.trials?.[i]) {
+          box.innerHTML = trialHtml(i);
+          $("[data-try]", box)?.addEventListener("click", (e) => submitJob(e.currentTarget, i));
+        }
+        updateAction();
+      }, 400);
+    };
+    $("[data-scene]", card).oninput = (e) => ((f.scene = e.target.value), later());
+    $$("[data-value]", card).forEach((x) => x.addEventListener("input", later));
   });
 }
-async function submitJob(button) {
-  const frames = state.frames.map((f) => {
-    const texts = f.texts.filter((t) => t.text.trim());
-    return { ...f, texts, textMode: texts.length ? f.textMode : "none" };
-  });
+// The whole set (minus unticked pictures), or one picture tried on its own (`trial`), which stays on this page.
+async function submitJob(button, trial = null) {
+  const frames = state.frames.map(withFidelity);
+  const pick = state.frames.map((_, i) => i).filter((i) => !state.off.has(i));
   await busy(button, async () => {
-    const job = await api("/jobs", json({ draftId: state.draft.id, frames, resolution: state.resolution }, { "Idempotency-Key": key() }));
+    const body = { draftId: state.draft.id, frames, resolution: state.resolution, ...(trial != null ? { trial } : pick.length < frames.length ? { pick } : {}) };
+    const job = await api("/jobs", json(body, { "Idempotency-Key": key() }));
     await refresh();
-    location.hash = "#/job/" + job.id;
+    if (trial == null) return (location.hash = "#/job/" + job.id);
+    state.draft = await api("/drafts/" + state.draft.id);
+    toast("已开始出这一张，好了会显示在这张下面");
+    renderPlan();
+    pollDraft();
   });
 }
 

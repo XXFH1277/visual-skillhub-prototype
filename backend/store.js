@@ -9,7 +9,8 @@ export const SKILLS = {
   product: { name: "电商产品图", cost: imageCredits("2K") },
   detail: { name: "详情页模块", cost: imageCredits("2K") },
   poster: { name: "海报 / 菜单", cost: imageCredits("2K") },
-  interior: { name: "装修效果图", cost: imageCredits("2K") },
+  packaging: { name: "包装图", cost: imageCredits("2K") },
+  interior: { name: "装修效果图（旧）", cost: imageCredits("2K") },
 };
 export { AppError };
 

@@ -195,70 +195,6 @@ export const STYLES = [
     avoid: "复杂场景、强烈色偏",
     core: "clean white background e-commerce hero shot, softbox lighting, subtle ground shadow, crisp product edges, tidy infographic callouts",
   },
-  {
-    id: "cream-home",
-    name: "奶油原木",
-    tagline: "奶油白墙、浅橡木、温暖柔和",
-    categories: ["室内空间"],
-    types: ["interior"],
-    tone: "清新",
-    sample: { product: "", headline: "" },
-    palette: ["#f3ece2", "#d8c3a5", "#a67c52", "#ffffff"],
-    props: "浅橡木家具、奶油色布艺沙发、亚麻窗帘、圆角造型、绿植",
-    light: "保留原窗采光，柔和日光，暖色",
-    camera: "保持原照片机位与透视",
-    type: "无文字",
-    avoid: "改动墙体门窗、冷色调",
-    core: "cream and light oak interior, soft daylight, rounded furniture, linen textiles, warm cozy minimal",
-  },
-  {
-    id: "modern-home",
-    name: "现代极简",
-    tagline: "灰白黑、利落线条、少即是多",
-    categories: ["室内空间"],
-    types: ["interior"],
-    tone: "极简",
-    sample: { product: "", headline: "" },
-    palette: ["#f2f2f0", "#9a9a96", "#2b2b2b", "#c2a27c"],
-    props: "低矮家具、无主灯设计、隐藏收纳、大理石或微水泥",
-    light: "原窗日光 + 线性暗藏灯带",
-    camera: "保持原照片机位与透视",
-    type: "无文字",
-    avoid: "改动墙体门窗、繁复装饰",
-    core: "modern minimalist interior, neutral grey and white, clean lines, concealed lighting, microcement and marble",
-  },
-  {
-    id: "wabi-home",
-    name: "侘寂空间",
-    tagline: "微水泥、粗糙肌理、自然材料",
-    categories: ["室内空间"],
-    types: ["interior"],
-    tone: "自然",
-    sample: { product: "", headline: "" },
-    palette: ["#d9cfc1", "#b3a48f", "#6e6458", "#efe9e1"],
-    props: "微水泥墙面、原木、陶罐、干枝、亚麻",
-    light: "柔和侧光，低对比",
-    camera: "保持原照片机位与透视",
-    type: "无文字",
-    avoid: "改动墙体门窗、高光泽材质",
-    core: "wabi-sabi interior, textured plaster walls, raw wood, ceramics, dried branches, soft side light",
-  },
-  {
-    id: "french-home",
-    name: "法式复古",
-    tagline: "石膏线、人字拼、黄铜与丝绒",
-    categories: ["室内空间"],
-    types: ["interior"],
-    tone: "东方",
-    sample: { product: "", headline: "" },
-    palette: ["#efe6da", "#7c8a73", "#b08d57", "#3a3330"],
-    props: "石膏线条、人字拼木地板、丝绒沙发、黄铜灯具、拱形镜",
-    light: "柔和日光与暖色灯光",
-    camera: "保持原照片机位与透视",
-    type: "无文字",
-    avoid: "改动墙体门窗、过度奢华堆砌",
-    core: "French vintage interior, plaster moldings, herringbone floor, velvet sofa, brass lamps, soft warm light",
-  },
 ];
 
 
@@ -522,12 +458,12 @@ STYLES.push(
   },
 );
 
-export const CATEGORIES = ["生鲜水产", "农副产品", "美妆护肤", "香氛香薰", "食品饮料", "酒水茶饮", "数码3C", "家居家电", "服饰配饰", "母婴", "文创礼品", "室内空间"];
-export const IMAGE_TYPES = { main: "主图", scene: "场景图", selling: "卖点图", detail: "详情页", poster: "海报", interior: "装修效果" };
+export const CATEGORIES = ["生鲜水产", "农副产品", "美妆护肤", "香氛香薰", "食品饮料", "酒水茶饮", "数码3C", "家居家电", "服饰配饰", "母婴", "文创礼品"];
+export const IMAGE_TYPES = { main: "主图", scene: "场景图", selling: "卖点图", detail: "详情页", poster: "海报", packaging: "包装" };
 export const TONES = ["自然", "东方", "高级", "清新", "科技", "活力", "杂志", "极简", "冲击", "写实", "喜庆", "亲切", "清晰"];
 
 // Which creation scene a style can be used in.
-export const sceneTypes = { product: ["main", "scene", "selling"], detail: ["detail"], poster: ["poster"], interior: ["interior"] };
+export const sceneTypes = { product: ["main", "scene", "selling"], detail: ["detail"], poster: ["poster"], packaging: ["main", "poster"] };
 export const styleFits = (style, scene) => style.types?.some((t) => sceneTypes[scene]?.includes(t));
 export const styleById = (id) => STYLES.find((s) => s.id === id);
 

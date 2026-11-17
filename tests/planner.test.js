@@ -12,12 +12,12 @@ import { renderLayoutSketch, overlayTexts, wrap } from "../backend/render.js";
 const lib = STYLES.map((x) => ({ ...x, status: "ready" }));
 
 test("skills and the style library feed the planner, not the image model", () => {
-  for (const id of ["product", "detail", "poster", "interior"]) assert.ok(sceneGuide(id).length > 400, id);
+  for (const id of ["product", "detail", "poster", "packaging"]) assert.ok(sceneGuide(id).length > 400, id);
   const candidates = candidatesFor(lib, "product");
   assert.ok(candidates.length > 20 && candidates.every((c) => !c.types.includes("interior")));
   const m = analyzeMessages({ skillId: "product", count: 2, size: "1:1", copy: "保温杯", hasMain: true, hasReference: true }, candidates);
   assert.match(m.system, /wabi｜侘寂自然/);
-  assert.match(m.system, /styleId="ref"/);
+  assert.match(m.system, /styleId 写 "ref"/);
   const result = normalizeAnalysis({ directions: [{ styleId: "wabi", conceptName: "一日三刻" }] }, { skillId: "product" }, candidates);
   const sb = storyboardMessages({ skillId: "detail", count: 6, copy: "" }, result, result.directions[0]);
   assert.match(sb.system, /一日三刻/);
@@ -250,4 +250,32 @@ test("a line is only called wrong when two reads agree; one good read clears it,
   // A selling point missing from both reads → wrong.
   const missing = confirmProblems(read(["源头产地", "舟山直发"]), read(["源头产地", "舟山直发"]));
   assert.deepEqual(missing.problems.map((p) => [p.text, p.kind]), [["顺丰冷链", "missing"]]);
+});
+
+test("standalone directions are written for the product: seeds, avoid list, wish and fidelity reach the planner", () => {
+  const candidates = candidatesFor(lib, "product");
+  const m = analyzeMessages({ skillId: "product", count: 2, size: "1:1", copy: "", hasMain: true, seeds: ["时间天气＝雨后湿润", "地点＝灶台边", "机位＝平视"], avoid: ["海味大片：深蓝金字"], wish: "朴素一点", fidelity: "real" }, candidates);
+  assert.match(m.system, /专门为这件商品现写/);
+  assert.match(m.system, /方向2：地点＝灶台边/);
+  assert.match(m.system, /海味大片：深蓝金字/);
+  assert.match(m.system, /朴素一点/);
+  assert.match(m.system, /商家选了“照实拍”/);
+  // A bespoke direction (no library style) is kept as is.
+  const r = normalizeAnalysis({ directions: [{ styleId: "", conceptName: "灶台烟火", story: "雨后灶台边的一锅鲜", palette: ["#223344"] }] }, { skillId: "product" }, candidates);
+  assert.equal(r.directions[0].conceptName, "灶台烟火");
+  assert.equal(r.directions[0].styleId, null);
+  assert.equal(r.directions.length, 3);
+  // Fidelity: the merchant's choice, else by category; per-picture overrides in the brief.
+  const sbReal = storyboardMessages({ skillId: "product", count: 1, hasMain: true, fidelity: "" }, { analysis: { category: "生鲜水产" } }, r.directions[0]);
+  assert.match(sbReal.system, /买家要看到真货/);
+  const sbFree = storyboardMessages({ skillId: "product", count: 1, hasMain: true, fidelity: "free" }, { analysis: { category: "生鲜水产" } }, r.directions[0]);
+  assert.match(sbFree.system, /自由发挥/);
+  const base = { skillId: "product", size: "1:1", hasMainImage: true, refCount: 0, inputs: ["input-0.png"], styleRef: null, direction: r.directions[0], fidelity: "real" };
+  const f = { title: "主图", layout: "none", textMode: "none", texts: [], scene: "灶台" };
+  assert.match(framePrompt({ ...base, frames: [f] }, 0), /【真实度】/);
+  const staged = framePrompt({ ...base, frames: [{ ...f, fidelity: "staged" }] }, 0);
+  assert.doesNotMatch(staged, /【真实度】/);
+  assert.match(staged, /周围的背景、台面、容器和陪衬/);
+  const pack = analyzeMessages({ skillId: "packaging", count: 2, size: "1:1", copy: "", hasMain: true, packForm: "gift" }, candidatesFor(lib, "packaging"));
+  assert.match(pack.system, /包装设计（礼盒）/);
 });

@@ -8,15 +8,29 @@ const OPENERS = {
   product: "电商商品视觉设计，商业摄影质感（photorealistic commercial product photography）。",
   detail: "电商详情页中的一屏竖版设计稿：完整的画面 + 排版文字，像高端品牌的详情页。",
   poster: "品牌海报设计，完整的版式与字体设计。",
+  packaging: "商品包装设计的成品效果图：一款真实可印刷生产的包装，摄影级立体效果图（photorealistic packaging mockup），包装上的平面设计完整精致。",
   interior: "室内装修效果图，真实照片质感（photorealistic interior photograph）。",
 };
 const AREA = { top: "画面上方约四分之一", bottom: "画面下方约四分之一", left: "画面左侧约四成", right: "画面右侧约四成", center: "画面中央" };
 
 // 生鲜水产、农副产品：买家要看到真货。“实拍保真”时商品来自实拍照片本身，
 // 视觉系统只管底色、画框和文字；大片（hero）、菜品（ingredient）、包装等自带用法的图不受影响。
-export const realMode = (params, frame) => params.fidelity === "real" && !frame?.photoUse && params.skillId !== "interior";
+// 每张图自己的还原度优先，没有就看整组的。
+export const realMode = (params, frame) =>
+  !["interior", "packaging"].includes(params.skillId) && !frame?.photoUse && (frame?.fidelity ? frame.fidelity === "real" : params.fidelity === "real");
+// 适度造景、自由发挥在“一张原图”的场景里，借用实拍图对应的说法。
+const USE_OF = { staged: "staged", free: "hero" };
 const realPhoto = (n, note = "") =>
   `图${n}：商家实拍${note}——画面以它为基础：商品和真实场景尽量保留原样（光影、冰碴、反光、鳞片和纹理这些真实细节不要修掉），可以裁切、轻微调色提亮、换掉杂乱的背景、加设计元素；商品/包装的形状、颜色、图案、Logo 和文字保持真实，不重新设计，不要画成 3D 渲染或塑料质感。`;
+
+function photoRole(use, n, note = "") {
+  if (use === "ingredient") return `图${n}：生鲜实拍${note}——只用来看食材本身（品种、大小、颜色、纹理），成品里的食材要和它一致；不要照搬它的背景、容器和构图。`;
+  if (use === "print") return `图${n}：商品实拍${note}——包装上的商品图案以它为准（品种、颜色、形状一致），可以做成干净的摄影抠图或精致插画；不要照搬它的背景和容器。`;
+  if (use === "hero") return `图${n}：商家实拍${note}——只用来确定商品长什么样（品种、外形、颜色、纹理、大小比例），画面里的商品必须是它；场景按下面的画面描述完全重新构图，不要照搬它的背景、容器和摆放。`;
+  if (use === "staged") return `图${n}：商家实拍${note}——商品本身照它来：品种、个头、颜色、纹理和数量感与它一致，不画成 3D 或塑料质感；它周围的背景、台面、容器和陪衬按下面的画面描述重新布置。`;
+  if (use === "artwork") return `图${n}：包装平面设计稿${note}——效果图里包装上的图案、文字、颜色、版式必须和它完全一致，只是贴到立体盒子上，不要重新设计。`;
+  return realPhoto(n, note);
+}
 
 export function frameInputs(params, index) {
   if (params.operation === "tweak") return [...params.inputs];
@@ -34,7 +48,7 @@ function tweakPrompt(params) {
   const frame = params.frames[0];
   const texts = textsForImage(params.skillId, frame);
   const lines = [
-    `图1 是一张已经完成、客户基本满意的${{ product: "电商商品图", detail: "详情页设计稿", poster: "海报", interior: "装修效果图" }[params.skillId] || "图片"}。请在图1 的基础上做局部修改，输出同样画幅（${SIZE_NAMES[params.size] || params.size}）的一张图片。`,
+    `图1 是一张已经完成、客户基本满意的${{ product: "电商商品图", detail: "详情页设计稿", poster: "海报", packaging: "包装效果图", interior: "装修效果图" }[params.skillId] || "图片"}。请在图1 的基础上做局部修改，输出同样画幅（${SIZE_NAMES[params.size] || params.size}）的一张图片。`,
     `【只改这一处】${params.instruction}`,
     "【保持不变】除上面要求的修改外，构图、机位、商品的形状颜色与包装细节、Logo、光线方向、配色、背景与道具都与图1 保持一致；不要重新设计，不要增加或删除其他元素，不要改变画面比例。",
   ];
@@ -62,25 +76,16 @@ export function framePrompt(params, index) {
   if (frame.photos?.length) {
     frame.photos.forEach((_, i) => {
       const note = frame.photoNotes?.[i] ? `（${frame.photoNotes[i]}）` : "";
-      roles.push(
-        frame.photoUse === "ingredient"
-          ? `图${n}：生鲜实拍${note}——只用来看食材本身（品种、大小、颜色、纹理），成品里的食材要和它一致；不要照搬它的背景、容器和构图。`
-          : frame.photoUse === "print"
-            ? `图${n}：商品实拍${note}——包装上的商品图案以它为准（品种、颜色、形状一致），可以做成干净的摄影抠图或精致插画；不要照搬它的背景和容器。`
-            : frame.photoUse === "hero"
-              ? `图${n}：商家实拍${note}——只用来确定商品长什么样（品种、外形、颜色、纹理、大小比例），画面里的商品必须是它；场景按下面的画面描述完全重新构图，不要照搬它的背景、容器和摆放。`
-            : frame.photoUse === "staged"
-              ? `图${n}：商家实拍${note}——商品本身照它来：品种、个头、颜色、纹理和数量感与它一致，不画成 3D 或塑料质感；它周围的背景、台面、容器和陪衬按下面的画面描述重新布置。`
-            : frame.photoUse === "artwork"
-              ? `图${n}：包装平面设计稿${note}——效果图里包装上的图案、文字、颜色、版式必须和它完全一致，只是贴到立体盒子上，不要重新设计。`
-              : realPhoto(n, note),
-      );
+      roles.push(photoRole(frame.photoUse, n, note));
       n++;
     });
   } else if (params.hasMainImage) {
+    const use = params.skillId === "packaging" ? "print" : USE_OF[frame.fidelity || params.fidelity];
     roles.push(
       real
         ? realPhoto(n)
+        : use
+        ? photoRole(use, n)
         : params.skillId === "interior"
         ? `图${n}：现场照片——保持同一机位、视角、透视、墙体、门窗位置与数量、梁柱和固定设施，只改造软装、饰面与配色。`
         : `图${n}：商品原图——商品的形状、比例、颜色、材质、Logo、标签文字必须完全一致；可以换角度摆放进新场景，但不能重新设计商品、不添加配件、不复制多个（除非画面要求多个）。`,

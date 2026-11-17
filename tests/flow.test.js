@@ -9,6 +9,7 @@ import sharp from "sharp";
 import { createWorkspace } from "../backend/app.js";
 import { createProviders } from "../backend/providers.js";
 import { fallbackAnalysis, fallbackStoryboard } from "../backend/planner.js";
+import { framePrompt } from "../backend/prompts.js";
 
 const ACCESS = "test-only-access-code-123456";
 const image = await sharp({ create: { width: 640, height: 640, channels: 3, background: "#6677aa" } }).png().toBuffer();
@@ -668,4 +669,70 @@ test("authorized previews are resized and privately cacheable; downloading retur
   const dl=await s.request(url+"&thumb=320&download=1");
   const {createHash}=await import("node:crypto");
   assert.equal(createHash("sha256").update(Buffer.from(await dl.arrayBuffer())).digest("hex"),asset.sha256);
+});
+
+test("standalone: try one picture first, the set reuses it unchanged; pick a subset; per-picture fidelity; grid preview; packaging", async (t) => {
+  const s = await setup(t);
+  const created = await s.draft({ fields: { count: "3", wish: "过年送礼的热闹感", fidelity: "free" } });
+  assert.equal(created.status, 202, await created.clone().text());
+  const id = (await created.json()).id;
+  const d0 = await s.settle(id);
+  assert.equal(d0.input.wish, "过年送礼的热闹感");
+  assert.equal(d0.fidelity, "free");
+  // 九宫格预览: one 1:1 picture for a direction, 10 credits, shown on the draft.
+  const g = await s.post(`/api/drafts/${id}/grid`, { index: 1 }, { "Idempotency-Key": randomUUID() });
+  assert.equal(g.status, 202, await g.clone().text());
+  const gridJob = (await g.json()).grids["1"];
+  const grid = await s.terminal(gridJob.jobId);
+  assert.equal(grid.status, "succeeded", grid.error);
+  assert.equal(grid.params.size, "1:1");
+  assert.ok(grid.params.frames[0].grid);
+  assert.equal(grid.cost, 10);
+  assert.ok((await s.settle(id)).grids["1"].image);
+  const d = await s.ready(id, 0);
+  const frames = structuredClone(d.frames);
+  frames[1].fidelity = "real";
+  const balance = await s.balance();
+  // One picture on its own.
+  const tried = await s.post("/api/jobs", { draftId: id, frames, trial: 1 }, { "Idempotency-Key": randomUUID() });
+  assert.equal(tried.status, 202, await tried.clone().text());
+  const trialJob = await s.terminal((await tried.json()).id);
+  assert.equal(trialJob.status, "succeeded", trialJob.error);
+  assert.equal(trialJob.params.count, 1);
+  assert.equal(trialJob.params.frames[0].fidelity, "real");
+  assert.equal(trialJob.params.fidelity, "free");
+  assert.equal(await s.balance(), balance - 10);
+  const after = await s.settle(id);
+  assert.equal(after.trials["1"].status, "succeeded");
+  // The whole set: the tried picture is taken over, only the other two are charged.
+  const set = await s.post("/api/jobs", { draftId: id, frames }, { "Idempotency-Key": randomUUID() });
+  const setJob = await set.json();
+  assert.equal(setJob.cost, 20);
+  assert.deepEqual(setJob.params.reusedFrames, [1]);
+  assert.equal((await s.terminal(setJob.id)).status, "succeeded");
+  // Changed since it was tried: drawn again. Only the ticked pictures go.
+  frames[1].scene += "，再亮一点";
+  const pick = await s.post("/api/jobs", { draftId: id, frames, pick: [1, 2] }, { "Idempotency-Key": randomUUID() });
+  const pickJob = await pick.json();
+  assert.equal(pickJob.params.count, 2);
+  assert.equal(pickJob.cost, 20);
+  assert.equal(pickJob.params.reusedFrames, undefined);
+  await s.terminal(pickJob.id);
+  assert.equal((await s.post("/api/jobs", { draftId: id, frames, pick: [] }, { "Idempotency-Key": randomUUID() })).status, 400);
+  frames[0].fidelity = "loose";
+  assert.equal((await s.post("/api/jobs", { draftId: id, frames }, { "Idempotency-Key": randomUUID() })).status, 400);
+  // Packaging replaces the old interior page: product photo printed on the box, no fidelity.
+  const pack = await s.draft({ fields: { skillId: "packaging", count: "2", packForm: "bag" } });
+  assert.equal(pack.status, 202, await pack.clone().text());
+  const pd = await s.ready((await pack.json()).id);
+  assert.equal(pd.input.packForm, "bag");
+  assert.equal(pd.fidelity, null);
+  const pj = await s.post("/api/jobs", { draftId: pd.id, frames: pd.frames }, { "Idempotency-Key": randomUUID() });
+  assert.equal(pj.status, 202, await pj.clone().text());
+  const packJob = await s.terminal((await pj.json()).id);
+  assert.equal(packJob.status, "succeeded", packJob.error);
+  assert.equal(packJob.params.skillId, "packaging");
+  assert.equal(packJob.params.fidelity, undefined);
+  assert.match(framePrompt(packJob.params, 0), /包装设计的成品效果图[\s\S]*包装上的商品图案以它为准/);
+  assert.equal((await s.draft({ fields: { skillId: "interior" } })).status, 400);
 });
