@@ -1032,8 +1032,10 @@ function bindJob(job) {
 }
 
 /* ---------------- credits ---------------- */
-function creditsPage() {
-  const kinds = { reserve: "出图预扣", refund: "失败 / 取消退回", grant: "充值", signup: "注册赠送", checkin: "签到", expire: "签到积分过期" };
+let shopLinks = {};
+let creditsBack = () => {};
+function creditsPage(prefill = "") {
+  const kinds = { reserve: "出图预扣", refund: "失败 / 取消退回", grant: "充值", redeem: "兑换码充值", signup: "注册赠送", checkin: "签到", expire: "签到积分过期" };
   const c = workspace.checkin;
   const pr = workspace.pricing;
   const per = (p) => (p.price / (p.credits / 10)).toFixed(2);
@@ -1043,8 +1045,12 @@ function creditsPage() {
   ${c ? `<section class="card checkin"><div class="row spread wrap"><div><h2>每日签到</h2><p class="muted">${c.today ? `今天已签到，已连续 ${c.streak} 天。` : c.streak ? `已连续 ${c.streak} 天，今天签到领 ${c.amount} 积分。` : `今天签到领 ${c.amount} 积分。`}签到积分 ${c.expireDays} 天内有效，出图时优先使用。</p></div>
       <button class="btn primary" id="checkin" ${c.today ? "disabled" : ""}>${c.today ? "今天已签到" : `签到 +${c.amount}`}</button></div>
     <ol class="week">${c.week.map((n, i) => `<li class="${i + 1 < c.position || (c.today && i + 1 === c.position) ? "done" : i + 1 === c.position ? "next" : ""}"><b>+${n}</b><small>第 ${i + 1} 天</small></li>`).join("")}</ol></section>` : ""}
-  ${pr ? `<section class="card packages"><h2>充值套餐</h2><p class="muted">套餐越大，每张图越便宜。充值请联系管理员，到账后一年内有效。</p>
-    <div class="pack-grid">${pr.packages.map((p) => `<div class="pack"><b>¥${p.price}</b><span>${p.credits} 积分</span><small>可出 ${p.credits / 10} 张，约 ¥${per(p)} 一张</small></div>`).join("")}
+  <section class="card redeem" id="redeem-card"><h2>兑换码充值</h2>
+    <form id="redeem-form" class="redeem-row"><input id="redeem-code" name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="40" placeholder="XXXX-XXXX-XXXX" value="${esc(prefill)}" aria-label="兑换码">
+      <button type="button" class="btn" id="paste-code">粘贴</button><button class="btn primary">兑换</button></form>
+    <p class="muted" id="redeem-hint">在下面的小铺买好套餐后，把收到的兑换码粘贴到这里，积分立刻到账。</p></section>
+  ${pr ? `<section class="card packages"><h2>充值套餐</h2><p class="muted">套餐越大，每张图越便宜。${Object.values(shopLinks).some(Boolean) ? "点“去购买”在小铺下单，付款后会收到兑换码。" : "充值请联系管理员。"}</p>
+    <div class="pack-grid">${pr.packages.map((p) => `<div class="pack"><b>¥${p.price}</b><span>${p.credits} 积分</span><small>可出 ${p.credits / 10} 张，约 ¥${per(p)} 一张</small>${shopLinks[p.price] ? `<a class="btn small primary" href="${esc(shopLinks[p.price])}" target="_blank" rel="noopener" data-buy>去购买</a>` : ""}</div>`).join("")}
       <div class="pack plain"><b>单买</b><span>1 元 = ${pr.perYuan} 积分</span><small>¥1.00 一张</small></div></div></section>` : ""}
   <section class="card ledger">${workspace.account.ledger.length ? workspace.account.ledger.map((l) => `<div class="ledger-row"><div><b>${kinds[l.kind] || l.kind}</b><small class="muted">${date(l.createdAt)}${l.note ? ` · ${esc(l.note)}` : ""}${l.jobId ? ` · <a href="#/job/${l.jobId}">查看</a>` : ""}</small></div><b class="${l.amount > 0 ? "plus" : ""}">${l.amount > 0 ? "+" : ""}${l.amount}</b></div>`).join("") : `<p class="muted">还没有积分记录。</p>`}</section>
   <section class="card account-form"><h2>${u.phone ? "修改密码" : "设置手机号登录"}</h2>
@@ -1055,6 +1061,44 @@ function creditsPage() {
     </form></section>
   <p class="center-row"><button class="btn" id="logout2">退出登录</button></p>`;
   $("#logout2").onclick = () => $("#logout").click();
+  const codeInput = $("#redeem-code");
+  $("#redeem-form").onsubmit = (e) => {
+    e.preventDefault();
+    const code = codeInput.value.trim();
+    if (!code) return codeInput.focus();
+    busy(e.currentTarget.querySelector(".primary"), async () => {
+      const r = await api("/redeem", json({ code }));
+      await refresh();
+      toast(`兑换成功，¥${r.price} 套餐 +${r.credits} 积分`);
+      if (location.hash.startsWith("#/redeem")) history.replaceState(null, "", "#/credits");
+      creditsPage();
+    });
+  };
+  $("#paste-code").onclick = async () => {
+    try {
+      const text = (await navigator.clipboard.readText()).trim();
+      const m = text.match(/[0-9A-Za-z]{4}-?[0-9A-Za-z]{4}-?[0-9A-Za-z]{4}/);
+      codeInput.value = m ? m[0].toUpperCase() : text.slice(0, 40);
+      codeInput.focus();
+    } catch {
+      codeInput.focus();
+      toast("请长按输入框，选择粘贴");
+    }
+  };
+  // Back from the shop tab: put the cursor where the code goes.
+  let bought = false;
+  $$("[data-buy]").forEach((a) => a.addEventListener("click", () => (bought = true)));
+  const back = () => {
+    if (document.visibilityState !== "visible" || !bought || !document.body.contains(codeInput)) return;
+    bought = false;
+    $("#redeem-card").scrollIntoView({ behavior: "smooth", block: "center" });
+    codeInput.focus();
+    $("#redeem-hint").textContent = "买好了？把兑换码粘贴到这里，点兑换。";
+  };
+  document.removeEventListener("visibilitychange", creditsBack);
+  creditsBack = back;
+  document.addEventListener("visibilitychange", back);
+  cleanup = () => document.removeEventListener("visibilitychange", back);
   $("#checkin")?.addEventListener("click", (e) =>
     busy(e.currentTarget, async () => {
       const r = await api("/me/checkin", json({}));
@@ -1079,7 +1123,7 @@ function creditsPage() {
 
 /* ---------------- admin ---------------- */
 async function adminPage() {
-  const data = await api("/admin");
+  const [data, codes] = await Promise.all([api("/admin"), api("/admin/codes")]);
   const link = (code) => `${location.origin}${location.pathname}#/join/${code}`;
   const invite = (i) => `<tr class="${i.revoked || i.used >= i.maxUses ? "dim" : ""}">
       <td class="mono">${esc(i.code)}</td><td>${i.credits}</td><td>${i.used}/${i.maxUses}</td><td>${esc(i.note)}</td>
@@ -1101,6 +1145,31 @@ async function adminPage() {
     <p class="muted">2K 每张 ${IMAGE_CREDITS["2K"]} 积分，4K 每张 ${IMAGE_CREDITS["4K"]} 积分。邀请码不区分大小写，一个码可以发给多人。</p>
     <div class="table-wrap"><table class="admin-table"><thead><tr><th>邀请码</th><th>送积分</th><th>已用</th><th>备注</th><th></th></tr></thead>
     <tbody>${data.invites.map(invite).join("") || `<tr><td colspan="5" class="muted">还没有邀请码</td></tr>`}</tbody></table></div>
+  </section>
+  <section class="card admin-block" id="codes-block"><h2>兑换码</h2>
+    <p class="muted">按套餐生成一批兑换码，导出后导入发卡小铺当库存。每次少量导入（比如 20 个），卖完再补；出问题可以整批作废。</p>
+    <form id="codes-form" class="row wrap">
+      <select name="price" aria-label="套餐">${codes.packages.map((p) => `<option value="${p.price}">¥${p.price} · ${p.credits} 积分</option>`).join("")}</select>
+      <label class="inline">数量<input name="count" type="number" min="1" max="500" value="20" required></label>
+      <label class="inline">有效期（天）<input name="expiresDays" type="number" min="0" max="3650" placeholder="不限"></label>
+      <input name="owner" maxlength="20" placeholder="推广人（选填）">
+      <input name="note" maxlength="40" placeholder="备注：放在哪个小铺">
+      <button class="btn primary">生成</button>
+    </form>
+    <div class="table-wrap"><table class="admin-table"><thead><tr><th>生成时间</th><th>套餐</th><th>已兑换 / 总数</th><th>推广人</th><th>有效期</th><th></th></tr></thead>
+    <tbody>${codes.batches.map((b) => `<tr class="${b.voided ? "dim" : ""}"><td class="muted">${date(b.createdAt)}${b.note ? `<small>${esc(b.note)}</small>` : ""}</td><td>¥${b.price} · ${b.credits}</td><td><b>${b.redeemed}</b> / ${b.count}${b.voidedCodes ? `<small class="muted">作废 ${b.voidedCodes}</small>` : ""}</td><td>${esc(b.owner) || "—"}</td><td class="muted">${b.expiresAt ? date(b.expiresAt) : "不限"}</td>
+      <td>${b.voided ? "已作废" : `<div class="row wrap"><a class="btn small" href="/api/admin/codes/${b.id}/export?origin=${encodeURIComponent(location.origin)}" download>导出兑换码</a><a class="btn small" href="/api/admin/codes/${b.id}/export?format=link&origin=${encodeURIComponent(location.origin)}" download>导出兑换链接</a><button class="link" data-void-batch="${b.id}">整批作废</button></div>`}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">还没有兑换码</td></tr>`}</tbody></table></div>
+    ${codes.owners.length ? `<h3 class="lbl-h">按推广人统计（已兑换）</h3><div class="table-wrap"><table class="admin-table"><thead><tr><th>推广人</th><th>兑换码</th><th>金额</th></tr></thead><tbody>${codes.owners.map((o) => `<tr><td>${esc(o.owner) || "未指定"}</td><td>${o.codes}</td><td>¥${o.yuan}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    <h3 class="lbl-h">查一个兑换码</h3>
+    <form id="code-lookup" class="row wrap"><input name="code" maxlength="40" placeholder="XXXX-XXXX-XXXX" autocomplete="off"><button class="btn small">查询</button></form>
+    <div id="code-result"></div>
+    <h3 class="lbl-h">小铺链接</h3>
+    <p class="muted">填上每个套餐在小铺里的商品链接，商家在“我的账号”里点“去购买”就会打开。网站地址用来生成兑换链接，上云后填你的域名。</p>
+    <form id="shop-form" class="shop-form">
+      <label>网站地址<input name="siteUrl" value="${esc(codes.settings.siteUrl || "")}" placeholder="${esc(location.origin)}"></label>
+      ${codes.packages.map((p) => `<label>¥${p.price} 套餐<input name="shop${p.price}" value="${esc(codes.settings["shop" + p.price] || "")}" placeholder="https://"></label>`).join("")}
+      <button class="btn small">保存</button>
+    </form>
   </section>
   <section class="card admin-block"><h2>账号（${data.users.length}）</h2>
     <div class="table-wrap"><table class="admin-table"><thead><tr><th>商家</th><th>余额</th><th>出图 / 消耗</th><th>最近登录</th><th>充值</th></tr></thead>
@@ -1126,6 +1195,52 @@ async function adminPage() {
     });
   };
   $$("[data-copy]").forEach((b) => (b.onclick = () => copy(message(b.dataset.copy))));
+  $("#codes-form").onsubmit = (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    busy(form.querySelector("button"), async () => {
+      const body = Object.fromEntries(new FormData(form));
+      const r = await api("/admin/codes", json({ ...body, price: Number(body.price), count: Number(body.count), expiresDays: body.expiresDays === "" ? "" : Number(body.expiresDays) }));
+      toast(`已生成 ${r.codes.length} 个兑换码，点“导出”下载`);
+      await adminPage();
+      $("#codes-block").scrollIntoView({ block: "start" });
+    });
+  };
+  $$("[data-void-batch]").forEach((b) => (b.onclick = () => {
+    if (!window.confirm("整批作废后，这批里还没兑换的码都不能再用。确定吗？")) return;
+    busy(b, async () => {
+      await api(`/admin/codes/${b.dataset.voidBatch}/void`, json({}));
+      await adminPage();
+    });
+  }));
+  const STATUS = { unused: "未兑换", redeemed: "已兑换", voided: "已作废", expired: "已过期" };
+  $("#code-lookup").onsubmit = (e) => {
+    e.preventDefault();
+    const code = e.currentTarget.code.value.trim();
+    if (!code) return;
+    busy(e.currentTarget.querySelector("button"), async () => {
+      try {
+        const r = await api("/admin/code/" + encodeURIComponent(code));
+        $("#code-result").innerHTML = `<p><b class="mono">${esc(r.code)}</b> · ¥${r.price} · ${STATUS[r.status]}${r.redeemedBy ? ` · ${esc(r.redeemedBy.name)}${r.redeemedBy.phone ? `（${esc(r.redeemedBy.phone)}）` : ""} 于 ${date(r.redeemedAt)} 兑换` : ""}${r.owner ? ` · 推广人 ${esc(r.owner)}` : ""}
+          ${r.status === "unused" ? `<button class="link" id="void-one">作废这个码</button>` : ""}</p>`;
+        $("#void-one")?.addEventListener("click", (ev) => busy(ev.currentTarget, async () => {
+          await api(`/admin/code/${encodeURIComponent(code)}/void`, json({}));
+          toast("已作废");
+          $("#code-lookup").requestSubmit();
+        }));
+      } catch (error) {
+        $("#code-result").innerHTML = `<p class="muted">${esc(error.message)}</p>`;
+      }
+    });
+  };
+  $("#shop-form").onsubmit = (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    busy(form.querySelector("button"), async () => {
+      await api("/admin/settings", json(Object.fromEntries(new FormData(form))));
+      toast("已保存");
+    });
+  };
   $$("[data-revoke]").forEach((b) => (b.onclick = () => busy(b, async () => {
     await api(`/admin/invites/${encodeURIComponent(b.dataset.revoke)}/revoke`, json({}));
     await adminPage();
@@ -1217,9 +1332,17 @@ async function render() {
     else if (!route) await suite.homePage();
     else if (route === "join") location.hash = "#/";
     else if (route === "admin" && isAdmin()) await adminPage();
-    else if (route === "credits") {
+    else if (route === "credits" || route === "redeem") {
       await refresh();
-      if (token === view) creditsPage();
+      shopLinks = (await api("/shop").catch(() => ({ links: {} }))).links;
+      if (token !== view) return;
+      // A redeem link (#/redeem/XXXX-XXXX-XXXX) bought in the shop: filled in, one click to redeem.
+      creditsPage(route === "redeem" && id ? decodeURIComponent(id).slice(0, 40) : "");
+      if (route === "redeem" && id) {
+        $("#redeem-card").scrollIntoView({ block: "center" });
+        $("#redeem-hint").textContent = "确认是你买的兑换码，点“兑换”积分就到账。";
+        $("#redeem-form .primary").focus();
+      }
     } else await createPage(route === "new" ? id : null);
   } catch (error) {
     if (token !== view) return;

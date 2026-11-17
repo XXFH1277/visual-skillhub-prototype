@@ -21,6 +21,7 @@ import { StyleLibrary } from "./styles.js";
 import { ADMIN_ID } from "./users.js";
 import { registerSuites, SUITE_FILE_MB } from "./suites.js";
 import { registerBoxes } from "./boxes.js";
+import { registerRedeem } from "./redeem.js";
 import { BOX_TYPES, cleanSize, mainFace } from "../shared/boxes.js";
 import { aspectFor } from "./packaging.js";
 import { SCENES, PACK_FORMS, frameSig, textsForImage } from "../shared/scenes.js";
@@ -1009,6 +1010,7 @@ export async function createWorkspace({
   });
   registerSuites({ app, store, users, styles, dataDir, textAI, normalizeUpload, regularFile, admission, createJob, jobsDir });
   registerBoxes({ app, store, dataDir, jobsDir, normalizeUpload, regularFile, admission, createJob });
+  registerRedeem({ app, store });
   app.post("/api/jobs/:id/upscale", admission, async (req, res) => {
     const source = store.get(req.params.id);
     if (!source || source.status !== "succeeded")

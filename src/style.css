@@ -1004,3 +1004,16 @@ a.scene { text-decoration: none; color: inherit; display: grid; }
   .face-list { grid-template-columns: 1fr; }
   .net-wrap { min-height: 0; }
 }
+
+/* 兑换码 */
+.redeem-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; margin-top: 10px; }
+.redeem-row input { font-family: var(--num, ui-monospace, monospace); font-size: 18px; letter-spacing: 0.08em; text-transform: uppercase; }
+.pack .btn { margin-top: 10px; justify-self: start; }
+.shop-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px 14px; align-items: end; }
+.shop-form label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+#code-result p { margin: 8px 0 0; }
+#codes-form, #code-lookup { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+#codes-form select { width: auto; flex: 0 0 auto; }
+#codes-form input[name="owner"], #codes-form input[name="note"] { width: auto; flex: 1 1 160px; min-width: 0; }
+#codes-form input[type="number"] { width: 90px; }
+#code-lookup input { width: auto; flex: 0 1 260px; min-width: 0; }

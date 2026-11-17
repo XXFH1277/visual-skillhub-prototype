@@ -173,7 +173,7 @@ export class Users {
   }
   // Has this account ever been topped up (a package or any positive grant)?
   paid(id) {
-    return !!this.db.prepare("SELECT 1 FROM ledger WHERE user_id=? AND kind='grant' AND amount>0 LIMIT 1").get(id);
+    return !!this.db.prepare("SELECT 1 FROM ledger WHERE user_id=? AND kind IN ('grant','redeem') AND amount>0 LIMIT 1").get(id);
   }
   invites() {
     return this.db

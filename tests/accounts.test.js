@@ -269,3 +269,64 @@ test("check-in over the API shows up in the workspace and the ledger", async (t)
   assert.equal(after.account.balance, before.account.balance + 10);
   assert.deepEqual([after.account.ledger[0].kind, after.account.ledger[0].note], ["checkin", "连续第 1 天"]);
 });
+
+test("redeem codes: admin makes a batch per package, a merchant redeems once, wrong guesses lock, voided and expired codes refuse", async (t) => {
+  const { browser } = await setup(t);
+  const admin = browser();
+  await admin.post("/api/login", { code: ACCESS });
+  const invite = await (await admin.post("/api/admin/invites", { credits: 0, maxUses: 2 })).json();
+  const a = browser();
+  await a.post("/api/register", { phone: "13800000011", password: "secret1", invite: invite.code });
+  const b = browser();
+  await b.post("/api/register", { phone: "13800000012", password: "secret1", invite: invite.code });
+  // Merchants can't make codes.
+  assert.equal((await a.post("/api/admin/codes", { price: 39, count: 1 })).status, 403);
+  assert.equal((await admin.post("/api/admin/codes", { price: 40, count: 1 })).status, 400);
+  const made = await (await admin.post("/api/admin/codes", { price: 39, count: 3, owner: "小王", note: "链动小铺" })).json();
+  assert.equal(made.codes.length, 3);
+  assert.match(made.codes[0], /^[2-9A-HJKMNP-Z]{4}-[2-9A-HJKMNP-Z]{4}-[2-9A-HJKMNP-Z]{4}$/);
+  assert.equal(new Set(made.codes).size, 3);
+  // Redeem: lower case and without dashes is fine; once only.
+  const r = await a.post("/api/redeem", { code: made.codes[0].toLowerCase().replace(/-/g, " ") });
+  assert.equal(r.status, 200, await r.clone().text());
+  assert.deepEqual(await r.json(), { credits: 600, price: 39, balance: 600 });
+  const again = await a.post("/api/redeem", { code: made.codes[0] });
+  assert.equal(again.status, 400);
+  assert.match((await again.json()).error, /已经兑换过/);
+  assert.match((await (await b.post("/api/redeem", { code: made.codes[0] })).json()).error, /已经被使用/);
+  const aw = await a.json("/api/workspace");
+  assert.equal(aw.account.ledger[0].kind, "redeem");
+  assert.match(aw.account.ledger[0].note, /^兑换码 .{4}… · ¥39$/);
+  assert.ok(!aw.account.ledger[0].note.includes(made.codes[0].replace(/-/g, "")));
+  // Two merchants racing for one code: exactly one gets it.
+  const race = await Promise.all([a.post("/api/redeem", { code: made.codes[1] }), b.post("/api/redeem", { code: made.codes[1] })]);
+  assert.deepEqual(race.map((x) => x.status).sort(), [200, 400]);
+  // Export: only codes still unused, as codes or as redeem links.
+  const batches = (await admin.json("/api/admin/codes")).batches;
+  assert.equal(batches[0].redeemed, 2);
+  assert.equal(batches[0].owner, "小王");
+  assert.deepEqual((await admin.json("/api/admin/codes")).owners, [{ owner: "小王", codes: 2, yuan: 78 }]);
+  const txt = await (await admin.request(`/api/admin/codes/${made.id}/export`)).text();
+  assert.equal(txt.trim(), made.codes[2]);
+  await admin.post("/api/admin/settings", { siteUrl: "https://xingtu.example/", shop39: "https://wzyp.cn/shop/O35ZYVPX" });
+  const links = await (await admin.request(`/api/admin/codes/${made.id}/export?format=link`)).text();
+  assert.equal(links.trim(), `https://xingtu.example/#/redeem/${made.codes[2]}`);
+  assert.equal((await a.json("/api/shop")).links["39"], "https://wzyp.cn/shop/O35ZYVPX");
+  assert.equal((await admin.post("/api/admin/settings", { shop99: "javascript:alert(1)" })).status, 400);
+  // Look one up; void it; voided codes refuse.
+  const look = await admin.json(`/api/admin/code/${made.codes[0]}`);
+  assert.equal(look.status, "redeemed");
+  assert.equal(look.redeemedBy.phone, "13800000011");
+  assert.equal((await admin.post(`/api/admin/code/${made.codes[2]}/void`, {})).status, 200);
+  assert.match((await (await b.post("/api/redeem", { code: made.codes[2] })).json()).error, /作废/);
+  // A whole batch voided; an expired batch refuses.
+  const more = await (await admin.post("/api/admin/codes", { price: 99, count: 1 })).json();
+  await admin.post(`/api/admin/codes/${more.id}/void`, {});
+  assert.match((await (await b.post("/api/redeem", { code: more.codes[0] })).json()).error, /作废/);
+  // Wrong guesses: the 6th try within 10 minutes is refused even with a good code.
+  const good = await (await admin.post("/api/admin/codes", { price: 299, count: 1, expiresDays: 30 })).json();
+  for (let i = 0; i < 5; i++) assert.equal((await b.post("/api/redeem", { code: "AAAA-BBBB-CCCC" })).status, 400);
+  assert.equal((await b.post("/api/redeem", { code: good.codes[0] })).status, 429);
+  assert.equal((await a.post("/api/redeem", { code: good.codes[0] })).status, 200);
+  assert.equal((await a.json("/api/workspace")).account.balance, 600 + (race[0].status === 200 ? 600 : 0) + 6600);
+});

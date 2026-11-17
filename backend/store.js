@@ -63,7 +63,7 @@ export class Store {
           "SELECT job_id AS jobId,kind,amount,created_at AS createdAt FROM ledger WHERE user_id=? ORDER BY id DESC LIMIT 100",
         )
         .all(userId)
-        .map((l) => (l.kind === "grant" ? { ...l, note: l.jobId, jobId: null } : ["checkin", "expire"].includes(l.kind) ? { ...l, note: String(l.jobId || "").split("·")[0], jobId: null } : l)),
+        .map((l) => (l.kind === "grant" ? { ...l, note: l.jobId, jobId: null } : ["checkin", "expire"].includes(l.kind) ? { ...l, note: String(l.jobId || "").split("·")[0], jobId: null } : l.kind === "redeem" ? { ...l, note: String(l.jobId || "").split("·").slice(0, 2).join(" · "), jobId: null } : l)),
     };
   }
   decode(row) {
